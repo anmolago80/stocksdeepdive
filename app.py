@@ -7083,8 +7083,15 @@ def _rc_key_numbers(ticker, data, lang="en"):
     out = []
     price, price_fmt = _rc_metric_value(data, "Value vs Book", "F", ticker)
     if price is not None:
+        # PART 4 STEP 4.0/4.1 finding (Director, 8 Oct 2026, instruction_
+        # health_fixes_chart_and_new_markets.md): this call omitted
+        # ticker=, so _cp_format()'s own "cur" branch fell through to a
+        # bare "$"-prefixed number regardless of the stock's real
+        # currency - every sibling call on this same page already
+        # passes ticker= (compounder_ui.py:514,875,878,959,1221). Fixed
+        # to match its own siblings' existing convention.
         out.append((i18n.t("research.key_number_price", lang),
-                     compounder_ui._cp_format(price, price_fmt or "cur")))
+                     compounder_ui._cp_format(price, price_fmt or "cur", ticker=ticker)))
 
     fos, fos_fmt = _rc_metric_value(data, "Fair Value", "Q", ticker)
     if fos is not None:
@@ -12767,12 +12774,27 @@ def _badge_cell(text, color=None):
     )
 
 
-def _money_cell(value, ref=None, flag=False, fmt="{:,.2f}"):
+def _money_cell(value, ref=None, flag=False, fmt="{:,.2f}", currency_code=None, na_reason=None):
     """A price-like number. With `ref` (usually the current price) it's
     coloured green above / red below - the intrinsic-value convention used
-    site-wide. flag=True (defaulted input) always wins, in red bold."""
+    site-wide. flag=True (defaulted input) always wins, in red bold.
+
+    currency_code (PART 4 STEP 4.1, Director, 8 Oct 2026, instruction_
+    health_fixes_chart_and_new_markets.md): an optional three-letter
+    code ("AUD", "GBP", ...) appended after the number, never a symbol
+    - the caller decides whether to pass one (None, the default,
+    reproduces this function's own pre-PART-4 output exactly, byte for
+    byte - see _scanner_presentation_visible()'s own docstring for
+    when a caller passes one).
+
+    na_reason (PART 4 STEP 4.3, same instruction): "a withheld value
+    shows 'n/a' with its reason" - an optional short string shown
+    alongside "N/A" when `value` is withheld (never when a real value
+    renders - a reason only ever explains an ABSENT number). None (the
+    default) reproduces the bare "N/A" every caller already shows."""
     if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
-        return "<span style='color:#8aa0b8;'>N/A</span>"
+        _reason_html = f" <span style='font-size:11px;'>({html.escape(na_reason)})</span>" if na_reason else ""
+        return f"<span style='color:#8aa0b8;'>N/A{_reason_html}</span>"
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -12786,10 +12808,11 @@ def _money_cell(value, ref=None, flag=False, fmt="{:,.2f}"):
                      else f"color:{_BAR_RED};font-weight:600;")
         except (TypeError, ValueError):
             style = ""
-    return f"<span style='{style}'>{fmt.format(v)}</span>"
+    _suffix = f" {currency_code}" if currency_code else ""
+    return f"<span style='{style}'>{fmt.format(v)}{_suffix}</span>"
 
 
-def _price_cell(value):
+def _price_cell(value, currency_code=None):
     """A raw Price number, plain-formatted (no green/red coloring - that's
     _money_cell's job for Intrinsic Value; Price is just the current
     quote). Fix 9 (2026-09-01): nightly_scan rows can carry a NaN/None
@@ -12802,7 +12825,11 @@ def _price_cell(value):
     5" and every Scanner overnight-scan table (both public surfaces).
     Renders 'N/A' for None/NaN/inf, matching the site-wide convention
     every other cell helper (_bar_cell, _money_cell, _signed_cell, ...)
-    already uses for a missing/invalid value."""
+    already uses for a missing/invalid value.
+
+    currency_code: same PART 4 STEP 4.1 addition as _money_cell()'s own
+    - None (the default) reproduces this function's pre-PART-4 output
+    byte for byte."""
     if value is None or value == "N/A" or (isinstance(value, float) and not math.isfinite(value)):
         return "<span style='color:#8aa0b8;'>N/A</span>"
     try:
@@ -12811,7 +12838,8 @@ def _price_cell(value):
         return f"<span>{value}</span>"
     if not math.isfinite(v):
         return "<span style='color:#8aa0b8;'>N/A</span>"
-    return f"{v:,.2f}"
+    _suffix = f" {currency_code}" if currency_code else ""
+    return f"{v:,.2f}{_suffix}"
 
 
 def _signed_cell(value, suffix="%"):
@@ -12826,7 +12854,19 @@ def _signed_cell(value, suffix="%"):
     return f"<span style='color:{c};font-weight:600;'>{v:+,.1f}{suffix}</span>"
 
 
-def _insider_cell(ticker, value):
+# PART 4 STEP 4.3 (Director, 8 Oct 2026, instruction_health_fixes_
+# chart_and_new_markets.md): every suffix insider_engine.refresh()
+# already early-returns on (".L"/".TO"/".T" - "ASX announcements only
+# cover .AX, and SEC EDGAR has no CIK for a non-US-listed issuer",
+# that function's own docstring) PLUS the five PART 6 European
+# suffixes, same underlying reason (EDGAR has no CIK for a XETRA/
+# Euronext/SIX/Nasdaq Stockholm issuer either). Kept in sync with
+# insider_engine.refresh()'s own suffix tuple, same convention that
+# function's own docstring already asks for.
+_INSIDER_NO_COVERAGE_SUFFIXES = (".L", ".TO", ".T", ".DE", ".PA", ".AS", ".SW", ".ST")
+
+
+def _insider_cell(ticker, value, show_currency_code=False):
     """Services batch Part 2: the Scanner's "Insider net 12m" column -
     `value` comes from insider_store.net_insider_values_for(), computed
     ONCE per table (a single batched query) rather than per row - a
@@ -12835,13 +12875,57 @@ def _insider_cell(ticker, value):
     as _signed_cell, shown in thousands of the ticker's own currency
     since insider filing values can run into the millions. "-" when
     nothing's been parsed for this ticker yet (most tickers, most nights
-    - see insider_engine.INSIDER_NIGHTLY_CAP)."""
+    - see insider_engine.INSIDER_NIGHTLY_CAP).
+
+    show_currency_code=False (the default) reproduces this function's
+    pre-PART-4 output byte for byte - including its own pre-existing
+    "A$"/bare "$" mislabeling for anything that isn't ASX (PART 4 STEP
+    4.0's own finding: a Canadian or London ticker's figure wrongly
+    printed a plain "$", implying USD). PART 4 STEP 4.1 (Director,
+    8 Oct 2026): True replaces that symbol with the ticker's own
+    correct three-letter code, via fcf_valuation_engine.
+    trading_currency_for() - the same single source of truth every
+    other PART 4 currency label now uses - never a symbol.
+
+    PART 4 STEP 4.3 (same instruction): also under show_currency_code,
+    a None value for a ticker insider_engine.py has NO source for at
+    all (see _INSIDER_NO_COVERAGE_SUFFIXES above) shows "not available
+    for this market" instead of the bare "-" every other None already
+    uses - that bare dash means "nothing parsed yet for an eligible
+    market" (most tickers, most nights) and must stay exactly that for
+    a market this column genuinely covers; the two are never the same
+    thing and must not share one glyph once a reason can be given."""
     if value is None:
+        if show_currency_code and (ticker or "").upper().endswith(_INSIDER_NO_COVERAGE_SUFFIXES):
+            _lang = st.session_state.get("lang", "en")
+            return (
+                f"<span style='color:#8aa0b8;font-size:11px;'>"
+                f"{html.escape(i18n.t('scanner.not_available_for_market', _lang))}</span>"
+            )
         return "<span style='color:#8aa0b8;'>-</span>"
-    ccy = "A$" if ticker.upper().endswith(".AX") else "$"
+    if show_currency_code:
+        ccy = fcf_valuation_engine.trading_currency_for(ticker) + " "
+    else:
+        ccy = "A$" if ticker.upper().endswith(".AX") else "$"
     c = _BAR_GREEN if value > 0 else (_BAR_RED if value < 0 else "#8aa0b8")
     return (f"<span style='color:{c};font-weight:600;'>"
             f"{'+' if value >= 0 else '-'}{ccy}{abs(value) / 1000:,.0f}k</span>")
+
+
+def _scanner_presentation_visible():
+    """PART 4 of instruction_health_fixes_chart_and_new_markets.md
+    (8 Oct 2026, Director-directed): whether THIS visitor should see
+    the new Scanner presentation (currency codes, reordered picker
+    with private-universe markers, "n/a"-with-reason labels) - the
+    switch is live, OR this visitor is the real owner (ai_gate.
+    is_owner(), never just "the feature is visible to them"). Same
+    "switch OR owner" composition as currency_view_engine.visible_to()
+    - everyone once SCANNER_PRESENTATION_LIVE is live, owner-only
+    while it's off, so Andrew can check the new presentation on his
+    own account before anyone else ever sees it."""
+    return scanner_engine.is_scanner_presentation_live() or ai_gate.is_owner(
+        paywall_engine.current_user_email()
+    )
 
 
 def _results_delta_cell(delta, kind="pts", ticker=None):
@@ -12969,6 +13053,12 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
     dead end (no sector/universe browse path back to it elsewhere), and
     every existing universe gets the same convenience for free."""
     _on_lang = st.session_state.get("lang", "en")
+    # PART 4 STEP 4.1 (Director, 8 Oct 2026, instruction_health_fixes_
+    # chart_and_new_markets.md): "every money figure in its own trading
+    # currency, the three-letter code on every list, AU/USA included."
+    # Computed ONCE for the whole table, same "batch it, don't recompute
+    # per row" convention _on_insider_map below already follows.
+    _on_show_ccy = _scanner_presentation_visible()
     _score_label = "Value Score" if _factual() else "Long Score"
     # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
     # (nightly_scan.analyze_ticker_lite()'s ghost-price guard - a delisted/
@@ -13092,16 +13182,30 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
                 f"<br><span style='color:#5b7290;font-size:10.5px'>"
                 f"{html.escape(_tk_sector)}</span>"
             )
+        _on_ccy = (
+            fcf_valuation_engine.trading_currency_for(_tk)
+            if _on_show_ccy and _tk != "-" else None
+        )
         _row_html = (
             "<tr>"
             + _td(f"<span style='color:#5b7290;'>{_on_rank}</span>")
             + _td(_tk_cell)
             + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
-            + _td(_price_cell(_orow.get("Price")))
+            + _td(_price_cell(_orow.get("Price"), currency_code=_on_ccy))
             + _td(
                 _money_cell(_orow.get("Intrinsic Value"),
                             ref=_orow.get("Price"),
-                            flag=bool(_orow.get("Intrinsic Default")))
+                            flag=bool(_orow.get("Intrinsic Default")),
+                            currency_code=_on_ccy,
+                            # PART 4 STEP 4.3: "a withheld value shows
+                            # 'n/a' with its reason" - the ONE reason
+                            # already stored on the row for a withheld
+                            # Intrinsic Value: the price-unit guard's
+                            # own text (PART 3 STEP 3.0's own Q7
+                            # finding - the only reason text actually
+                            # persisted anywhere for this withholding).
+                            na_reason=(_orow.get("price_unit_suspect_reason")
+                                       if _on_show_ccy and _orow.get("price_unit_suspect") else None))
                 # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO
                 # false positive): DISPLAY-ONLY sanity marker when the DCF
                 # intrinsic value is more than 3x the current price - see
@@ -13134,7 +13238,8 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
             # fired, on top of the colour band.
             + _td(_bar_cell(_orow.get("Moat"), 40, 70,
                             flag=_orow.get("Moat Erosion") in ("watch", "eroding")), minw=90)
-            + _td(_insider_cell(_tk, _on_insider_map.get(_tk.strip().upper()) if _tk != "-" else None),
+            + _td(_insider_cell(_tk, _on_insider_map.get(_tk.strip().upper()) if _tk != "-" else None,
+                                 show_currency_code=_on_show_ccy),
                   minw=90)
         )
         if _factual():
@@ -14110,6 +14215,33 @@ _SCANNER_PICKER_BANDS = [
         ("scanner.sector_pill_industrials", None, "US Industrials"),
         ("scanner.sector_pill_consumer", None, "US Consumer"),
     ]),
+    # PART 4 STEP 4.2 (Director, 8 Oct 2026, instruction_health_fixes_
+    # chart_and_new_markets.md): order is Australia, USA, United
+    # Kingdom, Canada, Japan, Europe - owner-only while every universe
+    # in each of these four bands stays private (see _render_scanner_
+    # universe_picker()'s own per-pill private filtering).
+    ("United Kingdom", "scanner.picker_band_uk", [
+        (None, "FTSE 100", "FTSE 100"),
+        (None, "FTSE 250", "FTSE 250"),
+    ]),
+    ("Canada", "scanner.picker_band_canada", [
+        (None, "TSX 60", "TSX 60"),
+        (None, "TSX Composite", "TSX Composite"),
+    ]),
+    ("Japan", "scanner.picker_band_japan", [
+        (None, "Nikkei 225", "Nikkei 225"),
+        (None, "TOPIX 500", "TOPIX 500"),
+    ]),
+    # One "Europe" row, each pill its own country flag (PART 6's own
+    # five lists) - _EUROPE_PILL_FLAGS overrides the band's own flag
+    # per pill, rather than one flag for the whole band.
+    ("Europe", "scanner.picker_band_europe", [
+        (None, "DAX", "DAX"),
+        (None, "CAC 40", "CAC 40"),
+        (None, "AEX", "AEX"),
+        (None, "SMI", "SMI"),
+        (None, "OMX Stockholm 30", "OMX Stockholm 30"),
+    ]),
 ]
 
 # Same "SVG constant, never emoji" convention blog_render.py's
@@ -14145,7 +14277,101 @@ _FLAG_US_SVG = (
     '<rect width="13" height="12" fill="#3c3b6e"/>'
     '</svg>'
 )
-_SCANNER_PICKER_FLAGS = {"Australia": _FLAG_AU_SVG, "USA": _FLAG_US_SVG}
+# PART 4 STEP 4.2 (Director, 8 Oct 2026, instruction_health_fixes_
+# chart_and_new_markets.md): one flag per new band (United Kingdom/
+# Canada/Japan), plus one per-COUNTRY flag for each of the Europe
+# band's own five pills (DAX/CAC 40/AEX/SMI/OMX Stockholm 30) - "each
+# pill carries its own country flag", unlike every other band here,
+# where one flag covers the whole band. Same simplified, inline-SVG
+# convention as _FLAG_AU_SVG/_FLAG_US_SVG above - geometric rectangles/
+# shapes, never an emoji flag (the exact bug _FLAG_AU_SVG/_FLAG_US_SVG
+# themselves already fixed - emoji flags render as bare letters on
+# Windows).
+_FLAG_GB_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#00247d"/>'
+    '<path d="M0 0l30 22M30 0L0 22" stroke="#fff" stroke-width="3"/>'
+    '<path d="M0 0l30 22M30 0L0 22" stroke="#cf142b" stroke-width="1.3"/>'
+    '<rect x="12" y="0" width="6" height="22" fill="#fff"/>'
+    '<rect x="0" y="8" width="30" height="6" fill="#fff"/>'
+    '<rect x="13.2" y="0" width="3.6" height="22" fill="#cf142b"/>'
+    '<rect x="0" y="9.2" width="30" height="3.6" fill="#cf142b"/>'
+    '</svg>'
+)
+_FLAG_CA_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#fff"/>'
+    '<rect x="0" y="0" width="7.5" height="22" fill="#d52b1e"/>'
+    '<rect x="22.5" y="0" width="7.5" height="22" fill="#d52b1e"/>'
+    '<path d="M15 5l1.6 3.4 3.4-1-1.8 3.2 2.3 0.6-2.3 1.8 0.6 2-2.8-0.9 0.4 2.4-1.4-1.6-1.4 1.6 '
+    '0.4-2.4-2.8 0.9 0.6-2-2.3-1.8 2.3-0.6-1.8-3.2 3.4 1z" fill="#d52b1e"/>'
+    '</svg>'
+)
+_FLAG_JP_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#fff"/>'
+    '<circle cx="15" cy="11" r="6.2" fill="#bc002d"/>'
+    '</svg>'
+)
+_FLAG_DE_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="7.33" fill="#000"/>'
+    '<rect y="7.33" width="30" height="7.33" fill="#dd0000"/>'
+    '<rect y="14.66" width="30" height="7.34" fill="#ffce00"/>'
+    '</svg>'
+)
+_FLAG_FR_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="10" height="22" fill="#0055a4"/>'
+    '<rect x="10" width="10" height="22" fill="#fff"/>'
+    '<rect x="20" width="10" height="22" fill="#ef4135"/>'
+    '</svg>'
+)
+_FLAG_NL_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="7.33" fill="#ae1c28"/>'
+    '<rect y="7.33" width="30" height="7.33" fill="#fff"/>'
+    '<rect y="14.66" width="30" height="7.34" fill="#21468b"/>'
+    '</svg>'
+)
+_FLAG_CH_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#d52b1e"/>'
+    '<rect x="12.5" y="5" width="5" height="12" fill="#fff"/>'
+    '<rect x="7" y="10.5" width="16" height="5" fill="#fff"/>'
+    '</svg>'
+)
+_FLAG_SE_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#006aa7"/>'
+    '<rect x="10" width="5" height="22" fill="#fecc00"/>'
+    '<rect y="8.5" width="30" height="5" fill="#fecc00"/>'
+    '</svg>'
+)
+_FLAG_EU_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#003399"/>'
+    '<circle cx="15" cy="11" r="1.1" fill="#ffcc00"/>'
+    '<circle cx="15" cy="5" r="1" fill="#ffcc00"/><circle cx="15" cy="17" r="1" fill="#ffcc00"/>'
+    '<circle cx="9" cy="11" r="1" fill="#ffcc00"/><circle cx="21" cy="11" r="1" fill="#ffcc00"/>'
+    '<circle cx="10.5" cy="6.5" r="1" fill="#ffcc00"/><circle cx="19.5" cy="6.5" r="1" fill="#ffcc00"/>'
+    '<circle cx="10.5" cy="15.5" r="1" fill="#ffcc00"/><circle cx="19.5" cy="15.5" r="1" fill="#ffcc00"/>'
+    '<circle cx="7" cy="8.5" r="1" fill="#ffcc00"/><circle cx="23" cy="8.5" r="1" fill="#ffcc00"/>'
+    '<circle cx="7" cy="13.5" r="1" fill="#ffcc00"/><circle cx="23" cy="13.5" r="1" fill="#ffcc00"/>'
+    '</svg>'
+)
+_SCANNER_PICKER_FLAGS = {
+    "Australia": _FLAG_AU_SVG, "USA": _FLAG_US_SVG,
+    "United Kingdom": _FLAG_GB_SVG, "Canada": _FLAG_CA_SVG, "Japan": _FLAG_JP_SVG,
+    "Europe": _FLAG_EU_SVG,
+}
+# Per-pill flag override for the Europe band ONLY (see _picker_pill_
+# label()/_render_scanner_universe_picker()'s own use of this dict) -
+# "each pill carries its own country flag", unlike every other band.
+_EUROPE_PILL_FLAGS = {
+    "DAX": _FLAG_DE_SVG, "CAC 40": _FLAG_FR_SVG, "AEX": _FLAG_NL_SVG,
+    "SMI": _FLAG_CH_SVG, "OMX Stockholm 30": _FLAG_SE_SVG,
+}
 
 # Zero indentation on every line, deliberately - Streamlit's Markdown
 # parser treats 4+ leading spaces as a code-block fence, exactly the trap
@@ -14171,9 +14397,12 @@ _SCANNER_PICKER_STYLE = """
 """
 
 
-def _picker_pill_label(item, lang):
-    _i18n_key, _literal, _universe = item
-    return i18n.t(_i18n_key, lang) if _i18n_key else _literal
+def _picker_pill_label(item, lang, private_marker=False):
+    _i18n_key, _literal, _universe = item[:3]
+    _label = i18n.t(_i18n_key, lang) if _i18n_key else _literal
+    if private_marker:
+        _label = f"{_label} ({i18n.t('scanner.picker_private_marker', lang)})"
+    return _label
 
 
 def _scanner_universe_href(universe, lang):
@@ -14215,13 +14444,29 @@ def _render_scanner_universe_picker(lang):
     `_current` on every render (not just on the toggle click), so a
     ?universe= deep link straight to a sector universe auto-expands with
     no extra plumbing, and the active pill can never end up hidden behind
-    a collapsed chip."""
+    a collapsed chip.
+
+    PART 4 STEP 4.2 (Director, 8 Oct 2026, instruction_health_fixes_
+    chart_and_new_markets.md): the four new bands (United Kingdom,
+    Canada, Japan, Europe) only ever appear at all when _scanner_
+    presentation_visible() says so (switch OR owner) - a signed-out
+    visitor or a signed-in non-owner while the switch is unset sees
+    EXACTLY the pre-PART-4 two bands, byte for byte. Within any band,
+    a PRIVATE universe's own pill (scan_store.is_private_universe())
+    is dropped outright for anyone who isn't the owner - never shown,
+    not even greyed out; the owner sees it with a "(private)" marker
+    appended to its label instead. A band that ends up with no visible
+    pill at all for this viewer (every pill in it still private, and
+    this viewer isn't the owner) is skipped entirely, never rendered
+    as an empty row."""
     _current = st.session_state.get("scanner_universe")
+    _show_new_bands = _scanner_presentation_visible()
+    _is_picker_owner = ai_gate.is_owner(paywall_engine.current_user_email())
     _parts = [_SCANNER_PICKER_STYLE, '<div class="sdd-uni-picker">']
     for _country, _label_key, _pills in _SCANNER_PICKER_BANDS:
+        if _country not in ("Australia", "USA") and not _show_new_bands:
+            continue
         _flag = _SCANNER_PICKER_FLAGS[_country]
-        _parts.append('<div class="band">')
-        _parts.append(f'<div class="lbl">{_flag}{html.escape(i18n.t(_label_key, lang))}</div>')
 
         if None in _pills:
             _divider_at = _pills.index(None)
@@ -14231,19 +14476,35 @@ def _render_scanner_universe_picker(lang):
             _main_pills = _pills
             _sector_pills = []
 
+        _visible_main = [
+            _it for _it in _main_pills
+            if _is_picker_owner or not scan_store.is_private_universe(_it[2])
+        ]
+        _visible_sector = [
+            _it for _it in _sector_pills
+            if _is_picker_owner or not scan_store.is_private_universe(_it[2])
+        ]
+        if not _visible_main and not _visible_sector:
+            continue  # nothing in this band this viewer may see - skip the whole row
+
+        _parts.append('<div class="band">')
+        _parts.append(f'<div class="lbl">{_flag}{html.escape(i18n.t(_label_key, lang))}</div>')
+
         _parts.append('<div class="pills">')
-        for _item in _main_pills:
+        for _item in _visible_main:
             _universe = _item[2]
-            _label = html.escape(_picker_pill_label(_item, lang))
+            _pill_flag = _EUROPE_PILL_FLAGS.get(_universe, _flag) if _country == "Europe" else _flag
+            _is_private = scan_store.is_private_universe(_universe)
+            _label = html.escape(_picker_pill_label(_item, lang, private_marker=_is_private))
             _on = " on" if _universe == _current else ""
             _href = _scanner_universe_href(_universe, lang)
             _parts.append(
-                f'<a class="pill{_on}" href="{_href}" target="_self">{_flag}{_label}</a>'
+                f'<a class="pill{_on}" href="{_href}" target="_self">{_pill_flag}{_label}</a>'
             )
 
-        if _sector_pills:
+        if _visible_sector:
             _band_key = f"scanner_sectors_expanded_{_country.lower()}"
-            _sector_universes = {_it[2] for _it in _sector_pills}
+            _sector_universes = {_it[2] for _it in _visible_sector}
             _expanded = bool(st.session_state.get(_band_key)) or (_current in _sector_universes)
             _toggle_label = i18n.t(
                 "scanner.sector_toggle_expanded" if _expanded else "scanner.sector_toggle_collapsed",
@@ -14274,9 +14535,10 @@ def _render_scanner_universe_picker(lang):
 
             if _expanded:
                 _parts.append('<div class="pills sector-pills">')
-                for _item in _sector_pills:
+                for _item in _visible_sector:
                     _universe = _item[2]
-                    _label = html.escape(_picker_pill_label(_item, lang))
+                    _is_private = scan_store.is_private_universe(_universe)
+                    _label = html.escape(_picker_pill_label(_item, lang, private_marker=_is_private))
                     _on = " on" if _universe == _current else ""
                     _href = _scanner_universe_href(_universe, lang)
                     _parts.append(
@@ -15219,6 +15481,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
     # only thing that ever populates a request here - each stores its
     # parsed ticker list + a one-shot "fresh" flag in session_state under
     # this page's own state_prefix before this function runs.
+    # PART 4 STEP 4.1 (Director, 8 Oct 2026, instruction_health_fixes_
+    # chart_and_new_markets.md): same switch/owner visibility as
+    # _render_overnight_scan_table() above - computed once for this
+    # whole shared Scanner/Comparison results path.
+    _scan_show_ccy = _scanner_presentation_visible()
     _fresh_scan = st.session_state.pop(f"{state_prefix}_fresh", False)
     stocks = st.session_state.get(f"{state_prefix}_stocks")
     universe_source = st.session_state.get(f"{state_prefix}_universe_source", "")
@@ -16023,10 +16290,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         ))
                         + "</div>"
                     )
+                _pr_ccy = f" {fcf_valuation_engine.trading_currency_for(_pr['Ticker'])}" if _scan_show_ccy else ""
                 _row_html = (
                     "<tr>"
                     + _td(_pr_tk_cell)
-                    + _td(f"{_pr['Price']:,.2f}")
+                    + _td(f"{_pr['Price']:,.2f}{_pr_ccy}")
                     + _td(_bar_cell(_pr.get("Long Score"), SIGNAL_THRESHOLDS["WATCHLIST"],
                                     SIGNAL_THRESHOLDS["LONG"]), minw=110)
                 )
@@ -16119,7 +16387,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 for _, r in results.iterrows():
                     _iv = r["Intrinsic Value"]
                     _iv_disp = f"{_iv:,.2f}" if isinstance(_iv, (int, float)) else "N/A"
-                    _price_disps.append(f"{r['Price']:,.2f} &rarr; {_iv_disp}")
+                    _h2h_ccy = f" {fcf_valuation_engine.trading_currency_for(r['Ticker'])}" if _scan_show_ccy else ""
+                    _price_disps.append(f"{r['Price']:,.2f} &rarr; {_iv_disp}{_h2h_ccy}")
                 _h2h_rows_html.append(
                     "<tr>" + _td(f"<b>{i18n.t('comparison.h2h_price_model', _h2h_lang)}</b>")
                     + "".join(_td(d) for d in _price_disps) + "</tr>"
@@ -16254,13 +16523,15 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         ))
                         + "</div>"
                     )
+                _cmp_ccy = fcf_valuation_engine.trading_currency_for(_cmp_tk) if _scan_show_ccy else None
                 _row_html = (
                     "<tr>"
                     + _td(_cmp_tk_cell)
                     + _td(_badge_cell(r["Type"], _type_color))
-                    + _td(f"{r['Price']:,.2f}")
+                    + _td(f"{r['Price']:,.2f}" + (f" {_cmp_ccy}" if _cmp_ccy else ""))
                     + _td(_money_cell(r["Intrinsic Value"], ref=r["Price"],
-                                      flag=bool(r.get("_flag_intrinsic"))))
+                                      flag=bool(r.get("_flag_intrinsic")),
+                                      currency_code=_cmp_ccy))
                     + _td(_bar_cell(r["MOS"], 0, 25, "%",
                                     flag=bool(r.get("_flag_intrinsic"))), minw=90)
                     + _td(_bar_cell(r["Long Score"], SIGNAL_THRESHOLDS["WATCHLIST"],
@@ -16280,7 +16551,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     # already IS the site's erosion signal elsewhere).
                     + _td(_bar_cell(r.get("Moat"), 40, 70,
                                     flag=bool(r.get("_flag_moat"))), minw=90)
-                    + _td(_insider_cell(_cmp_tk, _cmp_insider_map.get(_cmp_tk.strip().upper())),
+                    + _td(_insider_cell(_cmp_tk, _cmp_insider_map.get(_cmp_tk.strip().upper()),
+                                        show_currency_code=_scan_show_ccy),
                           minw=90)
                 )
                 if _factual():

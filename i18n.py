@@ -2351,6 +2351,18 @@ EN = {
     # Windows).
     "scanner.picker_band_australia": "AUSTRALIA",
     "scanner.picker_band_usa": "USA",
+    # PART 4 STEP 4.2 (Director, 8 Oct 2026, instruction_health_fixes_
+    # chart_and_new_markets.md): owner-only while every universe in
+    # each of these bands stays private.
+    "scanner.picker_band_uk": "UNITED KINGDOM",
+    "scanner.picker_band_canada": "CANADA",
+    "scanner.picker_band_japan": "JAPAN",
+    "scanner.picker_band_europe": "EUROPE",
+    "scanner.picker_private_marker": "private",
+    # PART 4 STEP 4.3: the task's own exact wording - "a column that
+    # does not exist for a market shows 'not available for this
+    # market'."
+    "scanner.not_available_for_market": "not available for this market",
     # Part 34.6 (11 Sep 2026): sector-word pill labels, translated (index/
     # universe PROPER names like "S&P 500"/"Dow Jones 30"/"Dividend
     # Aristocrats" stay in English everywhere on this site, matching the
@@ -6232,6 +6244,12 @@ ES = {
     "scanner.row_cap_note": "mostrando los primeros {cap} de {total} por puntaje de valor - usa los filtros para acotar",
     "scanner.picker_band_australia": "AUSTRALIA",
     "scanner.picker_band_usa": "EE. UU.",
+    "scanner.picker_band_uk": "REINO UNIDO",
+    "scanner.picker_band_canada": "CANADÁ",
+    "scanner.picker_band_japan": "JAPÓN",
+    "scanner.picker_band_europe": "EUROPA",
+    "scanner.picker_private_marker": "privado",
+    "scanner.not_available_for_market": "no disponible para este mercado",
     "scanner.sector_pill_financials": "Financieras",
     "scanner.sector_pill_materials_mining": "Materiales y Minería",
     "scanner.sector_pill_health_care": "Salud",

@@ -100,6 +100,25 @@ import symbol_mapping
 
 _log = logging.getLogger("sdd.scanner")
 
+
+def is_scanner_presentation_live():
+    """PART 4 of instruction_health_fixes_chart_and_new_markets.md
+    (8 Oct 2026, Director-directed): the switch - same unset/""/0/off=
+    OFF, 1/on=ON pattern as currency_view_engine.is_currency_view_
+    live()/portfolio_news_engine.is_health_news_v2_live()/top100_
+    engine.is_backfill_live(). Unset = the public sees today's Scanner
+    unchanged; the owner sees the new one (currency codes, reordered
+    picker with private-universe markers, "n/a"-with-reason labels).
+    Does NOT make any universe public on its own - that is the
+    separate PRIVATE_UNIVERSES step. Re-read on every call (cheap -
+    one env var lookup) so Andrew's own go takes effect on the next
+    request without a redeploy. Claude Code never sets this - the
+    Director does, on Railway, after Andrew has checked the owner-only
+    preview."""
+    raw = (os.environ.get("SCANNER_PRESENTATION_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StocksDeepDiveBot/1.0; +https://stocksdeepdive.com)"}
 
 # Part 52: iShares blocks the production datacentre outright (confirmed via
