@@ -941,6 +941,26 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     return {
         "Ticker": ticker,
         "Type": stock_type,
+        # TASK 3 fix (Director, 9 Oct 2026, instruction_scanner_chips_
+        # trusts_japan_sectors.md): Sector is None on every TOPIX 500/
+        # Nikkei 225 row because neither source carries it at all -
+        # scanner_engine.fetch_topix500()/fetch_nikkei225() both set
+        # Sector=None explicitly (JPX's own topixweight_j.csv has no
+        # sector column, only a size classification; Wikipedia's
+        # Nikkei 225 page is a bulleted name list, no sector text
+        # either) - a deliberate choice, not an oversight, documented
+        # in each function's own docstring. This is Yahoo's own sector
+        # field for this ticker (`info` is already fetched above for
+        # every other field in this row - zero extra network call), a
+        # scratch key the caller (run_universe_scan()) pops and uses
+        # ONLY when the constituent pool itself has no sector for this
+        # ticker - never overriding a real pool-sourced sector (FTSE/
+        # ASX/US/TSX already carry one). UNVERIFIED from this sandbox
+        # (no outbound network access here to confirm Yahoo actually
+        # returns a sector for a .T ticker) - if it comes back empty in
+        # production too, nothing regresses: the row's Sector stays
+        # None exactly as it already does today.
+        "_fallback_sector": (info.get("sector") or "").strip() or None,
         # Fix 6, AI fixes round 2 (2026-08-31): same source/fallback as
         # deep_dive_engine.analyze()'s own "name" field - `info` is
         # already fetched above for quality/intrinsic resolution, so
@@ -1410,7 +1430,17 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                     # call. None (not "Unknown") for a universe whose
                     # source doesn't carry sectors at all, same as
                     # get_universe_pool's own convention.
-                    row["Sector"] = _sector_by_ticker.get(t)
+                    #
+                    # TASK 3 fix (Director, 9 Oct 2026, instruction_
+                    # scanner_chips_trusts_japan_sectors.md): when the
+                    # pool itself has nothing (TOPIX 500/Nikkei 225
+                    # today - see analyze_ticker_lite()'s own docstring
+                    # on "_fallback_sector"), fall back to Yahoo's own
+                    # sector field for this ticker instead of leaving it
+                    # None. Popped unconditionally so this scratch key
+                    # never reaches scan_store/the saved JSON either way.
+                    _yahoo_sector_fallback = row.pop("_fallback_sector", None)
+                    row["Sector"] = _sector_by_ticker.get(t) or _yahoo_sector_fallback
                     rows.append(row)
             else:
                 _consecutive_rate_limited = (
