@@ -2359,6 +2359,12 @@ EN = {
     "scanner.picker_band_japan": "JAPAN",
     "scanner.picker_band_europe": "EUROPE",
     "scanner.picker_private_marker": "private",
+    # TASK 1 fix (Director, 9 Oct 2026, instruction_scanner_chips_
+    # trusts_japan_sectors.md): a non-owner's ?universe= deep link to a
+    # currently-private market is refused with this plain-English
+    # reason, never a silent fallback to whatever universe's data
+    # happens to render below it.
+    "scanner.universe_refused": "{universe} is not public yet.",
     # PART 4 STEP 4.3: the task's own exact wording - "a column that
     # does not exist for a market shows 'not available for this
     # market'."
@@ -6259,6 +6265,7 @@ ES = {
     "scanner.picker_band_japan": "JAPÓN",
     "scanner.picker_band_europe": "EUROPA",
     "scanner.picker_private_marker": "privado",
+    "scanner.universe_refused": "{universe} aún no es público.",
     "scanner.not_available_for_market": "no disponible para este mercado",
     "scanner.na_reason_price_unit": "no se pudo confirmar la unidad del precio",
     "scanner.na_reason_generic": "no se pudo confirmar esta cifra",

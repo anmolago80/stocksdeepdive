@@ -14449,6 +14449,28 @@ def _picker_pill_label(item, lang, private_marker=False):
     return _label
 
 
+def _all_scanner_picker_universes():
+    """Every universe name the Scanner's own picker knows about, across
+    all six bands (Australia/USA plus the four newer, private-by-
+    default markets - United Kingdom/Canada/Japan/Europe) - built from
+    _SCANNER_PICKER_BANDS itself (this module's own existing
+    presentation config, never a hand-maintained duplicate or a ticker/
+    constituent list). TASK 1 fix (Director, 9 Oct 2026, instruction_
+    scanner_chips_trusts_japan_sectors.md): page_scanner()'s own
+    ?universe= deep-link reader uses this - not just scanner_engine.
+    AUSTRALIA_UNIVERSES/USA_UNIVERSES - so a click on any of the four
+    newer bands' own pills (which this exact set of names generates,
+    see _scanner_universe_href()/_render_scanner_universe_picker()
+    below) is recognized at all, rather than silently falling through
+    to the picker's own default universe."""
+    names = set()
+    for _country, _label_key, _pills in _SCANNER_PICKER_BANDS:
+        for _it in _pills:
+            if _it is not None:
+                names.add(_it[2])
+    return names
+
+
 def _scanner_universe_href(universe, lang):
     """/scanner?universe=... deep link for one pill. No ?universe= link
     existed anywhere on the site before this Part (confirmed by search -
@@ -14624,6 +14646,41 @@ def page_scanner():
     # session_state keys) is never overridden back to this stale URL
     # value - the query string only ever drives the FIRST script run
     # after a real page load.
+    #
+    # TASK 1 fix (Director, 9 Oct 2026, instruction_scanner_chips_
+    # trusts_japan_sectors.md): LIVE BUG - clicking a private-market
+    # chip (e.g. "FTSE 100 (private)") landed on ASX 200 instead,
+    # because this check only ever recognized scanner_engine.
+    # AUSTRALIA_UNIVERSES/USA_UNIVERSES; every other real universe name
+    # (United Kingdom/Canada/Japan/Europe) fell through silently,
+    # leaving scanner_universe at its freshly-defaulted "ASX 200" (a
+    # brand-new Streamlit session on every full page load, confirmed by
+    # the Railway log evidence - each pill click is its own GET). Cause
+    # was (b), not (a): the owner's own identity is read from a
+    # persistent cookie (ai_gate.is_owner(paywall_engine.
+    # current_user_email()), never session_state), so it survives the
+    # new session fine - the picker's own "(private)" markers still
+    # show correctly on the very page that wrongly landed on ASX 200,
+    # which is what pins this down to the universe check itself, not an
+    # owner-recognition problem.
+    #
+    # Fixed by checking the FULL set of universes this picker actually
+    # renders pills for (_all_scanner_picker_universes(), built from
+    # _SCANNER_PICKER_BANDS - this module's own existing config, never
+    # a new ticker/constituent list) rather than only the two public
+    # lists. A universe outside AU/USA is privacy-gated here exactly
+    # once: the OWNER may point session_state at ANY such universe,
+    # private or not (scan_store.load_scan()'s own default allow_
+    # private=False still protects every actual data read below -
+    # this only decides whether the page is even ALLOWED to try); a
+    # non-owner reaching a currently-private one via a hand-crafted
+    # ?universe= is refused outright, with scanner_universe_refused set
+    # so a plain-English note (never a silent substitution) renders
+    # just below, and scanner_universe itself is left untouched -
+    # whatever it already was (typically the ASX 200 default) keeps
+    # showing beneath that note, never presented as if it were the
+    # answer to what was actually asked for.
+    _is_scanner_picker_owner = ai_gate.is_owner(paywall_engine.current_user_email())
     _qp_universe = (st.query_params.get("universe") or "").strip()
     if _qp_universe:
         if _qp_universe in scanner_engine.AUSTRALIA_UNIVERSES:
@@ -14634,7 +14691,16 @@ def page_scanner():
             st.session_state["scanner_universe"] = _qp_universe
             st.session_state["scanner_country_us"] = True
             st.session_state["scanner_country_au"] = False
+        elif _qp_universe in _all_scanner_picker_universes():
+            if _is_scanner_picker_owner or not scan_store.is_private_universe(_qp_universe):
+                st.session_state["scanner_universe"] = _qp_universe
+            else:
+                st.session_state["scanner_universe_refused"] = _qp_universe
         st.query_params.pop("universe", None)
+
+    _refused_universe = st.session_state.pop("scanner_universe_refused", None)
+    if _refused_universe:
+        st.info(i18n.t("scanner.universe_refused", _scan_lang, universe=_refused_universe))
 
     # ---- Part 38.1: sector-band expand/collapse chip deep link. The
     # "Filter by sector" chip is a real <a href> like every other pill in
@@ -14676,8 +14742,19 @@ def page_scanner():
     # reruns top-to-bottom on any widget change, so this table simply
     # re-reads session_state and shows the new universe's overnight scan
     # on the next run - "universe switch keeps working exactly as now."
+    # TASK 1 fix (Director, 9 Oct 2026, instruction_scanner_chips_
+    # trusts_japan_sectors.md): a THIRD contributing bug found while
+    # fixing the other two above - this load never passed allow_
+    # private=True, so even once scanner_universe correctly pointed at
+    # a private universe (owner, via the deep-link fix), scan_store.
+    # load_scan()'s own default (allow_private=False) treated it as
+    # "no saved scan at all" and this whole table silently rendered
+    # nothing - "never show nothing" violated for the one viewer (the
+    # owner) who's actually allowed to see it. Gated on the SAME owner
+    # check the deep-link fix above already computed, never on
+    # anything session-based that a non-owner could spoof.
     _top_universe = st.session_state.get("scanner_universe", "ASX 200")
-    _overnight_top = scan_store.load_scan(_top_universe)
+    _overnight_top = scan_store.load_scan(_top_universe, allow_private=_is_scanner_picker_owner)
     if _overnight_top:
         _render_overnight_scan_table(_top_universe, _overnight_top, show_market_pulse=True)
 
@@ -14728,17 +14805,42 @@ def page_scanner():
             st.info(i18n.t("scanner.pick_country_info", _scan_lang))
             return
 
-        # Guard against a previously-picked universe/sector no longer being a
-        # valid option (e.g. unticking USA while "S&P 500" was selected) -
-        # Streamlit raises if a selectbox's session_state value isn't in its
-        # current options, so this has to be fixed up BEFORE the widget below
-        # is instantiated, not after.
-        if st.session_state.get("scanner_universe") not in _universe_options:
-            st.session_state["scanner_universe"] = _universe_options[0]
+        # TASK 1 fix (Director, 9 Oct 2026, instruction_scanner_chips_
+        # trusts_japan_sectors.md): this selectbox used to share the
+        # SAME "scanner_universe" session key as the top overnight
+        # table/picker highlight above. That's fine while the shared
+        # value is an AU/USA universe (the only case this expander has
+        # ever covered) - but the moment an owner picks one of the four
+        # newer, non-AU/USA bands (e.g. "FTSE 100") up in the picker,
+        # the guard below used to see that value was "not a valid
+        # option" for THIS AU/USA-only widget and would silently reset
+        # the SHARED key back to an AU default - undoing the owner's
+        # own selection the very next time this page reran (any widget
+        # interaction anywhere on it), even though the fix above already
+        # got the deep link itself working. A separate, local widget key
+        # ("scanner_universe_manual") fixes this: this expander's own
+        # pick still updates the shared key (same effect manual
+        # selection has always had), but the shared key is never forced
+        # away from a non-AU/USA universe just because this AU/USA-only
+        # tool can't represent it.
+        _shared_scanner_universe = st.session_state.get("scanner_universe")
+        if st.session_state.get("scanner_universe_manual") not in _universe_options:
+            st.session_state["scanner_universe_manual"] = (
+                _shared_scanner_universe if _shared_scanner_universe in _universe_options
+                else _universe_options[0]
+            )
 
         universe = st.selectbox(
-            i18n.t("scanner.universe_label", _scan_lang), _universe_options, key="scanner_universe"
+            i18n.t("scanner.universe_label", _scan_lang), _universe_options, key="scanner_universe_manual"
         )
+        # Propagate a genuine manual pick up to the shared key ONLY when
+        # the shared value was already something this AU/USA-only widget
+        # could represent - i.e. a real change made THROUGH this widget,
+        # never this widget's own AU/USA fallback default merely
+        # disagreeing with a non-AU/USA universe it was never able to
+        # show in the first place (see the comment above).
+        if _shared_scanner_universe in _universe_options and universe != _shared_scanner_universe:
+            st.session_state["scanner_universe"] = universe
         universe_country = (
             "Australia" if universe in scanner_engine.get_universes("Australia") else "USA"
         )
