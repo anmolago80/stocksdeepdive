@@ -46,6 +46,7 @@ import csv
 import logging
 import math
 import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 import streamlit as st
@@ -1071,15 +1072,29 @@ def get_jp_risk_free_rate_live():
 # chart_and_new_markets.md): risk-free rate for EUR, CHF, SEK. Report
 # (this module's own PR/commit message carries the full text) named
 # ECB/SNB/Riksbank as the three official sources and assessed their
-# reliability; only EUR (the ECB's own Statistical Data Warehouse, a
-# long-standing, extensively-documented public REST API, comparable in
+# reliability; EUR (the ECB's own Statistical Data Warehouse, a long-
+# standing, extensively-documented public REST API, comparable in
 # maturity to the UK's BoE IADB already live above) was judged
-# confident enough to build a live fetch for THIS round - CHF (SNB)
-# and SEK (Riksbank) almost certainly have an official source too, but
-# this session has no outbound network access to confirm either one's
-# exact endpoint/series shape, and guessing one wrong ships a fetch
-# that always silently falls through to its own fallback - worse than
-# not building it. CHF/SEK get a DATED, LOGGED static fallback instead
+# confident enough to build a live fetch in the first pass.
+#
+# Director's correction 2 (9 Oct 2026): CHF (SNB) and SEK (Riksbank)
+# now get live fetches too, on the same ECB/retry/one-rate-per-run
+# pattern - data.snb.ch for the Swiss 10-year Confederation bond yield,
+# api.riksbank.se for the Swedish 10-year government bond yield. Same
+# UNVERIFIED-from-this-sandbox disclosure as every other fetch in this
+# module (no outbound network access here to confirm either exact
+# endpoint/series shape against a live response) - written defensively
+# for exactly that reason: tolerant parsing (column/key lookup by name,
+# never a fixed position), date-based pick of the most recent
+# observation, and a failed fetch (wrong endpoint shape included)
+# degrades safely to the existing dated, logged fallback rather than
+# breaking a scan - see _fetch_snb_chf_once()/_fetch_riksbank_sek_
+# once()'s own docstrings for the exact URL/series each one uses and
+# this round's own report for the full reasoning. The Director
+# confirms in the Railway log after the next European scan whether
+# each live fetch actually worked; CHF_SEK_RISK_FREE_FALLBACK below
+# stays in place as the failure-mode backstop either way - never a
+# bare, untraceable number
 # (see CHF_SEK_RISK_FREE_FALLBACK_AS_OF/get_chf_sek_risk_free_rate()
 # below) - never a bare number with no date and no log line, per this
 # item's own explicit instruction - until the Director supplies a
@@ -1228,33 +1243,288 @@ def get_eu_risk_free_rate_for_run():
     return _EU_RISK_FREE_RUN_CACHE["value"]
 
 
-# CHF (SNB)/SEK (Riksbank): no live fetch built this round - see this
-# section's own module comment for why. A DATED, LOGGED static
-# fallback - never a bare, untraceable number. Approximate recent 10-
-# year government bond yields: Switzerland's has sat persistently low
-# (long stretches near/below 1%, a genuinely different regime from
-# every other currency here - NOT the UK/Canada/EUR 0.5%-12% band's
-# own territory); Sweden's sits closer to the euro area's own level.
+# CHF (SNB)/SEK (Riksbank): the dated, logged static fallback - the
+# failure-mode BACKSTOP now, not the primary path (see this section's
+# own module comment for correction 2, 9 Oct 2026) - never a bare,
+# untraceable number. Approximate recent 10-year government bond
+# yields: Switzerland's has sat persistently low (long stretches near/
+# below 1%, a genuinely different regime from every other currency
+# here - NOT the UK/Canada/EUR 0.5%-12% band's own territory);
+# Sweden's sits closer to the euro area's own level.
 CHF_SEK_RISK_FREE_FALLBACK = {"CHF": 0.004, "SEK": 0.020}
 CHF_SEK_RISK_FREE_FALLBACK_AS_OF = "2026-10-08"
 
 
 def get_chf_sek_risk_free_rate(ccy):
-    """The dated, logged fallback for CHF/SEK - no live source built
-    this round (see this section's own module comment). Returns
-    (rate, source) in the same (rate, "default") shape as every live-
-    fetch function above, so resolve_discount_rate_by_market_cap()'s
-    CHF/SEK branches can treat this identically to a live fetch that
-    happened to fall back. Raises KeyError for any other currency -
-    this function is never meant to be a generic fallback lookup, only
-    CHF/SEK's own named one."""
+    """The dated, logged fallback for CHF/SEK - used by get_chf_risk_
+    free_rate_live()/get_sek_risk_free_rate_live() below ONLY when
+    their own live fetch fails (see each one's own docstring), never
+    called directly by resolve_discount_rate_by_market_cap() any more.
+    Returns (rate, source) in the same (rate, "default") shape as
+    every live-fetch function in this module. Raises KeyError for any
+    other currency - this function is never meant to be a generic
+    fallback lookup, only CHF/SEK's own named one."""
     rate = CHF_SEK_RISK_FREE_FALLBACK[ccy]
     _growth_logger.warning(
-        "[capm] %s risk-free %.2f%% (fallback as of %s - no live source built "
-        "this round, see get_chf_sek_risk_free_rate()'s own docstring)",
+        "[capm] %s risk-free %.2f%% (fallback as of %s - live fetch failed, see "
+        "the preceding warning for why)",
         ccy, rate * 100, CHF_SEK_RISK_FREE_FALLBACK_AS_OF,
     )
     return rate, "default"
+
+
+# ---------------------------------------------------------------------
+# SNB (CHF) - correction 2 (9 Oct 2026). data.snb.ch's documented cube
+# REST API (GET /api/cube/{cubeId}/data/csv/{lang}) - cube "rendoblid"
+# ("Renditen eidgenössischer Obligationen" / yields on Swiss
+# Confederation bonds), 10-year maturity. UNVERIFIED from this sandbox
+# (no outbound network access to confirm the cube id/column names
+# against a live response) - written defensively for exactly that
+# reason, same as every other fetch in this module: tolerant CSV
+# column-header scan by name (never a fixed index), date-based pick of
+# the most recent observation. Swiss 10-year yields have gone negative
+# in real history (a genuinely different regime from every other
+# currency here), so this band is wider than UK/Canada/EUR's, and
+# allows a negative reading rather than rejecting it as out-of-band.
+# ---------------------------------------------------------------------
+_SNB_CHF_URL = "https://data.snb.ch/api/cube/rendoblid/data/csv/en"
+_SNB_TIMEOUT_SECONDS = 6
+_SNB_RETRY_ATTEMPTS = 3
+_SNB_RETRY_BASE_DELAY_SECONDS = 2
+CHF_RISK_FREE_MIN = -0.02
+CHF_RISK_FREE_MAX = 0.12
+
+
+def _fetch_snb_chf_once():
+    """One single attempt at the SNB data-portal fetch - no retry, no
+    caching, no logging (the caller does both). Returns (rate, date,
+    reason, transient) in the exact same shape as _fetch_ecb_eur_
+    once() above - see that function's own docstring for what each
+    field means."""
+    try:
+        resp = requests.get(_SNB_CHF_URL, timeout=_SNB_TIMEOUT_SECONDS)
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {e}", True
+    if resp.status_code != 200:
+        return None, None, f"HTTP {resp.status_code}", True
+    try:
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+    except Exception as e:
+        return None, None, f"unparseable response ({type(e).__name__}: {e})", True
+    if len(lines) < 2:
+        return None, None, "no usable row found", False
+    header = [h.strip().upper() for h in lines[0].split(",")]
+    try:
+        date_col = header.index("DATE")
+        value_col = header.index("VALUE")
+    except ValueError:
+        return None, None, f"unexpected CSV header shape: {header}", True
+    best_date, best_rate = None, None
+    for line in lines[1:]:
+        cells = line.split(",")
+        if len(cells) <= max(date_col, value_col):
+            continue
+        date_str = cells[date_col].strip()
+        try:
+            raw = float(cells[value_col])
+        except (TypeError, ValueError):
+            continue
+        if not date_str:
+            continue
+        if best_date is None or date_str > best_date:
+            best_date, best_rate = date_str, raw / 100.0
+    if best_rate is None:
+        return None, None, "no usable observation found", False
+    if not (CHF_RISK_FREE_MIN < best_rate < CHF_RISK_FREE_MAX):
+        return None, None, "no in-band value", False
+    return best_rate, best_date, None, False
+
+
+_CHF_RISK_FREE_RUN_CACHE = {"value": None}
+
+
+def reset_chf_risk_free_run_cache():
+    """Same per-scan-run cache pattern as reset_eu_risk_free_run_
+    cache() - cleared once, at the very top of nightly_scan.run_
+    universe_scan(), so every CHF ticker in a universe's own scan
+    shares one (rate, source) answer per run."""
+    _CHF_RISK_FREE_RUN_CACHE["value"] = None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_chf_risk_free_rate_live():
+    """Best-effort live Swiss 10-year Confederation bond yield from
+    the SNB data portal (see this section's own module comment for
+    the exact series/UNVERIFIED-from-sandbox caveat), cached once a
+    day. Returns (rate, source) - "live" or "default" (the dated,
+    logged CHF_SEK_RISK_FREE_FALLBACK["CHF"] backstop via get_chf_sek_
+    risk_free_rate(), used only when every retry below fails).
+
+    Retries _fetch_snb_chf_once() up to _SNB_RETRY_ATTEMPTS times with
+    exponential backoff, but ONLY on a transient (network-level)
+    failure - same shape as get_eu_risk_free_rate_live() above - a
+    clean response with no usable/in-band data stops immediately."""
+    reason = None
+    for attempt in range(_SNB_RETRY_ATTEMPTS):
+        rate, date_str, reason, transient = _fetch_snb_chf_once()
+        if rate is not None:
+            _growth_logger.warning(
+                "[capm] CHF risk-free %.2f%% (SNB data portal, as at %s%s)",
+                rate * 100, date_str,
+                f", attempt {attempt + 1}/{_SNB_RETRY_ATTEMPTS}" if attempt else "",
+            )
+            return rate, "live"
+        if not transient:
+            break
+        if attempt < _SNB_RETRY_ATTEMPTS - 1:
+            delay = _SNB_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+            _growth_logger.warning(
+                "[capm] CHF risk-free fetch failed (attempt %d/%d) - %s - retrying in %ds",
+                attempt + 1, _SNB_RETRY_ATTEMPTS, reason, delay,
+            )
+            time.sleep(delay)
+
+    _growth_logger.warning(
+        "[capm] CHF risk-free live fetch failed - %s - falling back",
+        reason or "unknown error",
+    )
+    return get_chf_sek_risk_free_rate("CHF")
+
+
+def get_chf_risk_free_rate_for_run():
+    """The one function every CHF ticker's own discount-rate
+    resolution calls - never get_chf_risk_free_rate_live() directly.
+    Same "one rate per scan run" contract as get_eu_risk_free_rate_
+    for_run() above."""
+    if _CHF_RISK_FREE_RUN_CACHE["value"] is None:
+        _CHF_RISK_FREE_RUN_CACHE["value"] = get_chf_risk_free_rate_live()
+    return _CHF_RISK_FREE_RUN_CACHE["value"]
+
+
+# ---------------------------------------------------------------------
+# Riksbank (SEK) - correction 2 (9 Oct 2026). api.riksbank.se's "SWEA"
+# REST API (GET /swea/v1/Observations/{seriesId}?from=...&to=...),
+# JSON observations. Series id below is this session's own best
+# understanding of the 10-year Swedish government bond benchmark
+# series on that API - UNVERIFIED from this sandbox, same disclosure
+# as every other fetch in this module (no outbound network access
+# here to confirm it against a live response). Written defensively
+# for exactly that reason: key lookup by name (never a fixed
+# position), date-based pick of the most recent observation in a
+# rolling 30-day request window (the API takes an explicit from/to
+# range, not a "last N" shortcut).
+# ---------------------------------------------------------------------
+_RIKSBANK_SEK_SERIES_ID = "SE0001030583"
+_RIKSBANK_SEK_URL = f"https://api.riksbank.se/swea/v1/Observations/{_RIKSBANK_SEK_SERIES_ID}"
+_RIKSBANK_LOOKBACK_DAYS = 30
+_RIKSBANK_TIMEOUT_SECONDS = 6
+_RIKSBANK_RETRY_ATTEMPTS = 3
+_RIKSBANK_RETRY_BASE_DELAY_SECONDS = 2
+SEK_RISK_FREE_MIN = 0.005
+SEK_RISK_FREE_MAX = 0.12
+
+
+def _fetch_riksbank_sek_once():
+    """One single attempt at the Riksbank SWEA fetch - no retry, no
+    caching, no logging (the caller does both). Returns (rate, date,
+    reason, transient) in the exact same shape as _fetch_ecb_eur_
+    once()/_fetch_snb_chf_once() above."""
+    try:
+        _to = datetime.now(timezone.utc).date()
+        _from = _to - timedelta(days=_RIKSBANK_LOOKBACK_DAYS)
+        resp = requests.get(
+            _RIKSBANK_SEK_URL,
+            params={"from": _from.isoformat(), "to": _to.isoformat()},
+            timeout=_RIKSBANK_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {e}", True
+    if resp.status_code != 200:
+        return None, None, f"HTTP {resp.status_code}", True
+    try:
+        payload = resp.json()
+    except Exception as e:
+        return None, None, f"unparseable response ({type(e).__name__}: {e})", True
+    if not isinstance(payload, list) or not payload:
+        return None, None, "no usable row found", False
+    best_date, best_rate = None, None
+    for obs in payload:
+        if not isinstance(obs, dict):
+            continue
+        date_str = str(obs.get("date") or "").strip()
+        try:
+            raw = float(obs.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if not date_str:
+            continue
+        if best_date is None or date_str > best_date:
+            best_date, best_rate = date_str, raw / 100.0
+    if best_rate is None:
+        return None, None, "no usable observation found", False
+    if not (SEK_RISK_FREE_MIN < best_rate < SEK_RISK_FREE_MAX):
+        return None, None, "no in-band value", False
+    return best_rate, best_date, None, False
+
+
+_SEK_RISK_FREE_RUN_CACHE = {"value": None}
+
+
+def reset_sek_risk_free_run_cache():
+    """Same per-scan-run cache pattern as reset_chf_risk_free_run_
+    cache() just above - cleared once, at the very top of nightly_
+    scan.run_universe_scan(), so every SEK ticker in a universe's own
+    scan shares one (rate, source) answer per run."""
+    _SEK_RISK_FREE_RUN_CACHE["value"] = None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_sek_risk_free_rate_live():
+    """Best-effort live Swedish 10-year government bond yield from the
+    Riksbank's own SWEA API (see this section's own module comment for
+    the exact series/UNVERIFIED-from-sandbox caveat), cached once a
+    day. Returns (rate, source) - "live" or "default" (the dated,
+    logged CHF_SEK_RISK_FREE_FALLBACK["SEK"] backstop via get_chf_sek_
+    risk_free_rate(), used only when every retry below fails).
+
+    Retries _fetch_riksbank_sek_once() up to _RIKSBANK_RETRY_ATTEMPTS
+    times with exponential backoff, but ONLY on a transient (network-
+    level) failure - same shape as every other live fetch above."""
+    reason = None
+    for attempt in range(_RIKSBANK_RETRY_ATTEMPTS):
+        rate, date_str, reason, transient = _fetch_riksbank_sek_once()
+        if rate is not None:
+            _growth_logger.warning(
+                "[capm] SEK risk-free %.2f%% (Riksbank SWEA, as at %s%s)",
+                rate * 100, date_str,
+                f", attempt {attempt + 1}/{_RIKSBANK_RETRY_ATTEMPTS}" if attempt else "",
+            )
+            return rate, "live"
+        if not transient:
+            break
+        if attempt < _RIKSBANK_RETRY_ATTEMPTS - 1:
+            delay = _RIKSBANK_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+            _growth_logger.warning(
+                "[capm] SEK risk-free fetch failed (attempt %d/%d) - %s - retrying in %ds",
+                attempt + 1, _RIKSBANK_RETRY_ATTEMPTS, reason, delay,
+            )
+            time.sleep(delay)
+
+    _growth_logger.warning(
+        "[capm] SEK risk-free live fetch failed - %s - falling back",
+        reason or "unknown error",
+    )
+    return get_chf_sek_risk_free_rate("SEK")
+
+
+def get_sek_risk_free_rate_for_run():
+    """The one function every SEK ticker's own discount-rate
+    resolution calls - never get_sek_risk_free_rate_live() directly.
+    Same "one rate per scan run" contract as get_chf_risk_free_rate_
+    for_run() just above."""
+    if _SEK_RISK_FREE_RUN_CACHE["value"] is None:
+        _SEK_RISK_FREE_RUN_CACHE["value"] = get_sek_risk_free_rate_live()
+    return _SEK_RISK_FREE_RUN_CACHE["value"]
 
 
 def resolve_discount_rate_by_market_cap(info, currency):
@@ -1301,13 +1571,16 @@ def resolve_discount_rate_by_market_cap(info, currency):
         # risk_free_rate_for_run()'s own docstring. Same per-scan-run
         # cache contract as CAD.
         rf, rf_src = get_eu_risk_free_rate_for_run()
-    elif ccy in ("CHF", "SEK"):
-        # Director's next round, item 2 (8 Oct 2026): no live source
-        # built this round - see get_chf_sek_risk_free_rate()'s own
-        # docstring for why, and this section's own module comment for
-        # the full report. A dated, logged fallback, never a bare
-        # untraceable number.
-        rf, rf_src = get_chf_sek_risk_free_rate(ccy)
+    elif ccy == "CHF":
+        # Director's correction 2 (9 Oct 2026): routed through the
+        # per-scan-run cache, same contract as EUR/CAD - see get_chf_
+        # risk_free_rate_for_run()'s own docstring.
+        rf, rf_src = get_chf_risk_free_rate_for_run()
+    elif ccy == "SEK":
+        # Director's correction 2 (9 Oct 2026): routed through the
+        # per-scan-run cache, same contract as EUR/CAD - see get_sek_
+        # risk_free_rate_for_run()'s own docstring.
+        rf, rf_src = get_sek_risk_free_rate_for_run()
     else:
         rf, rf_src = get_risk_free_rate(ccy)
     meta["rf_source"] = rf_src

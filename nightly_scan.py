@@ -1177,6 +1177,12 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # risk_free_run_cache()'s own docstring. A no-op for every non-EUR
     # universe.
     capm_engine.reset_eu_risk_free_run_cache()
+    # Director's correction 2 (9 Oct 2026): same contract, extended to
+    # CHF/SEK now that both get live fetches too - see capm_engine.
+    # reset_chf_risk_free_run_cache()/reset_sek_risk_free_run_cache()'s
+    # own docstrings. A no-op for every non-CHF/non-SEK universe.
+    capm_engine.reset_chf_risk_free_run_cache()
+    capm_engine.reset_sek_risk_free_run_cache()
     country = "Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES else "USA"
     # Index containment regression guard (20 Sep 2026): "All Ordinaries"
     # is the top of the AU nesting chain (ASX 20 subset ... subset ASX 300
