@@ -10,23 +10,15 @@ Covers:
   - market_for(ticker): .AX->Australia, .L->United Kingdom, .TO->Canada,
     .T->Japan, else USA.
   - peer_context.compute(): while a market's universes are ALL private
-    (the current UK/JP case), returns {"available": False, "reason":
+    (the current UK/CA/JP case), returns {"available": False, "reason":
     "private_market"} WITHOUT ever calling scan_store.load_scan() for
     one of those universe names - confirmed by patching load_scan to
     raise if called, not just by checking the mock wasn't invoked by
     side effect.
-  - PRIVATE_UNIVERSES="" (UK/JP made public) -> the SAME ASX-style
+  - PRIVATE_UNIVERSES="" (UK/CA/JP made public) -> the SAME ASX-style
     process applies with no further code change: a real saved scan for
-    a UK/JP ticker gets real percentiles/peers, from its own country's
-    universes only, never US/ASX ones.
-  - Canada is a MIXED market since the Director's correction (9 Oct
-    2026, instruction_health_fixes_chart_and_new_markets.md) made TSX
-    60 public while TSX Composite stays private: compute() correctly
-    skips the "private_market" short-circuit (not ALL of Canada's
-    universes are private any more) and reads TSX 60 - its own
-    priority universe - via the ordinary default-deny path, exactly as
-    the code's own comment in compute() already anticipated for a
-    mixed market.
+    a UK/CA/JP ticker gets real percentiles/peers, from its own
+    country's universes only, never US/ASX ones.
   - A UK/CA/JP ticker never ranks against US or ASX universes (checked
     directly against _MARKET_PRIORITY/_MARKET_ALL_UNIVERSES).
   - The Admin "Private universes" section is unaffected (peer_context.py
@@ -80,11 +72,10 @@ print("[T2_no_cross_market] UK/CA/JP universe lists share no entry with "
 
 
 # ======================================================================
-# T3: while UK/JP are ALL private (the code default), compute() returns
-# "private_market" WITHOUT ever calling scan_store.load_scan() for one
-# of those universe names - patched to raise if called, not just
-# checked for a side effect, so a regression here fails loudly. Canada
-# is NOT in this group any more - see T3b below.
+# T3: while UK/CA/JP are ALL private (the code default), compute()
+# returns "private_market" WITHOUT ever calling scan_store.load_scan()
+# for one of those universe names - patched to raise if called, not
+# just checked for a side effect, so a regression here fails loudly.
 # ======================================================================
 os.environ.pop("PRIVATE_UNIVERSES", None)
 
@@ -96,58 +87,19 @@ def _boom(universe, allow_private=False):
 
 with mock.patch.object(scan_store, "load_scan", side_effect=_boom):
     res_uk = pc.compute("TSCO.L")
+    res_ca = pc.compute("RY.TO")
     res_jp = pc.compute("7203.T")
 assert res_uk == {"available": False, "reason": "private_market"}, res_uk
+assert res_ca == {"available": False, "reason": "private_market"}, res_ca
 assert res_jp == {"available": False, "reason": "private_market"}, res_jp
-print("[T3_private_market_no_read] UK/JP (all-private by default) -> "
+print("[T3_private_market_no_read] UK/CA/JP (all-private by default) -> "
       "'private_market', load_scan() never called for any of their universes OK")
 
 
 # ======================================================================
-# T3b: Canada is a MIXED market since the Director's correction (9 Oct
-# 2026) made TSX 60 public (TSX Composite stays private) - compute()
-# must NOT take the "private_market" short-circuit for Canada (not
-# every Canada universe is private any more), and must correctly read
-# TSX 60 - its own priority universe - via the ordinary default-deny
-# path to find RY.TO's real peers, exactly as the UK-made-public case
-# in T4 below already proves for a fully-public market.
-# ======================================================================
-assert scan_store.is_private_universe("TSX 60") is False, "sanity: TSX 60 public"
-assert scan_store.is_private_universe("TSX Composite") is True, "sanity: TSX Composite still private"
-_tsx60_rows = [
-    {"Ticker": "RY.TO", "Long Score": 70.0, "Quality": 80.0, "Moat": 60.0,
-     "MOS %": 10.0, "Psychology": 55.0, "Sector": "Financials", "Price": 140.0,
-     "Intrinsic Value": 155.0},
-    {"Ticker": "TD.TO", "Long Score": 55.0, "Quality": 60.0, "Moat": 40.0,
-     "MOS %": 5.0, "Psychology": 50.0, "Sector": "Financials", "Price": 80.0,
-     "Intrinsic Value": 84.0},
-]
-_tsx60_payload = {"rows": _tsx60_rows, "generated_at_label": "today"}
-
-
-def _fake_load_scan_ca(universe, allow_private=False):
-    if universe == "TSX 60":
-        return _tsx60_payload
-    raise AssertionError(f"load_scan() must never be called for still-private "
-                          f"TSX Composite on this path: {universe}")
-
-
-with mock.patch.object(scan_store, "load_scan", side_effect=_fake_load_scan_ca):
-    res_ca = pc.compute("RY.TO")
-assert res_ca["available"] is True, res_ca
-assert res_ca["universe"] == "TSX 60", res_ca["universe"]
-peer_tickers_ca = {p["ticker"] for p in res_ca["peers"]}
-assert peer_tickers_ca == {"TD.TO"}, peer_tickers_ca
-print(f"[T3b_canada_mixed_market] TSX 60 public (TSX Composite still private) -> "
-      f"compute() skips the private_market short-circuit and reads TSX 60 directly, "
-      f"peers={peer_tickers_ca} OK")
-
-
-# ======================================================================
-# T4: PRIVATE_UNIVERSES="" (UK made public, same as JP would be) -> the
-# SAME ASX-style process now applies, with no further code change - a
-# real saved scan for a UK ticker gets real percentiles/peers from
-# FTSE 100/250 only. (Canada's own now-mixed-market case is T3b above.)
+# T4: PRIVATE_UNIVERSES="" (UK/CA/JP made public) -> the SAME ASX-style
+# process now applies, with no further code change - a real saved scan
+# for a UK ticker gets real percentiles/peers from FTSE 100/250 only.
 # ======================================================================
 os.environ["PRIVATE_UNIVERSES"] = ""
 _ftse_rows = [
