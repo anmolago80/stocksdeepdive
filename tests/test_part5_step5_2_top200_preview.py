@@ -63,9 +63,13 @@ def check(label, condition):
 # CHECK 1-2: preview_universes() - unset/set.
 # ======================================================================
 check("preview_universes() is [] when unset", te.preview_universes() == [])
-os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX 60"
-check('preview_universes() == ["FTSE 100", "TSX 60"] when set',
-      te.preview_universes() == ["FTSE 100", "TSX 60"])
+# TSX Composite (not TSX 60) - the Director's correction (9 Oct 2026)
+# made TSX 60 public, so it no longer fits this feature's own purpose
+# (previewing candidates from a market that's still PRIVATE before
+# making it public). TSX Composite stays private, unchanged.
+os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"
+check('preview_universes() == ["FTSE 100", "TSX Composite"] when set',
+      te.preview_universes() == ["FTSE 100", "TSX Composite"])
 os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 
 # ======================================================================
@@ -83,7 +87,7 @@ scan_store.save_scan("FTSE 100", [
      "Psychology": 5.0, "Discovery (lite)": 25.0, "Moat": 35.0,
      "Growth Used": 0.02, "FCF Source": "reported", "Dividend Yield %": 6.1},
 ], source_label="test fixture")
-scan_store.save_scan("TSX 60", [
+scan_store.save_scan("TSX Composite", [
     {"Ticker": "RY.TO", "Type": "STOCK", "Company Name": "Royal Bank of Canada", "Price": 140.0,
      "Intrinsic Value": 160.0, "MOS %": 12.5, "Long Score": 70.0, "Quality": 65.0,
      "Psychology": 5.0, "Discovery (lite)": 35.0, "Moat": 60.0,
@@ -115,9 +119,9 @@ _joined = "\n".join(_log_lines)
 check("one advisory line for FTSE 100 (2 candidates, 1 with no stored Long Score at all - "
       "VOD.L's own scan row carries none)",
       "'FTSE 100': 2 candidate(s), 1 with no stored score yet, est. one-time cost $0.02" in _joined)
-check("one advisory line for TSX 60 (1 candidate, RY.TO's own scan row already has a Long "
-      "Score, so nothing left to score - $0.00)",
-      "'TSX 60': 1 candidate(s), 0 with no stored score yet, est. one-time cost $0.00" in _joined)
+check("one advisory line for TSX Composite (1 candidate, RY.TO's own scan row already "
+      "has a Long Score, so nothing left to score - $0.00)",
+      "'TSX Composite': 1 candidate(s), 0 with no stored score yet, est. one-time cost $0.00" in _joined)
 check("fires with the switch UNSET too (purely advisory, not gated by TOP200_PREVIEW_UNIVERSES)",
       len(_log_lines) >= 2)
 
@@ -128,7 +132,7 @@ check("fires with the switch UNSET too (purely advisory, not gated by TOP200_PRE
 # ======================================================================
 check("preview_candidates_by_country() is {} when TOP200_PREVIEW_UNIVERSES is unset",
       te.preview_candidates_by_country() == {})
-os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX 60"
+os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"
 _by_country = te.preview_candidates_by_country()
 check('United Kingdom group has BARC.L and VOD.L', {
     "United Kingdom": sorted(r["ticker"] for r in _by_country.get("United Kingdom", [])),
@@ -145,12 +149,12 @@ check("United Kingdom sorted by value_score descending (BARC.L 60 before VOD.L 4
 # ======================================================================
 os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 _pool_unset = te.select_top100_pool(log=lambda *a, **k: None)
-os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX 60"
+os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"
 _pool_set = te.select_top100_pool(log=lambda *a, **k: None)
 os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 check("select_top100_pool()'s own return value is byte-identical whether "
-      "TOP200_PREVIEW_UNIVERSES is set or not (FTSE 100/TSX 60 are both still "
-      "PRIVATE and excluded from the real pool either way)",
+      "TOP200_PREVIEW_UNIVERSES is set or not (FTSE 100/TSX Composite are both "
+      "still PRIVATE and excluded from the real pool either way)",
       json.dumps(_pool_unset, sort_keys=True, default=str) ==
       json.dumps(_pool_set, sort_keys=True, default=str))
 check("neither BARC.L nor RY.TO entered the real public pool "
@@ -166,7 +170,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _render(switch_on):
-    _env = f'os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX 60"' if switch_on else \
+    _env = f'os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"' if switch_on else \
            'os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)'
     script = f"""
 import os, sys

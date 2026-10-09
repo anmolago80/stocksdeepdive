@@ -20,6 +20,17 @@ Covers:
     privacy and Top 200 eligibility are two independent levers; making
     a universe public must never, by itself, let it start winning Top
     200 slots.
+
+  UPDATED (Director's correction, 9 Oct 2026): TSX 60 has since been
+  removed from scan_store._DEFAULT_PRIVATE_UNIVERSES itself - there is
+  no PRIVATE_UNIVERSES variable on Railway, so that code default is
+  what's actually live. TSX 60 is readable as public BY DEFAULT now
+  (no env var needed); TSX Composite stays private, unchanged. The
+  byte-identical proof below is re-run the other way around: the code
+  DEFAULT (TSX 60 public) vs. an explicit override that puts TSX 60
+  back into PRIVATE_UNIVERSES (simulating the pre-correction state) -
+  still byte-identical, since is_top200_excluded() excludes TSX 60
+  either way.
   - The scoring-request fingerprint (test_top200_commit4_schema_
     mode.py's own f00c69f5...sha256 check) is re-run unmodified,
     proving _request_params()/the batch entrant-building path is
@@ -100,9 +111,12 @@ check('explicit override to an EMPTY string: nothing is excluded, a valid explic
 os.environ.pop("TOP200_EXCLUDED_UNIVERSES", None)
 
 # ======================================================================
-# CHECK 11-13: the real end-to-end test - TSX 60 removed from
-# PRIVATE_UNIVERSES (made public) produces a BYTE-IDENTICAL Top 200
-# pool, because Top 200 eligibility is a separate, unaffected lever.
+# CHECK 11-16: the real end-to-end test, UPDATED for the Director's
+# correction (9 Oct 2026) - TSX 60 is readable as public BY THE CODE
+# DEFAULT now (no env var needed), TSX Composite stays private, and
+# the Top 200 pool is BYTE-IDENTICAL to the pre-correction (TSX 60
+# private) state, because Top 200 eligibility is a separate,
+# unaffected lever.
 # ======================================================================
 scan_store.save_scan("TSX 60", [
     {"Ticker": "RY.TO", "Type": "STOCK", "Company Name": "Royal Bank of Canada",
@@ -111,32 +125,38 @@ scan_store.save_scan("TSX 60", [
      "DCF Unreliable": False, "Growth Source": "analyst"},
 ], source_label="test fixture")
 
-# Baseline: TSX 60 is private (the code default - PRIVATE_UNIVERSES unset).
+# Current state: code default, PRIVATE_UNIVERSES unset - TSX 60 public,
+# TSX Composite (and every other pre-existing name) still private.
 os.environ.pop("PRIVATE_UNIVERSES", None)
-check("baseline sanity: TSX 60 IS private by the code default",
-      scan_store.is_private_universe("TSX 60") is True)
-_pool_private = te.select_top100_pool(log=lambda *a, **k: None)
-check("RY.TO (TSX 60) is NOT in the pool while TSX 60 is private (expected: it's "
-      "also Top-200-excluded)",
-      not any(r["ticker"] == "RY.TO" for r in _pool_private))
+check("TSX 60 is readable as PUBLIC by the code default (the Director's correction)",
+      scan_store.is_private_universe("TSX 60") is False)
+check("TSX Composite is STILL private by the code default, unchanged",
+      scan_store.is_private_universe("TSX Composite") is True)
+_pool_default = te.select_top100_pool(log=lambda *a, **k: None)
+check("RY.TO (TSX 60) is NOT in the pool under the code default - it's public but "
+      "still Top-200-excluded",
+      not any(r["ticker"] == "RY.TO" for r in _pool_default))
 
-# TSX 60 made PUBLIC: every other default-private name stays private, TSX 60 removed.
-_default_private_minus_tsx60 = (
-    "FTSE 100, FTSE 250, Nikkei 225, TOPIX 500, "
+# Simulated PRE-CORRECTION state: TSX 60 put back into an explicit
+# PRIVATE_UNIVERSES override (every other default-private name kept).
+_pre_correction_private = (
+    "FTSE 100, FTSE 250, TSX 60, TSX Composite, Nikkei 225, TOPIX 500, "
     "DAX, CAC 40, AEX, SMI, OMX Stockholm 30"
 )
-os.environ["PRIVATE_UNIVERSES"] = _default_private_minus_tsx60
-check("TSX 60 IS now public (removed from the explicit PRIVATE_UNIVERSES override)",
-      scan_store.is_private_universe("TSX 60") is False)
-_pool_public = te.select_top100_pool(log=lambda *a, **k: None)
+os.environ["PRIVATE_UNIVERSES"] = _pre_correction_private
+check("explicit override can still make TSX 60 private again (pre-correction state)",
+      scan_store.is_private_universe("TSX 60") is True)
+_pool_pre_correction = te.select_top100_pool(log=lambda *a, **k: None)
 os.environ.pop("PRIVATE_UNIVERSES", None)
 
-check("RY.TO (TSX 60) is STILL not in the pool now that TSX 60 is public - "
-      "Top 200 eligibility (is_top200_excluded) is a SEPARATE lever from privacy",
-      not any(r["ticker"] == "RY.TO" for r in _pool_public))
-check("the two pools (TSX 60 private vs. TSX 60 public) are BYTE-IDENTICAL",
-      json.dumps(_pool_private, sort_keys=True, default=str) ==
-      json.dumps(_pool_public, sort_keys=True, default=str))
+check("RY.TO (TSX 60) is STILL not in the pool in the pre-correction (TSX 60 private) "
+      "state either - Top 200 eligibility (is_top200_excluded) is a SEPARATE lever",
+      not any(r["ticker"] == "RY.TO" for r in _pool_pre_correction))
+check("the Top 200 pool is BYTE-IDENTICAL whether TSX 60 is public (current code "
+      "default) or private (pre-correction) - making it public changed nothing "
+      "about the Top 200",
+      json.dumps(_pool_default, sort_keys=True, default=str) ==
+      json.dumps(_pool_pre_correction, sort_keys=True, default=str))
 
 # ======================================================================
 # CHECK 14: the scoring-request fingerprint is untouched - re-running
