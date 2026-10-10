@@ -278,13 +278,26 @@ def top20_by_value_score(rows):
 def top200_dry_run(rows):
     """{"candidate_count", "no_stored_score_count", "estimated_cost_usd"}
     - a COUNT only, per the instruction's own words ("nothing is
-    selected or scored"). candidate_count = every row (every stored
-    ticker in this universe is a Top 200 candidate if the universe
-    were public); no_stored_score_count = rows with no "Long Score" at
-    all (would need a fresh score before entering the pool for real);
-    cost = no_stored_score_count x TOP200_SCORE_COST_PER_COMPANY_USD."""
-    candidate_count = len(rows)
-    no_score = sum(1 for r in rows if r.get("Long Score") is None)
+    selected or scored"). candidate_count = every NON-FUND row (every
+    stored ticker in this universe is a Top 200 candidate if the
+    universe were public); no_stored_score_count = candidate rows with
+    no "Long Score" at all (would need a fresh score before entering
+    the pool for real); cost = no_stored_score_count x TOP200_SCORE_
+    COST_PER_COMPANY_USD.
+
+    TASK 2 of instruction_scanner_chips_trusts_japan_sectors.md (9 Oct
+    2026, Director-directed): a row nightly_scan.run_universe_scan()
+    marked "Is Fund" (a UK/European-style investment trust - see that
+    module's own _is_sector_fund() docstring) is never a real Top 200
+    candidate - company valuation doesn't apply to it, so it's
+    excluded here exactly like it's excluded from the Scanner's own
+    UNDERVALUED count/median MOS/Value Map (which exclude it for free,
+    since its MOS %/Valuation are already None/"N/A" - this function
+    needed its own explicit exclusion since it counts every row
+    regardless of valuation fields)."""
+    _candidates = [r for r in rows if not r.get("Is Fund")]
+    candidate_count = len(_candidates)
+    no_score = sum(1 for r in _candidates if r.get("Long Score") is None)
     return {
         "candidate_count": candidate_count,
         "no_stored_score_count": no_score,

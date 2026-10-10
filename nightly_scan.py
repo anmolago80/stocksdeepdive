@@ -205,6 +205,45 @@ _YF_RETRY_BASE_DELAY_SECONDS = 2.0  # doubles each attempt: 2s, 4s, 8s
 # "consecutive" means here.
 RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD = 15
 
+# TASK 2 of instruction_scanner_chips_trusts_japan_sectors.md (9 Oct
+# 2026, Director-directed; build go + the real 80-ticker catch list
+# from the Director's review): UK/European-style investment trusts and
+# similar funds carry a stored Sector naming the FUND STRUCTURE itself,
+# not an operating industry - a company DCF/P/E-blend valuation is
+# meaningless for a basket of other companies' shares, same reasoning
+# moat_engine._is_fund() already applies to the Moat Score for ETF/
+# mutual-fund quoteTypes (this is a second, independent signal - stored
+# Sector text, not quoteType - because yfinance's quoteType for a UK
+# investment trust is frequently just "EQUITY", not "MUTUALFUND").
+#
+# Case-insensitive EXACT match only (never substring) against the
+# stored Sector, so an unrelated sector that happens to contain one of
+# these words is never caught by accident. Verified against the
+# Director's own real 80-ticker list (4 FTSE 100 + 76 FTSE 250) - see
+# tests/test_task2_uk_fund_sector_detection.py.
+_FUND_SECTOR_NAMES = frozenset({
+    "investment trusts", "collective investments", "hedge funds",
+    "equity investment instruments", "equity investments",
+})
+
+# EMG.L (Man Group) is an operating asset manager, not a fund - its
+# stored Sector label is simply wrong (Director's own explicit,
+# commented override, 9 Oct 2026). Never caught by the rule above,
+# regardless of what its stored Sector says now or in the future.
+_FUND_SECTOR_OVERRIDE_NOT_A_FUND = frozenset({"EMG.L"})
+
+
+def _is_sector_fund(ticker, sector):
+    """True iff `sector` (the stored Sector field, from the constituent
+    pool) exactly matches one of _FUND_SECTOR_NAMES, case-insensitively -
+    unless `ticker` is in the explicit not-a-fund override set above.
+    REITs (Real Estate Investment Trusts) have their OWN distinct
+    stored Sector text ("REITs"/"Real Estate Investment Trusts" is not
+    in this set) and are never caught by this rule."""
+    if ticker in _FUND_SECTOR_OVERRIDE_NOT_A_FUND:
+        return False
+    return (sector or "").strip().lower() in _FUND_SECTOR_NAMES
+
 
 class RateLimitCircuitBreaker(Exception):
     """Raised by run_universe_scan() when RATE_LIMIT_CONSECUTIVE_ABORT_
@@ -1441,6 +1480,34 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                     # never reaches scan_store/the saved JSON either way.
                     _yahoo_sector_fallback = row.pop("_fallback_sector", None)
                     row["Sector"] = _sector_by_ticker.get(t) or _yahoo_sector_fallback
+
+                    # TASK 2 of instruction_scanner_chips_trusts_japan_
+                    # sectors.md (9 Oct 2026, Director-directed, build
+                    # go): non-US/non-AU only, per the Director's own
+                    # instruction - ASX 200 LICs are diagnosis-only,
+                    # untouched, and US universes were never in scope.
+                    # No company valuation for a fund (see _is_sector_
+                    # fund()'s own docstring) - same minimal scope as
+                    # the price_unit_suspect guard above: only the
+                    # valuation-specific fields are touched, Quality/
+                    # Psychology/Discovery/long_score are left exactly
+                    # as analyze_ticker_lite() computed them.
+                    row["Is Fund"] = (
+                        universe not in scanner_engine.AUSTRALIA_UNIVERSES
+                        and universe not in scanner_engine.USA_UNIVERSES
+                        and _is_sector_fund(t, row["Sector"])
+                    )
+                    if row["Is Fund"]:
+                        row["Intrinsic Value"] = None
+                        row["MOS %"] = None
+                        row["Valuation"] = "N/A"
+                        row["Fund Reason"] = "Fund — company valuation does not apply"
+                        # Same downgrade rule analyze_ticker_lite() itself
+                        # already applies to every other N/A row - keeps
+                        # Signal/Valuation consistent (never "STRONG LONG"
+                        # next to "N/A").
+                        if row.get("Signal") in ("STRONG LONG", "LONG"):
+                            row["Signal"] = "WATCHLIST"
                     rows.append(row)
             else:
                 _consecutive_rate_limited = (
