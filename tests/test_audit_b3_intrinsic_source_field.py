@@ -180,8 +180,12 @@ check("no pre-existing _PUBLIC_FIELD_MAP entry was removed",
       set(_EXPECTED_PRE_EXISTING) <= set(_actual_map))
 check('"Intrinsic Source" is now in _PUBLIC_FIELD_MAP',
       "Intrinsic Source" in _actual_map)
-check('_PUBLIC_FIELD_MAP has exactly one new key beyond the pre-existing set',
-      set(_actual_map) - set(_EXPECTED_PRE_EXISTING) == {"Intrinsic Source"})
+check('_PUBLIC_FIELD_MAP has exactly one new key beyond the pre-existing set '
+      "from THIS fix (B3) - later audit fixes (e.g. C4's own \"DCF Unreliable "
+      "(Symmetric)\") add further keys beyond this one, which this check "
+      "deliberately allows for rather than pinning the map to a single "
+      "moment in time",
+      {"Intrinsic Source"} <= (set(_actual_map) - set(_EXPECTED_PRE_EXISTING)))
 
 # public_view() actually exposes it when present on a row, and omits it
 # (same "never fabricate" convention as every other optional field)

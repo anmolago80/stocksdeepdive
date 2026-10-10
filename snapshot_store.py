@@ -356,6 +356,17 @@ _PUBLIC_FIELD_MAP = {
     # already omits any key not present on `row`, same "never
     # fabricate" convention as every other optional field above.
     "Intrinsic Source": "intrinsic_source",
+    # Audit fix C4 (Fable finding V4, 10 Oct 2026, instruction_combined_
+    # 10oct.md PART C): resolver_engine.dcf_looks_unreliable(symmetric=
+    # True)'s own new low-side case, ALSO True when the intrinsic value
+    # is less than a third of price (resolver_engine.DCF_UNRELIABLE_LOW_
+    # LABEL), not just the pre-existing high-side ">3x" case. Deliberately
+    # a SEPARATE public key from the pool-selection-affecting "DCF
+    # Unreliable" field (which stays high-side-only, unexported here,
+    # and untouched by this fix) - see nightly_scan.py's own comment at
+    # its "DCF Unreliable (Symmetric)" row entry for why pool selection
+    # must never read this one.
+    "DCF Unreliable (Symmetric)": "dcf_unreliable_symmetric",
 }
 
 

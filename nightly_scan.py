@@ -1093,6 +1093,17 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # Intrinsic Value column. See resolver_engine.
         # dcf_looks_unreliable()'s own comment.
         "DCF Unreliable": dcf_looks_unreliable(intrinsic, current_price),
+        # Audit fix C4 / Fable finding V4 (10 Oct 2026): the SYMMETRIC
+        # version of the exact same sanity flag - ALSO True on the
+        # low side (intrinsic value less than a third of price, see
+        # resolver_engine.DCF_UNRELIABLE_LOW_LABEL) - a SEPARATE,
+        # additive, display-only field. "DCF Unreliable" above is
+        # deliberately left calling the function with its default
+        # symmetric=False, unchanged - top100_engine._is_dcf_unreliable()
+        # (pool exclusion) reads THAT field, not this one, so pool
+        # selection is not extended by this fix, per this task's own
+        # explicit instruction.
+        "DCF Unreliable (Symmetric)": dcf_looks_unreliable(intrinsic, current_price, symmetric=True),
         # Valuation change audit (2 Oct 2026, owner-directed, Commit 2 of
         # the 23:00 UTC incident response): pure passthrough of
         # resolve_intrinsic_value()'s own iv_meta/growth_used return

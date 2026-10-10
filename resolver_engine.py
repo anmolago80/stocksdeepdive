@@ -377,16 +377,43 @@ def dcf_scenarios(ticker, quality_score, info=None, cashflow_df=None, currency=N
 # or ranking; callers only use it to show a warning next to the number.
 DCF_SANITY_MULTIPLE = 3.0
 
+# Audit fix C4 / Fable finding V4 (10 Oct 2026, instruction_combined_
+# 10oct.md PART C): the low-side counterpart - a DCF intrinsic value
+# far enough BELOW the current price (less than a third of it) is
+# just as much a sign of a bad-data artifact (overstated share count,
+# a busted P/E-blend input, ...) as the existing high-side ">3x" case,
+# but was never checked at all until this fix. Display-only label text
+# for whichever caller renders dcf_looks_unreliable(symmetric=True)'s
+# low-side case - see that function's own docstring for why this is
+# opt-in, never the default.
+DCF_UNRELIABLE_LOW_LABEL = "Model unreliable: value less than a third of price"
 
-def dcf_looks_unreliable(intrinsic_value, current_price):
+
+def dcf_looks_unreliable(intrinsic_value, current_price, symmetric=False):
     """
     True when a DCF intrinsic value is far enough above the current price
     that the model output is more likely a bad-data artifact than a real
     mispricing - display only, see DCF_SANITY_MULTIPLE's own comment.
+
+    `symmetric` (audit fix C4 / Fable finding V4, 10 Oct 2026): False
+    (the default) preserves this function's EXACT original high-side-
+    only behaviour for every existing caller - in particular top100_
+    engine.py's own pool-exclusion checks (_is_dcf_unreliable() and
+    run_nightly()'s own re-check), which this fix's own instruction
+    explicitly requires stay unchanged ("Pool selection unchanged:
+    don't extend the Top 200 exclusion"). True also flags the
+    symmetric low-side case (intrinsic_value < current_price /
+    DCF_SANITY_MULTIPLE, see DCF_UNRELIABLE_LOW_LABEL above) - used
+    only by nightly_scan.py's own new, separate display-only field
+    (never read by anything that feeds pool selection/scoring/ranking).
     """
     if not intrinsic_value or not current_price or current_price <= 0:
         return False
-    return intrinsic_value > DCF_SANITY_MULTIPLE * current_price
+    if intrinsic_value > DCF_SANITY_MULTIPLE * current_price:
+        return True
+    if symmetric and intrinsic_value < current_price / DCF_SANITY_MULTIPLE:
+        return True
+    return False
 
 
 def resolve_stock_type(ticker, info=None):
