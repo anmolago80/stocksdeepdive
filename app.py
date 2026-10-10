@@ -396,7 +396,17 @@ def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=No
     return result
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+# Memory addendum round 2 (9 Oct 2026, Director-directed, build go,
+# option A only - no other cache changes this round): max_entries=2000
+# caps this cache's own worst-case footprint regardless of how many
+# distinct tickers a single 30-minute TTL window ends up touching
+# across all 23 universes - see MEMORY_COST_ADDENDUM_REPORT.md's own
+# cause #1 (every @st.cache_data in this codebase was previously
+# unbounded by entry count, TTL-only). Streamlit evicts the
+# least-recently-used entry past this cap - a rare eviction can only
+# ever cost a redundant yfinance re-fetch for that one ticker, never a
+# wrong/stale value (the TTL/correctness semantics are unchanged).
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=2000)
 def get_ticker_info(ticker):
     return _fetch_with_retry(
         lambda: yf.Ticker(ticker).info, ticker, "get_ticker_info",
@@ -418,7 +428,11 @@ def get_ticker_info(ticker):
 _price_history_failure_kind = {}
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+# Memory addendum round 2 (9 Oct 2026, Director-directed, build go,
+# option A only) - same max_entries=2000 cap and reasoning as
+# get_ticker_info() just above; this is the larger of the two per-
+# ticker caches (a ~126-row OHLCV DataFrame vs. an info dict).
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=2000)
 def get_price_history(ticker):
     """
     Daily OHLCV history for `ticker`, ~6 months back - the shared feed
