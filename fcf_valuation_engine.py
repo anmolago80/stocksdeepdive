@@ -1726,6 +1726,25 @@ _FX_STATIC_FALLBACK = {
     # supplied, unverified-from-this-sandbox status as FX_TO_USD_
     # APPROX["JPY"] above - 1 JPY = 0.0067 USD.
     ("JPY", "USD"): 0.0067,
+    # Audit fix B4 / Fable finding V7 (10 Oct 2026, instruction_
+    # combined_10oct.md PART B): (CHF, "USD") and (SEK, "USD")
+    # deliberately NOT added here, unlike every entry above. That
+    # task's own instruction is explicit - "Do not use model estimates.
+    # If you can't cite a source, leave the value out and report it" -
+    # and unlike the currency-based PERPETUAL_GROWTH_BY_CCY entries
+    # just added alongside this fix (a stable, citable central-bank
+    # mandate), a spot FX rate moves daily and this sandbox has no
+    # outbound network access to fetch or verify one; every entry
+    # above (and FX_TO_USD_APPROX's own CHF/SEK figures) is explicitly
+    # labelled "approximate, unverified... a plausible recent rate" -
+    # exactly the kind of model estimate this stricter instruction
+    # says not to introduce here. Reported instead of guessed: a
+    # Swiss/Swedish-currency DCF conversion with no live Yahoo FX rate
+    # available still falls through to "fx_unavailable" (valuation
+    # withheld) exactly as it already did before this fix - no
+    # regression, just not newly covered. A real, sourced CHF/USD and
+    # SEK/USD rate (e.g. from a dated central-bank or BIS reference
+    # rate release, cited by name and date) can be added later.
 }
 
 # Per-process cache so one page render (which can call fx_rate for several
@@ -1781,7 +1800,23 @@ def _static_rate_to_usd(ccy):
     """Internal helper for fx_rate()'s cross-rate-via-USD fallback just
     below (Stage 1a, 3 Oct 2026, Director-directed) - the "1 ccy = X USD"
     quote from _FX_STATIC_FALLBACK, trying the direct (ccy, "USD") entry
-    then its reciprocal ("USD", ccy). None if neither exists."""
+    then its reciprocal ("USD", ccy). None if neither exists.
+
+    Audit fix B4 / Fable finding V7 (10 Oct 2026): ccy == "USD" is a
+    trivial identity (1 USD = 1 USD), not a model estimate, so it's
+    answered directly rather than falling through to None - the one
+    part of that task's "USD->USD = 1.0" requirement that doesn't need
+    an external source. fx_rate() itself already short-circuits a
+    direct USD->USD call before ever reaching this helper (see its own
+    `if from_ccy == to_ccy` check), so this only matters for a cross-
+    rate-via-USD computation where one leg is USD and the other leg's
+    own rate is known - currently a dead branch (every currency this
+    table maps also has a direct or reciprocal entry, so the direct/
+    reciprocal checks above resolve any real USD<->mapped-currency pair
+    before this function is even called), kept for correctness/
+    robustness rather than relying on that happening to stay true."""
+    if ccy == "USD":
+        return 1.0
     if (ccy, "USD") in _FX_STATIC_FALLBACK:
         return _FX_STATIC_FALLBACK[(ccy, "USD")]
     if ("USD", ccy) in _FX_STATIC_FALLBACK:

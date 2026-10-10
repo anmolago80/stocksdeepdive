@@ -95,6 +95,28 @@ PERPETUAL_GROWTH_BY_CCY = {
     # own long-run near-zero-inflation/nominal-growth history, not a
     # typo or a rounding of the others' 2.0%/2.5%.
     "JPY": 0.010,
+    # Audit fix B4 / Fable finding V11 (10 Oct 2026, instruction_
+    # combined_10oct.md PART B, European/private markets only - no S&P
+    # 500/ASX 200 ticker trades in EUR or SEK): cited to each currency's
+    # own central bank mandate, same style as GBP/CAD's 2.0% above.
+    #   EUR 2.0% - European Central Bank's symmetric 2% medium-term
+    #   HICP inflation target (reaffirmed in the ECB's July 2021
+    #   monetary policy strategy review).
+    #   SEK 2.0% - Sveriges Riksbank's inflation target of 2% per year,
+    #   Sweden's monetary policy target since 1993 (specified in CPIF -
+    #   fixed-interest-rate CPI - terms since September 2017).
+    "EUR": 0.020,
+    "SEK": 0.020,
+    # CHF deliberately NOT added here (still falls back to DEFAULT_
+    # PERPETUAL_GROWTH below) - the Swiss National Bank's own price-
+    # stability definition is an explicit CEILING ("a rise in the
+    # national consumer price index of less than 2% per annum"), not a
+    # single point target like the ECB/Fed/BoE/BoC/Riksbank entries
+    # above. Picking a specific number below that ceiling (e.g. 1.0%,
+    # by analogy with JPY's own near-zero history) would be exactly the
+    # kind of model estimate this task's own instruction says not to
+    # use without a citable source - reported instead of guessed, per
+    # that instruction's own "leave the value out and report it."
 }
 DEFAULT_PERPETUAL_GROWTH = 0.025
 
