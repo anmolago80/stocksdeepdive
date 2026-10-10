@@ -93,7 +93,7 @@ with mock.patch.object(nightly_scan, "run_universe_scan", return_value=_fake_pay
                             side_effect=lambda *a, **k: _calls.__setitem__("insider", _calls["insider"] + 1)):
         sched._run_nightly({"universes": ["ASX 200"]}, log=_capture_log, run_night="2026-10-09")
 
-_mem_lines = [m for m in _log_capture if m.startswith("[mem]")]
+_mem_lines = [m for m in _log_capture if m.startswith("[mem] rss=")]
 check("_run_nightly() on a successful scan writes exactly one [mem] line", len(_mem_lines) == 1)
 check("that [mem] line names the universe it ran for", "ASX 200" in _mem_lines[0] if _mem_lines else False)
 check("_run_nightly()'s existing side effects are untouched by the [mem] addition "
@@ -110,7 +110,7 @@ with mock.patch.object(nightly_scan, "run_universe_scan", side_effect=RuntimeErr
     sched._run_nightly({"universes": ["ASX 200"]}, log=lambda m, *a, **k: _log_capture2.append(m),
                         run_night="2026-10-09")
 
-_mem_lines2 = [m for m in _log_capture2 if m.startswith("[mem]")]
+_mem_lines2 = [m for m in _log_capture2 if m.startswith("[mem] rss=")]
 check("_run_nightly() on a FAILED scan still writes exactly one [mem] line", len(_mem_lines2) == 1)
 check("the failed-scan [mem] line says '(failed)'", "(failed)" in _mem_lines2[0] if _mem_lines2 else False)
 
@@ -130,7 +130,7 @@ _log_capture4 = []
 with mock.patch.object(top100_engine, "poll_and_ingest_batch", return_value={"scored": 0, "failed": 3}), \
      mock.patch.object(top100_engine.top100_store, "get_batch_state", return_value={"batch_id": "b1"}):
     sched._run_top100_poll(log=lambda m, *a, **k: _log_capture4.append(m))
-_mem_lines4 = [m for m in _log_capture4 if m.startswith("[mem]")]
+_mem_lines4 = [m for m in _log_capture4 if m.startswith("[mem] rss=")]
 check("_run_top100_poll() writes exactly one [mem] line when a batch was actually polled/ingested",
       len(_mem_lines4) == 1)
 check("that [mem] line says 'after Top 200 batch ingest'",

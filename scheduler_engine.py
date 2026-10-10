@@ -1114,6 +1114,7 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                 except Exception as e:
                     log(f"[scheduler] insider refresh {universe} failed: {e}")
             _log_mem(log, f"after scan {universe}")
+            _malloc_trim_and_log(log, f"after scan {universe}")
         except nightly_scan.RateLimitCircuitBreaker as e:
             # URGENT Commit 1 (27 Sep 2026, owner-reported): the next
             # universe in `ordered` would hit the exact same throttled
@@ -1151,6 +1152,7 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                     elapsed_seconds=time.time() - _scan_started_at,
                     state=_catchup_state)
             _log_mem(log, f"after scan {universe} (failed)")
+            _malloc_trim_and_log(log, f"after scan {universe} (failed)")
     _save_state(_catchup_state)
 
     # Audit fixes Commit 2 (30 Sep 2026, owner-directed): every stage
@@ -1752,11 +1754,14 @@ def _run_top100_poll(log):
     if result is None:
         return
     _log_mem(log, "after Top 200 batch ingest")
+    _malloc_trim_and_log(log, "after Top 200 batch ingest")
     if top100_engine.top100_store.get_batch_state() is not None:
         return
     if result.get("scored", 0) <= 0:
         return
     top100_engine.submit_nightly_batch(log=log)
+    _log_mem(log, "after Top 200 batch submit")
+    _malloc_trim_and_log(log, "after Top 200 batch submit")
 
 
 def _run_earnings_refresh(log):
@@ -2534,6 +2539,45 @@ def _log_mem(log, label):
     call site regardless of platform."""
     rss = _rss_gb()
     log(f"[mem] rss={rss:.2f}GB {label}" if rss is not None else f"[mem] rss=unavailable {label}")
+
+
+def _malloc_trim_and_log(log, label):
+    """Calls glibc's malloc_trim(0) - asks the C allocator to return
+    freed-but-still-retained heap arenas back to the OS, which CPython
+    otherwise rarely does on its own after a burst of many short-lived
+    allocations (see MEMORY_COST_ADDENDUM_REPORT.md's own cause #3: a
+    nightly scan/Top 200 batch runs in-process, and freed DataFrames/
+    dicts from it typically stay resident as RSS long after they are
+    genuinely unused).
+
+    Memory addendum round 2 (9 Oct 2026, Director-directed, build go):
+    Linux-only (glibc's malloc_trim has no equivalent on every other
+    libc) and best-effort - NEVER raises, same "must have no other
+    effect" guarantee as _log_mem() above; a failed trim attempt can
+    never break the scan/batch it rides on. Deliberately NOT called
+    inside a per-ticker loop (the Director's own explicit instruction) -
+    it is a whole-process operation, only meaningful once a universe's/
+    batch's full set of allocations has already been freed, not after
+    every single ticker.
+
+    This does not change the SIZE of this process's own caches (see
+    get_ticker_info()/get_price_history()'s new max_entries=2000, the
+    other half of this round) - it only returns memory the process had
+    already freed internally but the OS never got back. The two are
+    complementary, not alternatives."""
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
+        _before = _rss_gb()
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+        _after = _rss_gb()
+        if _before is not None and _after is not None:
+            log(f"[mem] trimmed: rss {_before:.2f}GB -> {_after:.2f}GB {label}")
+        else:
+            log(f"[mem] trimmed: rss unavailable {label}")
+    except Exception:
+        pass
 
 
 def _process_role():
