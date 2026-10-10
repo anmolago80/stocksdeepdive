@@ -341,7 +341,8 @@ def _classify_fetch_failure(last_exc):
     return "network"
 
 
-def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=None, failure_kind_out=None):
+def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=None, failure_kind_out=None,
+                       raise_on_failure=False):
     """Shared retry wrapper for the three @st.cache_data-wrapped yfinance
     fetchers below (18 Sep 2026 fix). Before this, each of them caught
     every exception and returned a bare empty fallback ({} / empty
@@ -373,7 +374,23 @@ def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=No
     learn WHY every attempt was exhausted - set via _classify_fetch_
     failure() on the SAME `last_exc` the warning log line above already
     reports, so the two can never disagree. Left at its initial value
-    on success (the loop returns early and never reaches this line)."""
+    on success (the loop returns early and never reaches this line).
+
+    `raise_on_failure` (incident fix, 10 Oct 2026 - Yahoo quoteSummary
+    401s 12:38-12:42 UTC, Andrew-reported): when every attempt is
+    exhausted, raise RuntimeError instead of returning `fallback`. The
+    three @st.cache_data-wrapped callers below each use this via a
+    private cached inner function + a thin uncached outer wrapper (see
+    get_ticker_info()/get_price_history()/get_cashflow_df() below) -
+    st.cache_data never caches a raised exception (same pattern already
+    established by get_country_mood()'s own "Raise so FAILURES never
+    enter the 30-minute cache" comment further down this file), so a
+    persistent failure here no longer poisons the cache for its full
+    30-minute ttl: the very next call re-attempts the live fetch
+    instead of replaying a stale empty result, and the outer wrapper
+    still returns the exact same `fallback` every existing caller has
+    always gotten. False (the default) preserves this function's prior
+    behaviour exactly for any caller that doesn't opt in."""
     last_exc = None
     result = fallback
     for attempt in range(attempts):
@@ -394,6 +411,58 @@ def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=No
     )
     if failure_kind_out is not None:
         failure_kind_out[0] = _classify_fetch_failure(last_exc)
+    if raise_on_failure:
+        raise RuntimeError(
+            f"[{label}] {ticker}: all {attempts} fetch attempts exhausted - not caching this failure"
+        )
+    return result
+
+
+# Incident fix (10 Oct 2026, Yahoo quoteSummary 401s 12:38-12:42 UTC):
+# a persistent failure must never sit in the normal 30-minute success
+# cache (that's the bug this whole incident fix closes), but caching
+# NOTHING at all turned out to have its own cost: a single Deep Dive
+# render calls get_ticker_info()/get_price_history()/get_cashflow_df()
+# from several different call sites for the SAME ticker, and during a
+# real outage each one would re-run the full 3-attempt retry+backoff
+# sequence from scratch (proven live by this fix's own AppTest
+# regression - a page render that used to finish in well under a
+# second took over 60s once failures stopped being cached at all).
+# This short, SEPARATE failure-only memo - same two-tier-TTL idea as
+# capm_engine.get_growth_estimates_5y()'s own _growth_estimate_cache
+# ("a 'fetch_failed' result must NOT sit at the same TTL as a genuine
+# one... st.cache_data's ttl is fixed per function, not per return
+# value") - remembers a failure for _RECENT_FETCH_FAILURE_TTL_SECONDS
+# only, short-circuiting repeat calls within that window straight to
+# the fallback with NO new network attempt, while still self-healing
+# roughly two orders of magnitude faster than the 30-minute bug this
+# fix exists to close.
+_recent_fetch_failure = {}
+_RECENT_FETCH_FAILURE_TTL_SECONDS = 300  # 5 min - same value as capm_engine's own _GROWTH_ESTIMATE_FAILURE_TTL_SECONDS
+
+
+def _recently_failed(key):
+    failed_at = _recent_fetch_failure.get(key)
+    return failed_at is not None and (time.time() - failed_at) < _RECENT_FETCH_FAILURE_TTL_SECONDS
+
+
+def _call_with_recent_failure_memo(key, cached_fn, ticker, fallback):
+    """Shared by get_ticker_info()/get_price_history()/get_cashflow_df()
+    below - see _recent_fetch_failure's own comment just above for why
+    this exists. `cached_fn` is the @st.cache_data-wrapped inner
+    function (raises on a persistent failure - st.cache_data never
+    caches a raised exception, same established pattern as get_
+    country_mood()'s own "Raise so FAILURES never enter the 30-minute
+    cache" comment further down this file); `fallback` is the exact
+    value every existing caller has always gotten on failure."""
+    if _recently_failed(key):
+        return fallback
+    try:
+        result = cached_fn(ticker)
+    except Exception:
+        _recent_fetch_failure[key] = time.time()
+        return fallback
+    _recent_fetch_failure.pop(key, None)
     return result
 
 
@@ -407,12 +476,50 @@ def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=No
 # least-recently-used entry past this cap - a rare eviction can only
 # ever cost a redundant yfinance re-fetch for that one ticker, never a
 # wrong/stale value (the TTL/correctness semantics are unchanged).
+# Incident fix (10 Oct 2026, Yahoo quoteSummary 401s 12:38-12:42 UTC):
+# companion side-channel to get_ticker_info()'s own cache, same pattern
+# and reasoning as _price_history_failure_kind below - written only
+# inside _get_ticker_info_cached()'s own body, so it holds the most
+# recent run's own reason (live or replayed from a SUCCESSFUL cache
+# hit - a failure is never cached, see raise_on_failure above).
+_ticker_info_failure_kind = {}
+
+
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=2000)
+def _get_ticker_info_cached(ticker):
+    _kind_flag = [None]
+    try:
+        result = _fetch_with_retry(
+            lambda: yf.Ticker(ticker).info, ticker, "get_ticker_info",
+            fallback={}, is_empty=lambda d: not d or len(d) < 5,
+            failure_kind_out=_kind_flag, raise_on_failure=True,
+        )
+    finally:
+        _ticker_info_failure_kind[ticker] = _kind_flag[0]
+    return result
+
+
 def get_ticker_info(ticker):
-    return _fetch_with_retry(
-        lambda: yf.Ticker(ticker).info, ticker, "get_ticker_info",
-        fallback={}, is_empty=lambda d: not d or len(d) < 5,
+    """Thin, UNCACHED wrapper around _get_ticker_info_cached() (incident
+    fix, 10 Oct 2026) - see _call_with_recent_failure_memo()'s own
+    docstring for the short failure-memo this goes through, and
+    _recent_fetch_failure's comment for why a persistent failure is
+    remembered for a few minutes rather than either the old 30-minute
+    cache or not at all. Returns the exact same `{}` fallback every
+    existing caller has always gotten on failure."""
+    return _call_with_recent_failure_memo(
+        ("get_ticker_info", ticker), _get_ticker_info_cached, ticker, {},
     )
+
+
+def get_ticker_info_failure_kind(ticker):
+    """Incident fix (10 Oct 2026) companion reader for get_ticker_info()'s
+    own side-channel above - same contract as get_price_history_failure_
+    kind() below: None if this ticker was never fetched, resolved
+    successfully, or genuinely has no info anywhere; "rate_limited" or
+    "network" if the live fetch itself failed (e.g. the 12:38-12:42 UTC
+    quoteSummary 401s)."""
+    return _ticker_info_failure_kind.get(ticker)
 
 
 # Commit 2 (27 Sep 2026, owner-reported): companion side-channel to
@@ -434,7 +541,7 @@ _price_history_failure_kind = {}
 # get_ticker_info() just above; this is the larger of the two per-
 # ticker caches (a ~126-row OHLCV DataFrame vs. an info dict).
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=2000)
-def get_price_history(ticker):
+def _get_price_history_cached(ticker):
     """
     Daily OHLCV history for `ticker`, ~6 months back - the shared feed
     behind MA50, support/resistance, Fear/Greed, and every Deep Dive/Swing
@@ -445,13 +552,26 @@ def get_price_history(ticker):
     # 6 months (not 3) so the Trade Filter's 60-day support/resistance
     # window has a comfortable buffer of real trading days behind it.
     _kind_flag = [None]
-    result = _fetch_with_retry(
-        lambda: yf.Ticker(ticker).history(period="6mo"), ticker, "get_price_history",
-        fallback=pd.DataFrame(), is_empty=lambda df: df is None or df.empty,
-        failure_kind_out=_kind_flag,
-    )
-    _price_history_failure_kind[ticker] = _kind_flag[0]
+    try:
+        result = _fetch_with_retry(
+            lambda: yf.Ticker(ticker).history(period="6mo"), ticker, "get_price_history",
+            fallback=pd.DataFrame(), is_empty=lambda df: df is None or df.empty,
+            failure_kind_out=_kind_flag, raise_on_failure=True,
+        )
+    finally:
+        _price_history_failure_kind[ticker] = _kind_flag[0]
     return result
+
+
+def get_price_history(ticker):
+    """Thin, UNCACHED wrapper around _get_price_history_cached() (incident
+    fix, 10 Oct 2026, same pattern as get_ticker_info() above) - goes
+    through the same short failure-memo (_call_with_recent_failure_memo)
+    and returns the exact same empty DataFrame every existing caller has
+    always gotten on failure."""
+    return _call_with_recent_failure_memo(
+        ("get_price_history", ticker), _get_price_history_cached, ticker, pd.DataFrame(),
+    )
 
 
 def get_price_history_failure_kind(ticker):
@@ -508,7 +628,7 @@ def _price_history_rows_for_trading_cost(ticker):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_cashflow_df(ticker):
+def _get_cashflow_df_cached(ticker):
     """
     Annual cash-flow statement, cached. Used to derive each stock's OWN
     historical free-cash-flow growth (CAGR) for the DCF, rather than a fixed
@@ -519,6 +639,18 @@ def get_cashflow_df(ticker):
     return _fetch_with_retry(
         lambda: yf.Ticker(ticker).cashflow, ticker, "get_cashflow_df",
         fallback=pd.DataFrame(), is_empty=lambda df: df is None or df.empty,
+        raise_on_failure=True,
+    )
+
+
+def get_cashflow_df(ticker):
+    """Thin, UNCACHED wrapper around _get_cashflow_df_cached() (incident
+    fix, 10 Oct 2026, same pattern as get_ticker_info()/get_price_
+    history() above) - goes through the same short failure-memo
+    (_call_with_recent_failure_memo) and returns the exact same empty
+    DataFrame every existing caller has always gotten on failure."""
+    return _call_with_recent_failure_memo(
+        ("get_cashflow_df", ticker), _get_cashflow_df_cached, ticker, pd.DataFrame(),
     )
 
 
@@ -3114,6 +3246,7 @@ def _dispatch_search(text):
                 discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
                 growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
                 get_price_history_failure_kind=get_price_history_failure_kind,
+                get_ticker_info_failure_kind=get_ticker_info_failure_kind,
             )
             _dd_res = st.session_state["dd_result"]
             if _dd_res.get("error"):
@@ -7450,6 +7583,7 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
                     discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
                     growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
                     get_price_history_failure_kind=get_price_history_failure_kind,
+                    get_ticker_info_failure_kind=get_ticker_info_failure_kind,
                 )
             st.switch_page(PG_DEEP_DIVE)
 
@@ -10715,6 +10849,7 @@ def page_deep_dive():
                     discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
                     growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
                     get_price_history_failure_kind=get_price_history_failure_kind,
+                    get_ticker_info_failure_kind=get_ticker_info_failure_kind,
                 )
             _dd = st.session_state["dd_result"]
     if _dd is not None and not _dd.get("error") and _dd.get("ticker"):
@@ -25082,6 +25217,7 @@ def _resolve_ticker_mos_currency_live(ticker):
             _dd = deep_dive_engine.analyze(
                 ticker, get_price_history, get_ticker_info, get_cashflow_df,
                 get_price_history_failure_kind=get_price_history_failure_kind,
+                get_ticker_info_failure_kind=get_ticker_info_failure_kind,
                 live_data=False, enable_social=False,
             )
             if not _dd.get("error"):

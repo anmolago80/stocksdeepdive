@@ -116,6 +116,22 @@ ATTENTION_TOPUP_PER_UNIVERSE = int(os.environ.get("ATTENTION_TOPUP_PER_UNIVERSE"
 # same-shaped, safety net.
 SCAN_COMPLETENESS_THRESHOLD = 0.6
 
+# Incident fix (10 Oct 2026, Andrew-reported - Yahoo quoteSummary 401s
+# 12:38-12:42 UTC): SCAN_COMPLETENESS_THRESHOLD above only measures
+# whether a ROW exists (price history survived), never whether that
+# row's .info-derived fields are real - a ticker whose .info fetch
+# failed still gets a row (falls back to {}, same as app.py's own
+# get_ticker_info()), just with every info-dependent field defaulted/
+# estimated. A quoteSummary-only outage (price history unaffected)
+# can therefore sail straight through the completeness guard AND the
+# rate-limit circuit breaker (both reset by any produced row,
+# regardless of what fed it) at 100% "complete", silently overwriting
+# a genuinely good prior scan with one built on garbage fundamentals.
+# This is the literal "over 30%" example the owner's own incident
+# report named - see run_universe_scan()'s own info_failure_rate
+# check for where this is read.
+INFO_FAILURE_RATE_DEGRADED_THRESHOLD = 0.3
+
 # The TradingView-CSV import queue (screen_import_store.py) - a virtual
 # "universe" that isn't a real index, resolved from the import queue
 # instead of scanner_engine. See run_imported_scan() below.
@@ -438,7 +454,7 @@ def _growth_coverage_bucket(iv_meta):
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                          perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print,
                          rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None,
-                         shadow_out=None):
+                         shadow_out=None, info_failed_out=None):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
     if no usable price data. Also used by digest_engine for the weekly
@@ -517,13 +533,33 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     summary_out above; run_universe_scan() is the only caller that
     passes this, stamping "universe"/"in_current_top100" onto each
     collected row afterward and saving the whole list via financials_
-    dry_run.save() - see that call site's own comment."""
+    dry_run.save() - see that call site's own comment.
+
+    `info_failed_out` (incident fix, 10 Oct 2026, Andrew-reported -
+    Yahoo quoteSummary 401s 12:38-12:42 UTC): an optional single-element
+    list, set True when the `.info` fetch below is TOTALLY exhausted
+    (returns None from _yf_call_with_retry, before the `or {}` masks
+    it), left at its initial value (e.g. False) otherwise - including
+    when `.info` succeeds but happens to come back thin/sparse for a
+    genuine reason, which is NOT a fetch failure. This is deliberately
+    SEPARATE from rate_limited_out above: a row is still returned here
+    (and kept) whenever price history succeeds, even if info totally
+    failed - which is exactly why the existing SCAN_COMPLETENESS_
+    THRESHOLD/rate-limit-breaker guards (both keyed off whether a ROW
+    was produced) never caught an info-only outage like this one; see
+    run_universe_scan()'s own "info_failure_rate" comment for the
+    guard this feeds. run_universe_scan() is the only caller that
+    passes this; every other caller leaves it None and is completely
+    unaffected."""
     tk = yf.Ticker(ticker)
     df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history",
                               rate_limited_out=rate_limited_out)
     if df is None or df.empty:
         return None
-    info = _yf_call_with_retry(lambda: tk.info, log, ticker, "info") or {}
+    _raw_info = _yf_call_with_retry(lambda: tk.info, log, ticker, "info")
+    if _raw_info is None and info_failed_out is not None:
+        info_failed_out[0] = True
+    info = _raw_info or {}
     cashflow_df = _yf_call_with_retry(lambda: tk.cashflow, log, ticker, "cashflow")
     if cashflow_df is None:
         cashflow_df = pd.DataFrame()
@@ -1432,6 +1468,15 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # analyze_ticker_lite()/_yf_call_with_retry() themselves retry -
     # only reads what they already tell it.
     _consecutive_rate_limited = 0
+    # Incident fix (10 Oct 2026, Andrew-reported): counts EVERY ticker
+    # whose .info fetch totally failed this run, regardless of whether
+    # that ticker still produced a row (price history can succeed while
+    # quoteSummary is down - exactly what happened 12:38-12:42 UTC) -
+    # see the info_failure_rate check after this loop for the guard
+    # this feeds, and analyze_ticker_lite()'s own info_failed_out
+    # docstring for why this has to be tracked separately from
+    # _consecutive_rate_limited above.
+    _info_fetch_failures = 0
     for i, t in enumerate(tickers[_resume_index:], start=_resume_index):
         # Audit fixes Commit 3 (30 Sep 2026, owner-directed): cooperative
         # cancel - checked once per ticker, so a caller whose hard
@@ -1452,11 +1497,15 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             return None
         try:
             _rate_limited_flag = [False]
+            _info_failed_flag = [False]
             row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
                                        rate_limited_out=_rate_limited_flag,
                                        growth_summary_out=_growth_summary,
                                        oneoff_summary_out=_oneoff_summary,
-                                       shadow_out=_shadow_rows)
+                                       shadow_out=_shadow_rows,
+                                       info_failed_out=_info_failed_flag)
+            if _info_failed_flag[0]:
+                _info_fetch_failures += 1
             if row:
                 _consecutive_rate_limited = 0
                 # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
@@ -1649,6 +1698,25 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # and it's clearly flagged as degraded either way.
     completeness = (len(rows) / len(tickers)) if tickers else 0.0
     degraded = completeness < SCAN_COMPLETENESS_THRESHOLD
+
+    # Incident fix (10 Oct 2026, Andrew-reported): see INFO_FAILURE_
+    # RATE_DEGRADED_THRESHOLD's own comment above for why this has to
+    # be a SEPARATE check from completeness - OR'd into the same
+    # `degraded` flag so the existing "don't overwrite a good prior
+    # scan" logic just below (load last-good, skip the save if one
+    # exists) applies here too, rather than a second parallel skip-save
+    # path. "Report what the current guard does today" (owner's own
+    # instruction item 4): completeness/the rate-limit breaker protect
+    # against a scan with too few/no rows; this is the first guard that
+    # looks at fundamentals-fetch health specifically.
+    info_failure_rate = (_info_fetch_failures / len(tickers)) if tickers else 0.0
+    if info_failure_rate > INFO_FAILURE_RATE_DEGRADED_THRESHOLD:
+        log(f"[nightly_scan] {universe}: {_info_fetch_failures}/{len(tickers)} tickers "
+            f"({info_failure_rate:.0%}) had a failed .info fetch this run (quoteSummary "
+            f"down/throttled) - flagging degraded even though {len(rows)}/{len(tickers)} "
+            f"rows were otherwise produced (price history alone doesn't catch this)")
+        degraded = True
+
     # URGENT Commit 2 (24 Sep 2026, owner-reported): one clear cause
     # line on a 0%-valid run, additive only - does not change
     # `completeness`/`degraded` or the save/skip decision below at all.

@@ -16,6 +16,18 @@ Two checks:
      info/get_price_history 2001 times would mean live network calls,
      which this sandbox can't make).
 
+Updated for the incident fix (10 Oct 2026, Andrew-reported - Yahoo
+quoteSummary 401s 12:38-12:42 UTC): the @st.cache_data decorator that
+used to sit directly on get_ticker_info()/get_price_history() now sits
+on new, private _get_ticker_info_cached()/_get_price_history_cached()
+inner functions instead - get_ticker_info()/get_price_history() are
+now thin, UNCACHED outer wrappers (same public names, same callers,
+same return contract) that catch the exception the cached inner
+function raises on a persistent fetch failure, so a failure is never
+cached for its full 30-minute ttl - see app.py's own _fetch_with_retry
+docstring (raise_on_failure) for the mechanism. max_entries=2000 moved
+with the decorator onto the new inner names; nothing else changed.
+
 Run: python3 tests/test_memory_round2_cache_max_entries.py
 """
 import os
@@ -46,12 +58,14 @@ with open(os.path.join(REPO_ROOT, "app.py"), encoding="utf-8") as f:
 _decorator_re = re.compile(r"(@st\.cache_data\([^)]*\))\s*\ndef (\w+)\(")
 _all_cache_data_defs = _decorator_re.findall(_app_src)
 
-check("app.py has at least the two targeted cache_data functions",
-      any(name == "get_ticker_info" for _, name in _all_cache_data_defs)
-      and any(name == "get_price_history" for _, name in _all_cache_data_defs))
+check("app.py has at least the two targeted cache_data functions (now the private "
+      "cached inner functions behind get_ticker_info()/get_price_history(), after "
+      "the 10 Oct 2026 incident fix split each into a cached inner + uncached outer)",
+      any(name == "_get_ticker_info_cached" for _, name in _all_cache_data_defs)
+      and any(name == "_get_price_history_cached" for _, name in _all_cache_data_defs))
 
 for _decorator, _name in _all_cache_data_defs:
-    if _name in ("get_ticker_info", "get_price_history"):
+    if _name in ("_get_ticker_info_cached", "_get_price_history_cached"):
         check(f"{_name}()'s own @st.cache_data decorator carries max_entries=2000",
               "max_entries=2000" in _decorator)
     else:

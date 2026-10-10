@@ -147,7 +147,7 @@ _ftse250_pool_df = pd.DataFrame({
 
 def _fake_analyze_uk(ticker, attention_lite=True, discount_rate=None, log=print,
                       rate_limited_out=None, growth_summary_out=None,
-                      oneoff_summary_out=None, shadow_out=None):
+                      oneoff_summary_out=None, shadow_out=None, info_failed_out=None):
     return {
         "Ticker": ticker, "Type": "COMPOUNDER", "Company Name": f"{ticker} Co",
         "Price": 500.0, "Quality": 70, "Quality Default": False,

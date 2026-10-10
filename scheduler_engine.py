@@ -1271,7 +1271,25 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
     # the scans" guard without any extra locking code needed here. Skipped
     # entirely on a breaker trip (audit fixes Commit 2) - reprice_universe()
     # is itself a yfinance batch download, exactly what just got throttled.
-    if not _skip_post_scan_stages:
+    # Incident fix (10 Oct 2026, Andrew-reported): a queued/manual
+    # rescan of ONE universe (cfg["is_queued_rescan"], set only by
+    # _run_queued_rescan_tick's own call site below) used to still run
+    # this full reprice pass against cfg["universe_cadence"] - which is
+    # NEVER narrowed to the rescan's own requested universe(s), only
+    # cfg["universes"]/`ordered` is - so "scanned_tonight" was just the
+    # one rescanned universe and every OTHER real universe (22 of 23 in
+    # the 10 Oct incident) got repriced as a side effect of a single-
+    # universe rescan: a yfinance batch download the owner never asked
+    # for, piled on right after the rescan's own fetches, during the
+    # exact window Yahoo was already returning quoteSummary 401s.
+    # Skipped here, not throttled: the rescanned universe's OWN rows are
+    # already fresh (it just got a full scan), so there is nothing left
+    # for a reprice pass to even do within a queued rescan's own
+    # requested scope - "reprice only the rescanned universe" resolves
+    # to zero universes, never the other 22. The regular scheduled
+    # nightly pass (is_queued_rescan unset/False) is completely
+    # unaffected - this only changes a queued rescan's own behaviour.
+    if not _skip_post_scan_stages and not cfg.get("is_queued_rescan"):
         try:
             scanned_tonight = {u for u in ordered if u != nightly_scan.IMPORTED_UNIVERSE}
             to_reprice = [u for u in cfg.get("universe_cadence", {}).keys() if u not in scanned_tonight]
@@ -1287,6 +1305,9 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                 log("[scheduler] reprice pass: every real universe was scanned tonight, nothing to reprice")
         except Exception as e:
             log(f"[scheduler] reprice pass failed: {e}")
+    elif cfg.get("is_queued_rescan"):
+        log("[scheduler] reprice pass: skipped - this is a queued/manual rescan of "
+            "a specific universe, not the scheduled nightly pass (incident fix, 10 Oct 2026)")
 
     # Fix 8c, AI fixes round 2 (2026-08-31) - see _build_derived_
     # universes()'s own docstring above. Skipped on a breaker trip: it
@@ -2709,12 +2730,19 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
     the SAME "nightly" job lock and _record_job() heartbeat/hard-
     timeout/abandoned-worker handling the catch-up block gets -
     "exactly like a catch-up" per this commit's own instruction, which
-    means a queued rescan also gets the FULL _run_nightly() pipeline
-    (sector/attention top-up, reprice pass, derived-universe rebuilds -
-    see that function's own docstring), not just the selected
-    universe(s) in isolation. A deliberate scope change from the old
-    synchronous handler's narrower behaviour - the admin control's own
-    caption says so.
+    means a queued rescan also gets most of the _run_nightly() pipeline
+    (sector/attention top-up, derived-universe rebuilds - see that
+    function's own docstring), not just the selected universe(s) in
+    isolation. A deliberate scope change from the old synchronous
+    handler's narrower behaviour - the admin control's own caption says
+    so.
+
+    Incident fix (10 Oct 2026, Andrew-reported): the ONE stage of that
+    pipeline explicitly NOT included any more is the reprice pass -
+    `is_queued_rescan=True` is passed into _run_nightly()'s own cfg
+    specifically to skip it (see that block's own comment for why a
+    single-universe rescan was repricing every OTHER real universe as
+    a side effect, a yfinance batch download nobody asked for).
 
     `rl_cooldown_active`/`rl_cooldown_until` and `abandoned_status`/
     `abandoned_info` are passed in already computed for this tick (see
@@ -2754,9 +2782,17 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
         log(f"[scheduler] starting queued rescan ({', '.join(universes)}) requested "
             f"by {rescan_request.get('requested_by') or 'owner'} at "
             f"{rescan_request.get('requested_at')}")
+        # Incident fix (10 Oct 2026, Andrew-reported): is_queued_rescan=True
+        # tells _run_nightly()'s own reprice-pass block this run is scoped
+        # to `universes` only, not the real scheduled nightly pass - see
+        # that block's own comment for why a queued rescan must never
+        # reprice every OTHER universe as a side effect.
         _record_job(
             "nightly", log,
-            lambda lg: _run_nightly({**cfg, "universes": universes}, lg, cancel_event=cancel_event),
+            lambda lg: _run_nightly(
+                {**cfg, "universes": universes, "is_queued_rescan": True},
+                lg, cancel_event=cancel_event,
+            ),
             cancel_event=cancel_event,
         )
     except TimeoutError:

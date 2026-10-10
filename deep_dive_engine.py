@@ -103,7 +103,8 @@ def _quality_breakdown(info):
 def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
             news_api_key=None, live_data=True, enable_social=True,
             discount_rate=None, perpetual_rate=None, growth_rate=None,
-            manual_fcf=None, get_price_history_failure_kind=None):
+            manual_fcf=None, get_price_history_failure_kind=None,
+            get_ticker_info_failure_kind=None):
     """
     Run a full single-ticker analysis and return a dict of everything the
     Deep Dive tab needs to render (metrics + chart data), or
@@ -126,6 +127,21 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     error_kind. Left None (the default) for a caller with no access to
     that side-channel - degrades to today's exact "not_found" behaviour,
     unchanged.
+
+    `get_ticker_info_failure_kind` (incident fix, 10 Oct 2026 - Yahoo
+    quoteSummary 401s 12:38-12:42 UTC, Andrew-reported): same contract
+    and reasoning as `get_price_history_failure_kind` above, for
+    get_ticker_info() instead. Before this, a provider failure that hit
+    ONLY the quoteSummary (.info) endpoint while price HISTORY kept
+    working (exactly this incident - price history is a different
+    Yahoo endpoint) skipped the df.empty check above entirely and fell
+    straight through to computing a headline from an empty `info` dict
+    - no company name, every info-dependent figure (shares outstanding,
+    financials) silently N/A, with no "temporarily unavailable" message
+    at all. Now checked right after get_ticker_info() is called, same
+    "fetch_failed" error_kind and message as the price-history case.
+    Left None (the default) for a caller with no access to that side-
+    channel - degrades to today's behaviour, unchanged.
 
     get_price_history / get_ticker_info / get_cashflow_df are passed in as
     callables (rather than imported directly) so this module reuses the
@@ -165,6 +181,21 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         }
 
     info = get_ticker_info(ticker)
+    if not info or len(info) < 5:
+        # Incident fix (10 Oct 2026): the SAME "fetch_failed" treatment
+        # as the price-history check above, for a provider failure that
+        # hit only the quoteSummary (.info) endpoint - see this
+        # function's own docstring at get_ticker_info_failure_kind.
+        _info_failure_kind = get_ticker_info_failure_kind(ticker) if get_ticker_info_failure_kind else None
+        if _info_failure_kind in ("rate_limited", "network"):
+            return {
+                "error": "Market data is temporarily unavailable - please try again shortly.",
+                "error_kind": "fetch_failed",
+            }
+        # Genuinely no info for this ticker (not a fetch failure) -
+        # fall through exactly as before this fix: every downstream
+        # computation already treats a missing/sparse `info` dict as
+        # "no positive EPS/FCF"/defaulted inputs, same as today.
 
     # Stage 1a-fix (3 Oct 2026, Director-directed, F1): get_ticker_info()/
     # get_price_history() are a raw, uncached-by-fundamentals_data

@@ -160,7 +160,7 @@ _topix_pool_df = pd.DataFrame({"Ticker": ["7203.T"]})  # no "Sector" column - TO
 
 def _fake_analyze_with_fallback(ticker, attention_lite=True, discount_rate=None, log=print,
                                  rate_limited_out=None, growth_summary_out=None,
-                                 oneoff_summary_out=None, shadow_out=None):
+                                 oneoff_summary_out=None, shadow_out=None, info_failed_out=None):
     return {
         "Ticker": ticker, "Type": "COMPOUNDER", "Company Name": "Toyota Motor Corp",
         "Price": 2850.0, "Quality": 70, "Quality Default": False,
@@ -194,7 +194,7 @@ _ftse_pool_df = pd.DataFrame({"Ticker": ["BARC.L"], "Sector": ["Financials"]})
 
 def _fake_analyze_ftse(ticker, attention_lite=True, discount_rate=None, log=print,
                         rate_limited_out=None, growth_summary_out=None,
-                        oneoff_summary_out=None, shadow_out=None):
+                        oneoff_summary_out=None, shadow_out=None, info_failed_out=None):
     row = _fake_analyze_with_fallback(ticker)
     row["Ticker"] = ticker
     row["_fallback_sector"] = "Some Other Yahoo Sector"  # deliberately different - must lose
