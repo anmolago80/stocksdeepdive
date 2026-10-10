@@ -14,24 +14,27 @@ anything anywhere - no logging, no file writes. The caller is
 responsible for logging only counts (tools_store.record_ledger_import),
 never a row's own description/amount.
 
-CATEGORY-NAME SUGGESTION RULE - A GENUINE AMBIGUITY, DISCLOSED HERE
-RATHER THAN SILENTLY RESOLVED: the instruction's own suggestion rule
-("a match applies only if the user has a category with that exact
-name") was written assuming free-form user-named categories. Step
-2's own Director-directed decision fixed the Ledger's categories to
-exactly the 10 presets in budget_planner_engine.CATEGORIES (mortgage/
-transport/food/utilities/insurance/health/education/subscriptions/
-fun/other) - a closed set whose own display LABELS (e.g. "Food &
-groceries", "Insurances") frequently do NOT exact-match the built-in
-suggestion list's own category names below (e.g. "Groceries",
-"Insurance") despite being the obviously-intended match. This module
-implements the rule EXACTLY as written (case-insensitive EXACT match
-against the caller-supplied category label set) rather than inventing
-an unrequested label remapping of its own - the practical consequence,
-honestly reported in the Step 4 commit, is that several built-in
-suggestions never fire a match in THIS build and fall through to
-"needs you" even for an obviously-recognised merchant. Flagged for the
-Director's own call, not decided unilaterally here.
+CATEGORY MATCHING - BY CATEGORY ID, NOT LABEL TEXT (10 Oct 2026,
+Director-directed fix): BUILTIN_SUGGESTIONS and ledger_rules (the
+"your rule" path - tools_store.get_merchant_rule/upsert_merchant_rule
+both already store the category ID, e.g. "food", never a display
+label) are both matched and returned BY THE FIXED CATEGORY ID from
+budget_planner_engine.CATEGORY_IDS, then translated to the caller's
+own display label via the `cat_id_to_label` map passed into
+suggest_category(). This replaces an earlier build that matched the
+built-in list's own category NAMES ("Groceries", "Insurance", ...)
+against the user's display labels ("Food & groceries", "Insurances")
+as case-insensitive exact text - which silently never matched, since
+Step 2's 10 fixed preset labels don't exact-match those names, so
+every built-in suggestion fell through to "needs you" even for an
+obviously-recognised merchant.
+
+One builtin group has no sensible 1:1 preset and is INTENTIONALLY
+left unmapped, per the instruction's own rule ("merchant groups with
+no sensible preset stay 'needs you'"): "Shopping" (AMAZON AU) could be
+groceries, electronics, a gift, anything - there is no single preset
+category it honestly belongs to. See BUILTIN_SUGGESTIONS' own mapping
+table below for every other group's chosen preset id.
 """
 import csv
 import io
@@ -225,55 +228,72 @@ def classify_parsed_row(row):
 # 4.3 Suggestions (rules only, no AI)
 # ---------------------------------------------------------------------
 
-# Director's own built-in starter list (instruction's own wording) -
-# kept here as a reviewable data structure, per the instruction's own
-# "kept in a reviewable data file" requirement. Ambiguous names (e.g.
+# Director's own built-in starter list, now keyed by the FIXED PRESET
+# CATEGORY ID (budget_planner_engine.CATEGORY_IDS) each merchant group
+# maps to - not by the built-in group's own old display name. Kept
+# here as a reviewable data structure, per the instruction's own "kept
+# in a reviewable data file" requirement. Ambiguous names (e.g.
 # LIBERTY - fuel or shop) are deliberately NOT in this list.
+#
+# Mapping table (old built-in group -> preset id -> preset label):
+#   Groceries         -> food          -> "Food & groceries"
+#   Transport         -> transport     -> "Transport (car, petrol, fares)"
+#   Utilities         -> utilities     -> "Utilities (power, water, internet, phone)"
+#   Phone & internet  -> utilities     -> "Utilities (power, water, internet, phone)" (merged - no separate preset)
+#   Health            -> health        -> "Health"
+#   Insurance         -> insurance     -> "Insurances"
+#   Subscriptions     -> subscriptions -> "Subscriptions"
+#   Shopping          -> (none)        -> no sensible preset - stays "needs you"
 BUILTIN_SUGGESTIONS = {
-    "Groceries": ["WOOLWORTHS", "COLES", "ALDI", "IGA"],
-    "Transport": ["TRANSLINK", "OPAL", "MYKI", "CALTEX", "BP", "AMPOL", "SHELL", "7-ELEVEN", "CELLOPARK"],
-    "Utilities": ["AGL", "ORIGIN ENERGY", "ENERGYAUSTRALIA", "ALINTA"],
-    "Phone & internet": ["TPG", "TELSTRA", "OPTUS", "VODAFONE", "AUSSIE BROADBAND"],
-    "Health": ["CHEMIST WAREHOUSE", "PRICELINE"],
-    "Insurance": ["SUNCORP INSURANCE", "YOUI", "NRMA", "RACQ", "AAMI", "BUDGET DIRECT", "ALLIANZ"],
-    "Subscriptions": ["APPLE.COM/BILL", "MICROSOFT", "NETFLIX", "SPOTIFY"],
-    "Shopping": ["AMAZON AU"],
+    "food": ["WOOLWORTHS", "COLES", "ALDI", "IGA"],
+    "transport": ["TRANSLINK", "OPAL", "MYKI", "CALTEX", "BP", "AMPOL", "SHELL", "7-ELEVEN", "CELLOPARK"],
+    "utilities": [
+        "AGL", "ORIGIN ENERGY", "ENERGYAUSTRALIA", "ALINTA",
+        "TPG", "TELSTRA", "OPTUS", "VODAFONE", "AUSSIE BROADBAND",
+    ],
+    "health": ["CHEMIST WAREHOUSE", "PRICELINE"],
+    "insurance": ["SUNCORP INSURANCE", "YOUI", "NRMA", "RACQ", "AAMI", "BUDGET DIRECT", "ALLIANZ"],
+    "subscriptions": ["APPLE.COM/BILL", "MICROSOFT", "NETFLIX", "SPOTIFY"],
+    # "Shopping" (AMAZON AU) intentionally has no entry here - no single
+    # preset category honestly fits general shopping - falls through
+    # to "needs you".
 }
 
 
 def _builtin_category_for_merchant(rule_key):
-    """(category_name, matched) for the built-in list - matches if
+    """(category_id, matched) for the built-in list - matches if
     rule_key STARTS WITH (or equals) one of the listed merchant
     strings, case-insensitively (e.g. "sample software" doesn't match
-    anything here; "amazon au retail" matches "AMAZON AU")."""
+    anything here; "amazon au retail" matches nothing - "Shopping" is
+    deliberately not in BUILTIN_SUGGESTIONS)."""
     upper_key = rule_key.upper()
-    for category_name, merchants in BUILTIN_SUGGESTIONS.items():
+    for category_id, merchants in BUILTIN_SUGGESTIONS.items():
         for m in merchants:
             if upper_key.startswith(m.upper()):
-                return category_name, True
+                return category_id, True
     return None, False
 
 
-def suggest_category(rule_key, user_rule_lookup, available_category_labels):
-    """(category, source) - source is "your rule" | "built-in" |
-    "needs you". `user_rule_lookup(rule_key)` is a callable the caller
-    passes (normally tools_store.get_merchant_rule bound to the
-    signed-in email) - this module never imports tools_store itself,
-    keeping the "no file I/O" rule. `available_category_labels` is the
-    set of the user's own valid category names (case preserved) - a
-    built-in suggestion only fires if its own category name is an
-    EXACT match (case-insensitive) against one of these, per the
-    instruction's own explicit rule (see this module's own docstring
-    for why that is a real-but-disclosed limitation with a 10-preset
-    category set)."""
-    own_rule = user_rule_lookup(rule_key)
-    if own_rule:
-        return own_rule, "your rule"
-    builtin_name, matched = _builtin_category_for_merchant(rule_key)
-    if matched:
-        _available_lower = {c.lower() for c in (available_category_labels or [])}
-        if builtin_name.lower() in _available_lower:
-            return builtin_name, "built-in"
+def suggest_category(rule_key, user_rule_lookup, cat_id_to_label):
+    """(label, source) - source is "your rule" | "built-in" | "needs
+    you". `user_rule_lookup(rule_key)` is a callable the caller passes
+    (normally tools_store.get_merchant_rule bound to the signed-in
+    email) - this module never imports tools_store itself, keeping the
+    "no file I/O" rule. It returns a category ID (the same ID
+    ledger_rules/upsert_merchant_rule store), or None.
+    `cat_id_to_label`: {category_id: display_label} for the user's
+    real preset categories (budget_planner_engine.CATEGORIES). Both
+    "your rule" and the built-in list are matched BY CATEGORY ID
+    against each other and against BUILTIN_SUGGESTIONS, then
+    translated to the caller's own display label here - never by
+    matching label text (see this module's own docstring for why the
+    old text-matching approach silently never fired)."""
+    own_rule_id = user_rule_lookup(rule_key)
+    if own_rule_id and own_rule_id in (cat_id_to_label or {}):
+        return cat_id_to_label[own_rule_id], "your rule"
+    builtin_id, matched = _builtin_category_for_merchant(rule_key)
+    if matched and builtin_id in (cat_id_to_label or {}):
+        return cat_id_to_label[builtin_id], "built-in"
     return None, "needs you"
 
 

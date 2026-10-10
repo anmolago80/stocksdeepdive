@@ -125,36 +125,65 @@ check("same-day identical $26.99 AMAZON rows: both survive classification (2, no
 
 # ======================================================================
 # CHECK 6: suggestions - precedence (your rule > built-in > needs you),
-# and the built-in list's own "exact category name match" rule.
+# matched BY CATEGORY ID against the real 10-preset ids (10 Oct 2026
+# fix - previously matched by label text, which never fired).
 # ======================================================================
-_woolworths_category, _woolworths_source = lie.suggest_category(
-    "woolworths", lambda k: None, ["Food & groceries", "Groceries"],
-)
-check('WOOLWORTHS matches the built-in list under "Groceries" when the user HAS that '
-      "exact category", _woolworths_category == "Groceries" and _woolworths_source == "built-in")
+_REAL_CAT_ID_TO_LABEL = {
+    "mortgage": "Mortgage / rent",
+    "transport": "Transport (car, petrol, fares)",
+    "food": "Food & groceries",
+    "utilities": "Utilities (power, water, internet, phone)",
+    "insurance": "Insurances",
+    "health": "Health",
+    "education": "School / childcare",
+    "subscriptions": "Subscriptions",
+    "fun": "Fun, eating out, hobbies",
+    "other": "Everything else",
+}
 
-_woolworths_no_match_category, _woolworths_no_match_source = lie.suggest_category(
-    "woolworths", lambda k: None, ["Food & groceries"],  # the REAL preset label, not "Groceries"
+_woolworths_category, _woolworths_source = lie.suggest_category(
+    "woolworths", lambda k: None, _REAL_CAT_ID_TO_LABEL,
 )
-check('WOOLWORTHS falls through to "needs you" when the user\'s only category is the real '
-      'preset label ("Food & groceries"), not an exact "Groceries" match - the disclosed, '
-      "real consequence of the fixed-10-preset category set",
-      _woolworths_no_match_category is None and _woolworths_no_match_source == "needs you")
+check("WOOLWORTHS matches the built-in list (id 'food') and is translated to the real preset "
+      'label "Food & groceries" via "built-in"',
+      _woolworths_category == "Food & groceries" and _woolworths_source == "built-in")
+
+_agl_category, _agl_source = lie.suggest_category(
+    "agl sales pty ltd", lambda k: None, _REAL_CAT_ID_TO_LABEL,
+)
+check('AGL matches the built-in list (id \'utilities\') -> "Utilities (power, water, internet, '
+      'phone)" via "built-in"',
+      _agl_category == "Utilities (power, water, internet, phone)" and _agl_source == "built-in")
+
+_amazon_category, _amazon_source = lie.suggest_category(
+    "amazon au retail", lambda k: None, _REAL_CAT_ID_TO_LABEL,
+)
+check('AMAZON AU (the "Shopping" group) has no sensible single preset and is intentionally '
+      'unmapped - falls through to "needs you" even though plenty of real categories are available',
+      _amazon_category is None and _amazon_source == "needs you")
 
 _rule_category, _rule_source = lie.suggest_category(
-    "woolworths", lambda k: "My Custom Category" if k == "woolworths" else None, [],
+    "woolworths", lambda k: "other" if k == "woolworths" else None, _REAL_CAT_ID_TO_LABEL,
 )
-check("the user's OWN rule takes precedence over the built-in list entirely",
-      _rule_category == "My Custom Category" and _rule_source == "your rule")
+check("the user's OWN rule (stored as a category ID, e.g. 'other') takes precedence over the "
+      "built-in list, and is translated to its real label",
+      _rule_category == "Everything else" and _rule_source == "your rule")
+
+_stale_rule_category, _stale_rule_source = lie.suggest_category(
+    "woolworths", lambda k: "deleted_custom_id" if k == "woolworths" else None, _REAL_CAT_ID_TO_LABEL,
+)
+check("a stored rule pointing at an id that's no longer a real preset falls back to the "
+      "built-in match rather than returning a label-less id",
+      _stale_rule_category == "Food & groceries" and _stale_rule_source == "built-in")
 
 _unknown_category, _unknown_source = lie.suggest_category(
-    "sample software", lambda k: None, ["Subscriptions"],
+    "sample software", lambda k: None, _REAL_CAT_ID_TO_LABEL,
 )
-check('an unrecognised merchant ("sample software") is "needs you" even with a plausible '
+check('an unrecognised merchant ("sample software") is "needs you" even with every real '
       "category available", _unknown_category is None and _unknown_source == "needs you")
 
 _liberty_category, _liberty_source = lie.suggest_category(
-    "liberty", lambda k: None, ["Transport", "Fun, eating out, hobbies"],
+    "liberty", lambda k: None, _REAL_CAT_ID_TO_LABEL,
 )
 check('the deliberately-ambiguous "LIBERTY" (fuel or shop) is NOT in the built-in list at all',
       _liberty_source == "needs you")

@@ -26718,10 +26718,9 @@ def _render_budget_ledger_import_expander(email, active_plan, _bl, _bll, cat_id_
                 _candidates = [c for c in _classified if not c["is_card_repayment"]]
                 _existing_fps = tools_store.get_import_fingerprint_counts(email)
                 _new_rows, _skipped = ledger_import_engine.dedupe_against_existing(_candidates, _existing_fps)
-                _available_labels = list(cat_id_to_label.values())
                 for _row in _new_rows:
                     _sugg_cat, _sugg_source = ledger_import_engine.suggest_category(
-                        _row["rule_key"], lambda k: tools_store.get_merchant_rule(email, k), _available_labels,
+                        _row["rule_key"], lambda k: tools_store.get_merchant_rule(email, k), cat_id_to_label,
                     )
                     _row["category"] = _sugg_cat or _needs_you_placeholder
                     _row["why"] = _sugg_source
