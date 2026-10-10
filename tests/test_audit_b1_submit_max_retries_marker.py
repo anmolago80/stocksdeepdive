@@ -120,8 +120,13 @@ check("the surviving marker carries the real custom_id_map for the attempted ent
 # surviving marker against batches.list() - a batch found at/after the
 # marker's own timestamp is ADOPTED, never duplicated.
 # ======================================================================
-_found_batch = mock.Mock(id="msgbatch_b1_reconciled",
-                          created_at=datetime.now(timezone.utc) + timedelta(seconds=1))
+_found_batch = mock.Mock(
+    id="msgbatch_b1_reconciled",
+    created_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+    # request_counts sums to 1 - matches this fixture's own pool of 3
+    # tickers packed into a single request (len(custom_id_map) == 1).
+    request_counts=mock.Mock(processing=0, succeeded=1, errored=0, canceled=0, expired=0),
+)
 with mock.patch("anthropic.Anthropic") as MockClient3:
     instance3 = MockClient3.return_value
     instance3.messages.batches.list.return_value = [_found_batch]
@@ -168,6 +173,76 @@ check("with nothing found during reconciliation, a FRESH batch is submitted",
       result4 == "msgbatch_b1_fresh")
 check("the old marker is gone and replaced by the new batch's own in-flight state",
       ts.get_submitting_marker() is None and ts.get_batch_state()["batch_id"] == "msgbatch_b1_fresh")
+
+
+# ======================================================================
+# CHECK 5 (Director-directed follow-up, 10 Oct 2026): the time-window
+# test ALONE is not enough - a candidate batch created at/after the
+# marker's own timestamp must ALSO have a matching request count
+# (sum of request_counts' own fields == len(custom_id_map)) before
+# being adopted. A time-window match with the WRONG count is treated
+# as no match at all (kept searching), never adopted; a later
+# candidate with the RIGHT count still gets adopted correctly.
+# ======================================================================
+if os.path.exists(ts.DB_PATH):
+    os.remove(ts.DB_PATH)
+ts.seed_pool_presence({row["ticker"]: 3 for row in _POOL}, "2026-10-09")
+ts.save_submitting_marker("2026-10-09", te.MODEL_TOP100, {"t100-0": {"entrants": {"B1T0": {}}}})
+# expected_count = len({"t100-0": ...}) = 1
+
+_wrong_count_batch = mock.Mock(
+    id="msgbatch_b1_wrong_count",
+    created_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+    # sums to 2, not the expected 1 - same time window, wrong count.
+    request_counts=mock.Mock(processing=2, succeeded=0, errored=0, canceled=0, expired=0),
+)
+_right_count_batch = mock.Mock(
+    id="msgbatch_b1_right_count",
+    created_at=datetime.now(timezone.utc) + timedelta(seconds=2),
+    # sums to 1 - matches expected_count.
+    request_counts=mock.Mock(processing=0, succeeded=0, errored=1, canceled=0, expired=0),
+)
+with mock.patch("anthropic.Anthropic") as MockClient5:
+    instance5 = MockClient5.return_value
+    instance5.messages.batches.list.return_value = [_wrong_count_batch, _right_count_batch]
+    logs5 = []
+    result5 = te.submit_nightly_batch(pool=_POOL, log=logs5.append)
+
+check("a time-window match with the WRONG request count is never adopted - the "
+      "RIGHT-count candidate further down the list is adopted instead",
+      result5 == "msgbatch_b1_right_count")
+check("the wrong-count candidate is logged as a non-match, not silently skipped",
+      any("msgbatch_b1_wrong_count" in m and "doesn't match" in m for m in logs5))
+check("no NEW batches.create() call happened - the right-count candidate was adopted",
+      not instance5.messages.batches.create.called)
+ts.clear_batch_state()
+
+# When NO candidate in the window has a matching count, this is
+# correctly treated as "no match found" - marker cleared, safe to
+# submit fresh (never adopts a wrong-count batch as a last resort).
+if os.path.exists(ts.DB_PATH):
+    os.remove(ts.DB_PATH)
+ts.seed_pool_presence({row["ticker"]: 3 for row in _POOL}, "2026-10-09")
+ts.save_submitting_marker("2026-10-09", te.MODEL_TOP100, {"t100-0": {"entrants": {"B1T0": {}}}})
+
+with mock.patch("anthropic.Anthropic") as MockClient6, \
+     mock.patch("anthropic.types.message_create_params.MessageCreateParamsNonStreaming",
+                side_effect=lambda **kw: kw), \
+     mock.patch("anthropic.types.messages.batch_create_params.Request",
+                side_effect=lambda **kw: kw):
+    instance6 = MockClient6.return_value
+    instance6.messages.batches.list.return_value = [_wrong_count_batch]
+    fresh_batch6 = mock.Mock(id="msgbatch_b1_fresh_after_count_mismatch")
+    instance6.with_options.return_value.messages.batches.create.return_value = fresh_batch6
+    logs6 = []
+    result6 = te.submit_nightly_batch(pool=_POOL, log=logs6.append)
+
+check("with only a wrong-count candidate in the window, a FRESH batch is submitted "
+      "instead of wrongly adopting it",
+      result6 == "msgbatch_b1_fresh_after_count_mismatch")
+check("the marker is cleared and replaced by the fresh batch's own in-flight state",
+      ts.get_submitting_marker() is None
+      and ts.get_batch_state()["batch_id"] == "msgbatch_b1_fresh_after_count_mismatch")
 
 print()
 print(f"PASS={passed} FAIL={failed}")

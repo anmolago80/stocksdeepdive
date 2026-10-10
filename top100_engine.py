@@ -3399,6 +3399,23 @@ def run_request_blank_strike_conversion_once(model=MODEL_TOP100, log=print):
 _SUBMIT_RECONCILE_SKEW_SECONDS = 5
 
 
+def _batch_request_total(batch):
+    """Sum of a MessageBatch's own request_counts fields (processing/
+    succeeded/errored/canceled/expired) - the anthropic SDK's
+    MessageBatchRequestCounts has no literal `.total` attribute, but
+    its own docstring guarantees "the sum of all values always matches
+    the total number of requests in the batch." Used by _reconcile_
+    submitting_marker()'s own request-count corroboration (audit fix
+    B1 follow-up / Director-directed, 10 Oct 2026) - see that
+    function's own docstring. getattr(..., 0) so an SDK field rename
+    degrades to "doesn't match" (never adopts) rather than raising."""
+    rc = getattr(batch, "request_counts", None)
+    if rc is None:
+        return 0
+    return sum(getattr(rc, field, 0) or 0 for field in
+               ("processing", "succeeded", "errored", "canceled", "expired"))
+
+
 def _reconcile_submitting_marker(marker, log=print):
     """Resolves a submitting-marker left behind by a create() call
     whose outcome was never learned (B1/T4 - see submit_nightly_
@@ -3413,7 +3430,19 @@ def _reconcile_submitting_marker(marker, log=print):
     the server at all) - in that case the marker is cleared and it is
     safe for the caller to submit fresh. On its OWN failure (batches.
     list() itself unreachable), the marker is left untouched and None
-    is returned - never guess, try reconciling again next time."""
+    is returned - never guess, try reconciling again next time.
+
+    Director-directed follow-up (10 Oct 2026): the time-window test
+    alone can't rule out a DIFFERENT batch (e.g. a manually-submitted
+    one, or an unrelated process's own batch landing in the same
+    20-row listing) that merely happens to have been created at/after
+    attempted_at - unlikely with one process at a time, but not
+    provably impossible. Now ALSO requires the candidate batch's own
+    request count (_batch_request_total()) to equal len(marker[
+    "custom_id_map"]) - the exact number of requests THIS attempt's
+    own create() call would have submitted - before adopting it. A
+    time-window match whose count disagrees is treated as no match at
+    all (kept searching the rest of the list, never adopted)."""
     try:
         import anthropic
         client = anthropic.Anthropic()
@@ -3426,15 +3455,23 @@ def _reconcile_submitting_marker(marker, log=print):
         attempted_at = datetime.fromisoformat(marker["attempted_at"])
     except Exception:
         attempted_at = None
+    expected_count = len(marker.get("custom_id_map") or {})
     if attempted_at is not None:
         cutoff = attempted_at - timedelta(seconds=_SUBMIT_RECONCILE_SKEW_SECONDS)
         for batch in recent:
-            if batch.created_at >= cutoff:
-                top100_store.save_batch_state(batch.id, marker["quarter"], marker["model"], marker["custom_id_map"])
-                top100_store.clear_submitting_marker()
-                log(f"[top100] reconciled a pending submission - batch {batch.id} from an "
-                    f"earlier attempt was found and adopted (never duplicated)")
-                return batch.id
+            if batch.created_at < cutoff:
+                continue
+            actual_count = _batch_request_total(batch)
+            if actual_count != expected_count:
+                log(f"[top100] candidate batch {batch.id} is in the right time window "
+                    f"but its request count ({actual_count}) doesn't match this attempt's "
+                    f"own ({expected_count}) - not a match, still searching")
+                continue
+            top100_store.save_batch_state(batch.id, marker["quarter"], marker["model"], marker["custom_id_map"])
+            top100_store.clear_submitting_marker()
+            log(f"[top100] reconciled a pending submission - batch {batch.id} from an "
+                f"earlier attempt was found and adopted (never duplicated)")
+            return batch.id
     top100_store.clear_submitting_marker()
     log("[top100] pending submission marker cleared - no matching batch ever reached "
         "the server, safe to submit")
