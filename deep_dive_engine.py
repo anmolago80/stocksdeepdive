@@ -335,6 +335,17 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         _bundle = fundamentals_data.peek_cached_bundle(ticker)
         if _bundle:
             income_df = _bundle.get("income")
+            # Audit fix C1 / Fable finding V2 (10 Oct 2026, instruction_
+            # combined_10oct.md PART C): fundamentals_data.get_bundle()'s
+            # own income table (peek_cached_bundle() is a cache-only read
+            # of the SAME bundle) is already converted to listing
+            # currency - same fact nightly_scan.py's own matching branch
+            # relies on. Previously left this at its init default of
+            # False, so dcf_intrinsic_value() converted it a SECOND time
+            # for every Deep Dive view that happened to hit a warm
+            # compounder-page cache.
+            if income_df is not None and not income_df.empty:
+                _income_df_currency_converted = True
         elif fcf_valuation_engine.needs_oneoff_check(cashflow_df):
             # Step 4 one-off detection, Deep Dive path (Commit 2 of
             # instruction_dcf_unreliable_pool_step4_nightly.md, owner-
@@ -346,6 +357,11 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
             # not a per-scan multiplier the way it would be in nightly_scan.
             # Any fetch failure -> income_df stays None, identical to today.
             income_df = fundamentals_data.get_bundle(ticker).get("income")
+            # Audit fix C1 / Fable finding V2: same reasoning as the
+            # peek_cached_bundle() branch just above - get_bundle()'s own
+            # income table is already converted.
+            if income_df is not None and not income_df.empty:
+                _income_df_currency_converted = True
         else:
             income_df = None
     intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(

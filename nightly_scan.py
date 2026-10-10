@@ -728,15 +728,15 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     # through the exact same needs_oneoff_check()-gated path as every
     # other ticker, identical to before this instruction.
     _income_df_fresh_fetch = False
-    # Addendum 2 item 1 (5 Oct 2026, Director-directed): True ONLY when
+    # Addendum 2 item 1 (5 Oct 2026, Director-directed): True when
     # income_df came from financials_income_store AND that store entry's
     # own currency_converted flag says so - see fcf_valuation_engine.
-    # dcf_intrinsic_value()'s own income_df_currency_converted docstring
-    # for why the pre-existing one-off-check fetch path just below (the
-    # `elif` branch) deliberately never sets this True, even though its
-    # own income_df is ALSO already converted: that pre-existing double-
-    # conversion is a separate, switch-independent bug, out of this
-    # addendum's stated scope ("Switch OFF: change nothing").
+    # dcf_intrinsic_value()'s own income_df_currency_converted docstring.
+    # Audit fix C1 / Fable finding V2 (10 Oct 2026): the one-off-check
+    # fetch path just below (the `elif` branch) ALSO sets this True now -
+    # its own income_df is, exactly the same way, already converted by
+    # fundamentals_data.get_bundle() - see that branch's own comment for
+    # the double-conversion this closes.
     _income_df_currency_converted = False
     _financials_mode_live = (
         financials_classifier.is_financials_store_live()
@@ -760,6 +760,19 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # this module, and isn't counted as "fetched" here.
         if income_df is not None and not income_df.empty:
             _income_df_fresh_fetch = True
+            # Audit fix C1 / Fable finding V2 (10 Oct 2026, instruction_
+            # combined_10oct.md PART C): fundamentals_data.get_bundle()'s
+            # own income table is ALREADY converted to listing currency
+            # (same fact this function's own "Way 1" comment just below
+            # already relies on for financials_income_store.save()'s
+            # currency_converted=True) - this was the one caller of
+            # get_bundle() in this module that never threaded that fact
+            # into _income_df_currency_converted, so dcf_intrinsic_value()
+            # converted it a SECOND time for every non-financials-mode
+            # ticker whose one-off check fired. Financials that report in
+            # USD but list on the ASX (e.g. QBE.AX) lost roughly another
+            # full USD->AUD conversion on top of the correct one.
+            _income_df_currency_converted = True
             if oneoff_summary_out is not None:
                 oneoff_summary_out["income_fetched"] = oneoff_summary_out.get("income_fetched", 0) + 1
 

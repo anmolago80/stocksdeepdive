@@ -2300,8 +2300,23 @@ def dcf_intrinsic_value(
         # fallback (meta["fcf_source"] == "ocf_fallback_financials")
         # always comes from cashflow_df, which is never pre-converted,
         # so it still needs this conversion exactly as before.
-        _already_converted = (
-            income_df_currency_converted and meta.get("fcf_source") == "net_income_financials"
+        #
+        # Audit fix C1 / Fable finding V9 (10 Oct 2026, instruction_
+        # combined_10oct.md PART C): the EBITDA bridge
+        # (meta["fcf_base_source"] == "ebitda_bridge" - see
+        # _ebitda_bridge_base()'s own docstring) computes its base from
+        # income_df's own operating-income/D&A/tax rows too (its capex
+        # term alone comes from cashflow_df, same as every other path
+        # here) - the SAME already-converted income_df this whole check
+        # exists for, just reached via normalized_base_and_series()'s
+        # one-off/distorted-year branch instead of the financials-mode
+        # net-income path. Without this, a financials-mode or one-off-
+        # checked ticker whose cash-flow had a distorted year (forcing
+        # the EBITDA-bridge fallback) still got double-converted even
+        # after the fix just above.
+        _already_converted = income_df_currency_converted and (
+            meta.get("fcf_source") == "net_income_financials"
+            or meta.get("fcf_base_source") == "ebitda_bridge"
         )
         if fin_ccy and listing_ccy and fin_ccy != listing_ccy and not _already_converted:
             _fx, _fx_src = fx_rate(fin_ccy, listing_ccy)
