@@ -59,6 +59,59 @@ import capm_engine as capm
 import fcf_valuation_engine as fcf
 import fundamentals_data as fd
 import symbol_mapping
+import yfinance
+import nightly_scan
+
+# Audit fix A6 / Fable finding Q2 (10 Oct 2026): this file timed out
+# (rc=124 in the sweep) rather than failing cleanly, for two separate
+# reasons - both now stubbed globally, module-level attribute patches
+# rather than a context manager, since _load_module_from_git() below
+# executes the OLD/NEW fcf_valuation_engine.py/capm_engine.py source
+# into ISOLATED module namespaces that each still resolve `yf`/
+# `nightly_scan` to these SAME cached module objects (plain `import X
+# as y` binds a name to whatever's already in sys.modules - it
+# doesn't re-execute X's own top-level code), so a global patch here
+# covers fcf/capm, old_fcf/old_capm AND new_fcf/new_capm uniformly:
+#
+#   1. fcf_valuation_engine.fx_rate() tries a REAL yf.Ticker(...).
+#      history() call before falling back to its static FX table -
+#      this sandbox has no outbound network access, so that call
+#      doesn't fail fast, it hangs (DNS/connect retries). Every non-
+#      USD fixture below (CSL.AX/OCL.AX/SHEL.L/NTR.TO/AX_BANK.AX/the
+#      JPY fixtures, plus the direct fx_rate("JPY","USD") call) goes
+#      through this path.
+#   2. capm_engine.get_growth_estimates_5y() (called from dcf_
+#      intrinsic_value() for every ticker, not only JPY) routes
+#      through nightly_scan._yf_call_with_retry()'s real exponential-
+#      backoff retry loop - even with (1) above making each individual
+#      yf.Ticker(...) attempt fail INSTANTLY, the real time.sleep(...)
+#      between retries still adds up to tens of seconds per ticker,
+#      which is what actually produced the observed hang (confirmed
+#      via faulthandler.dump_traceback_later() pointing straight at
+#      time.sleep() inside _yf_call_with_retry, called from capm_
+#      engine.py's _fetch_growth_estimates_5y_uncached()).
+_yf_ticker_patcher = mock.patch.object(
+    yfinance, "Ticker", side_effect=Exception("no live network in this sandbox"))
+_yf_ticker_patcher.start()
+
+
+def _fast_yf_call_with_retry(fn, log=print, ticker=None, label=None, attempts=3, rate_limited_out=None):
+    """Same contract as the real _yf_call_with_retry() (fn()'s result,
+    or None on total failure) but calls fn() exactly ONCE - no retry,
+    no time.sleep() - since every fn() in this file already fails
+    instantly via the yfinance.Ticker patch above, there is nothing a
+    real retry could ever recover in this offline sandbox."""
+    try:
+        return fn()
+    except Exception:
+        if rate_limited_out is not None:
+            rate_limited_out[0] = False
+        return None
+
+
+_yf_retry_patcher = mock.patch.object(
+    nightly_scan, "_yf_call_with_retry", side_effect=_fast_yf_call_with_retry)
+_yf_retry_patcher.start()
 
 
 def _mk_cashflow_df(ocf, capex, years=5, growth=1.0):

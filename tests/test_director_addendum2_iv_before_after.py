@@ -32,17 +32,30 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ======================================================================
 # Grep-level confirmation first: no valuation-engine file changed
-# between 1d09107 and HEAD across any of addendum 2's 5 commits.
+# between 1d09107 and cc29484 across any of addendum 2's 5 commits.
+#
+# Audit fix A6 / Fable finding Q1 (10 Oct 2026): this used to compare
+# 1d09107 against HEAD - a MOVING target. The day this test was
+# written, HEAD and cc29484 (addendum 2's own last commit) were the
+# same commit, so the comparison held; every commit added to main
+# since then (none of which have anything to do with addendum 2) made
+# HEAD march further away from cc29484, so this assertion was only
+# ever going to fail once ANY future commit touched one of these
+# files for an unrelated reason - which is exactly what happened once
+# Part C's valuation fixes landed. Pinned to the fixed historical
+# range (1d09107..cc29484) this test was actually meant to prove,
+# which can never change regardless of what lands on main afterwards.
 # ======================================================================
 _BASE_COMMIT = "1d09107"
+_AFTER_COMMIT = "cc29484"
 _valuation_files = ["fcf_valuation_engine.py", "capm_engine.py", "auto_compounder_engine.py",
                      "resolver_engine.py", "deep_dive_engine.py", "moat_engine.py"]
 _diff = subprocess.run(
-    ["git", "diff", "--stat", _BASE_COMMIT, "HEAD", "--"] + _valuation_files,
+    ["git", "diff", "--stat", _BASE_COMMIT, _AFTER_COMMIT, "--"] + _valuation_files,
     cwd=REPO_ROOT, capture_output=True, text=True, check=True,
 ).stdout.strip()
-assert _diff == "", f"a valuation-engine file DID change between {_BASE_COMMIT} and HEAD:\n{_diff}"
-print(f"[grep_confirmation] git diff --stat {_BASE_COMMIT} HEAD -- "
+assert _diff == "", f"a valuation-engine file DID change between {_BASE_COMMIT} and {_AFTER_COMMIT}:\n{_diff}"
+print(f"[grep_confirmation] git diff --stat {_BASE_COMMIT} {_AFTER_COMMIT} -- "
       f"{' '.join(_valuation_files)} is EMPTY - no valuation engine file touched OK")
 
 
@@ -155,10 +168,28 @@ finally:
     else:
         sys.modules.pop("fcf_valuation_engine", None)
 
-# --- AFTER: this commit's current code ---
-import capm_engine as new_capm
-import fcf_valuation_engine as new_fcf
-_after = _run_fixtures(new_fcf, new_capm)
+# --- AFTER: commit cc29484 (addendum 2's own last commit) - pinned
+# the same way as BEFORE above (A6/Q1 fix), rather than importing
+# whatever the live module happens to be on HEAD right now. Addendum
+# 2's own claim was always about these two specific historical
+# commits, not about "now" - and Part C's own later, DELIBERATE
+# valuation-engine changes are exactly the kind of future commit this
+# pin is meant to stay inert against.
+_saved_capm2 = sys.modules.pop("capm_engine", None)
+_saved_fcf2 = sys.modules.pop("fcf_valuation_engine", None)
+try:
+    new_capm = _load_module_from_git("capm_engine.py", "capm_engine", _AFTER_COMMIT)
+    new_fcf = _load_module_from_git("fcf_valuation_engine.py", "fcf_valuation_engine", _AFTER_COMMIT)
+    _after = _run_fixtures(new_fcf, new_capm)
+finally:
+    if _saved_capm2 is not None:
+        sys.modules["capm_engine"] = _saved_capm2
+    else:
+        sys.modules.pop("capm_engine", None)
+    if _saved_fcf2 is not None:
+        sys.modules["fcf_valuation_engine"] = _saved_fcf2
+    else:
+        sys.modules.pop("fcf_valuation_engine", None)
 
 
 print("\n[iv_before_after] intrinsic-value-level before/after, every fixture:")
