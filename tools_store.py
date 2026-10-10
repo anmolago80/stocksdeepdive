@@ -1452,3 +1452,66 @@ def delete_all_ledger_data(email):
         conn.execute("DELETE FROM ledger_rules WHERE user_id = ?", (email,))
         conn.execute("DELETE FROM ledger_imports WHERE user_id = ?", (email,))
         conn.execute("DELETE FROM ledger_category_flags WHERE user_id = ?", (email,))
+
+
+def get_import_fingerprint_counts(email):
+    """{(date, amount_cents, raw_description): count} across every
+    PREVIOUSLY IMPORTED row (source='import') for this email - the
+    dedup check's own "how many of this fingerprint are already
+    stored" lookup (Step 4). Deliberately scoped to source='import'
+    only: a manually-typed entry that happens to share the same date/
+    amount/description is a "possible duplicate of a typed entry" hint
+    for the user to decide on, never an automatic dedup match
+    (instruction's own explicit rule)."""
+    if not email:
+        return {}
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT date, amount_cents, raw_description FROM ledger_entries "
+            "WHERE user_id = ? AND source = 'import'",
+            (email,),
+        ).fetchall()
+    counts = {}
+    for date, amount_cents, raw_description in rows:
+        key = (date, amount_cents, raw_description)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def manual_entry_dates_amounts(email, date_from, date_to):
+    """{(date, amount_cents)} for every MANUALLY-typed row (source=
+    'manual') in this range - Step 4's own "possible duplicate of a
+    typed entry" hint lookup (never an automatic match, per the
+    instruction's own rule - the caller just shows a hint)."""
+    if not email:
+        return set()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT date, amount_cents FROM ledger_entries "
+            "WHERE user_id = ? AND source = 'manual' AND date >= ? AND date <= ?",
+            (email, date_from, date_to),
+        ).fetchall()
+    return {(d, a) for d, a in rows}
+
+
+def save_ledger_import_rows(email, rows, import_batch_id):
+    """Inserts every row in `rows` (each {date, description,
+    raw_description, category, amount_cents, note_fx}) as source=
+    'import' with the given import_batch_id, in ONE transaction -
+    Step 4's own bulk-save for the review screen's "Save N rows"
+    button. Returns the number of rows actually inserted."""
+    if not email or not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        for r in rows:
+            conn.execute(
+                "INSERT INTO ledger_entries "
+                "(user_id, date, description, raw_description, category, amount_cents, "
+                "source, import_batch_id, note_fx, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?)",
+                (email, r["date"], r.get("description") or r.get("merchant") or "",
+                 r.get("raw_description"), r["category"], int(r["amount_cents"]),
+                 import_batch_id, r.get("note_fx"), now, now),
+            )
+    return len(rows)

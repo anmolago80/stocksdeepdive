@@ -92,6 +92,7 @@ import insurance_engine
 import super_engine
 import property_vs_index_engine
 import tools_store
+import ledger_import_engine
 import i18n
 
 
@@ -26691,6 +26692,135 @@ def _render_budget_planner_ledger_is_bill_expander(email, _bll, is_bill_map):
                 st.rerun()
 
 
+def _render_budget_ledger_import_expander(email, active_plan, _bl, _bll, cat_id_to_label, cat_label_to_id):
+    """Budget Ledger STEP 4 (9 Oct 2026, Director-directed, build go):
+    B, bank CSV import - "Import from bank" button opens an expander
+    with the file uploader; a new upload is parsed/classified/
+    suggested/deduped once (ledger_import_engine.py, pure logic) and
+    held in session_state as a pending review until "Save N rows" is
+    clicked - nothing is saved just from choosing a file."""
+    _pending_key = _tools_plan_key(active_plan, "tools_ledger_import_pending")
+    _needs_you_placeholder = _bll("import_needs_you_placeholder")
+
+    with st.expander(_bll("import_expander")):
+        _uploaded = st.file_uploader(
+            _bll("import_uploader_label"), type=["csv"], max_upload_size=1,
+            key=_tools_plan_key(active_plan, "tools_ledger_import_uploader"),
+        )
+        if _uploaded is not None and st.session_state.get(f"{_pending_key}_source_name") != _uploaded.name:
+            _text = _uploaded.getvalue().decode("utf-8", errors="replace")
+            _parsed = ledger_import_engine.parse_bank_csv(_text)
+            if _parsed["layout"] is None:
+                st.session_state[_pending_key] = {"unrecognised": True, "column_count": _parsed["column_count"]}
+            else:
+                _classified = [ledger_import_engine.classify_parsed_row(r) for r in _parsed["rows"]]
+                _repayments = [c for c in _classified if c["is_card_repayment"]]
+                _candidates = [c for c in _classified if not c["is_card_repayment"]]
+                _existing_fps = tools_store.get_import_fingerprint_counts(email)
+                _new_rows, _skipped = ledger_import_engine.dedupe_against_existing(_candidates, _existing_fps)
+                _available_labels = list(cat_id_to_label.values())
+                for _row in _new_rows:
+                    _sugg_cat, _sugg_source = ledger_import_engine.suggest_category(
+                        _row["rule_key"], lambda k: tools_store.get_merchant_rule(email, k), _available_labels,
+                    )
+                    _row["category"] = _sugg_cat or _needs_you_placeholder
+                    _row["why"] = _sugg_source
+                _dates = [r["date"] for r in _parsed["rows"]]
+                st.session_state[_pending_key] = {
+                    "unrecognised": False,
+                    "rows_read": len(_parsed["rows"]),
+                    "date_from": min(_dates) if _dates else None,
+                    "date_to": max(_dates) if _dates else None,
+                    "skipped": _skipped,
+                    "repayment_count": len(_repayments),
+                    "new_rows": _new_rows,
+                }
+            st.session_state[f"{_pending_key}_source_name"] = _uploaded.name
+
+        _pending = st.session_state.get(_pending_key)
+        if not _pending:
+            return
+        if _pending.get("unrecognised"):
+            st.error(_bll("import_unrecognised", cols=_pending["column_count"]))
+            return
+
+        _new_rows = _pending["new_rows"]
+        _needs_you_count = sum(1 for r in _new_rows if r["category"] == _needs_you_placeholder)
+        st.caption(
+            " · ".join([
+                _bll("import_header_rows_read", n=_pending["rows_read"]),
+                _bll("import_header_date_range", from_=_pending["date_from"], to_=_pending["date_to"]),
+                _bll("import_header_already", n=_pending["skipped"]),
+                _bll("import_header_repayments", n=_pending["repayment_count"]),
+                _bll("import_header_needs_you", n=_needs_you_count),
+            ])
+        )
+
+        _filter_choice = st.radio(
+            _bll("import_why_col"),
+            [_bll("import_filter_all"), _bll("import_filter_needs_you"), _bll("import_filter_suggested")],
+            horizontal=True, key=_tools_plan_key(active_plan, "tools_ledger_import_filter"),
+            label_visibility="collapsed",
+        )
+        if _filter_choice == _bll("import_filter_needs_you"):
+            _visible_rows = [r for r in _new_rows if r["category"] == _needs_you_placeholder]
+        elif _filter_choice == _bll("import_filter_suggested"):
+            _visible_rows = [r for r in _new_rows if r["category"] != _needs_you_placeholder]
+        else:
+            _visible_rows = _new_rows
+
+        if not _visible_rows:
+            st.caption(_bll("import_filter_needs_you"))
+        else:
+            _review_df = pd.DataFrame({
+                "Date": [r["date"] for r in _visible_rows],
+                "What": [r["merchant"] for r in _visible_rows],
+                "Category": [r["category"] for r in _visible_rows],
+                "Amount": [r["amount_cents"] / 100.0 for r in _visible_rows],
+                _bll("import_why_col"): [r["why"] for r in _visible_rows],
+            })
+            _review_key = _tools_plan_key(active_plan, "tools_ledger_import_review")
+            _edited = st.data_editor(
+                _review_df, key=_review_key, num_rows="fixed",
+                disabled=["Date", "What", "Amount", _bll("import_why_col")],
+                column_config={
+                    "Category": st.column_config.SelectboxColumn(
+                        _bll("grid_category"), options=[_needs_you_placeholder] + list(cat_id_to_label.values()),
+                    ),
+                },
+            )
+            for _i, _row in enumerate(_visible_rows):
+                _row["category"] = _edited.iloc[_i]["Category"]
+
+        _remember_rules = st.checkbox(
+            _bll("import_remember_rules"), value=True,
+            key=_tools_plan_key(active_plan, "tools_ledger_import_remember"),
+        )
+        _savable = [r for r in _new_rows if r["category"] != _needs_you_placeholder]
+        if st.button(_bll("import_save_button", n=len(_savable)),
+                     key=_tools_plan_key(active_plan, "tools_ledger_import_save"), disabled=not _savable):
+            _batch_id = f"{email}-{_pending['date_from']}-{_pending['date_to']}"
+            _to_save = []
+            for r in _savable:
+                _cat_id = cat_label_to_id.get(r["category"], r["category"])
+                _to_save.append({
+                    "date": r["date"], "merchant": r["merchant"], "raw_description": r["raw_description"],
+                    "category": _cat_id, "amount_cents": r["amount_cents"], "note_fx": r["note_fx"],
+                })
+                if _remember_rules:
+                    tools_store.upsert_merchant_rule(email, r["rule_key"], _cat_id)
+            tools_store.save_ledger_import_rows(email, _to_save, _batch_id)
+            tools_store.record_ledger_import(
+                email, rows_read=_pending["rows_read"], rows_saved=len(_to_save),
+                rows_skipped=_pending["skipped"] + (len(_new_rows) - len(_savable)),
+                date_from=_pending["date_from"], date_to=_pending["date_to"],
+            )
+            st.session_state.pop(_pending_key, None)
+            st.session_state.pop(f"{_pending_key}_source_name", None)
+            st.toast(_bll("import_saved_toast"), icon="\U0001F4e5")
+            st.rerun()
+
+
 def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
     """Budget Ledger STEP 2 (9 Oct 2026, Director-directed): A1, the
     spreadsheet grid - manual entry only (B, bank CSV import, is Step
@@ -26851,6 +26981,9 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
             st.session_state.pop(_grid_key, None)
             st.toast(_bll("saved_toast"), icon="💾")
             st.rerun()
+
+    # STEP 4: bank CSV import.
+    _render_budget_ledger_import_expander(email, active_plan, _bl, _bll, _cat_id_to_label, _cat_label_to_id)
 
     # STEP 3: the charts, below the grid (same month's entries/plan
     # already resolved above - no re-fetch needed).
