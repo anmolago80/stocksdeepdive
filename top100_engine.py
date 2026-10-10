@@ -691,8 +691,26 @@ def _build_best_by_ticker(log=print):
     return best_by_ticker, len(eligible)
 
 
-def select_top100_pool(log=print):
-    """Merges every ELIGIBLE saved universe's scan rows (see
+def select_top100_pool(log=print, scan_day=None):
+    """`scan_day` (audit fix B2 / Fable finding T6, 10 Oct 2026): the
+    scheduler's own logical scan night for this Top 100 run (state
+    ["top100_pending_for"] - see scheduler_engine._mark_top100_pending
+    ()'s own docstring), threaded straight through to save_pool()/
+    update_pool_presence()/seed_pool_presence() as `as_of` INSTEAD OF
+    a fresh datetime.now(timezone.utc) read here - the exact same
+    "Commit H" fix nightly_scan.run_universe_scan() already got for
+    its own run_night parameter (see that function's own docstring):
+    a Top 100 job that starts before midnight UTC but is still running
+    when this function is reached would otherwise read tomorrow's
+    date here, saving the pool and crediting pool_presence's
+    consecutive-night streaks under the WRONG calendar day relative to
+    the scan night the scheduler actually triggered this run for.
+    Defaults to None (falls back to wall-clock "now", unchanged
+    behaviour) for every direct/manual/test call that has no scheduler
+    scan_day to pass - only scheduler_engine._run_top100() ever
+    supplies one.
+
+    Merges every ELIGIBLE saved universe's scan rows (see
     _eligible_scan_payloads() above for exactly what's excluded and
     why), de-duplicates by ticker, excludes any currently-flagged/non-
     trading row, keeps the top POOL_SIZE by (recomputed) Value Score,
@@ -820,7 +838,7 @@ def select_top100_pool(log=print):
                 f"set aside {len(_dry_summary['set_aside_model']) + len(_dry_summary['set_aside_failed'])}")
         except Exception as e:
             log(f"[top100] backfill dry run failed (non-fatal): {e}")
-    as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    as_of = scan_day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # COMMIT 3: backfill_set_aside is deliberately NEVER set explicitly
     # on `pool`/`extension` rows here (save_pool() already defaults it
@@ -1314,7 +1332,7 @@ NEWCOMER_PERSISTENCE_NIGHTS = 3
 #    already used its 2) but never the ENTRANT cap (240 = 2 x
 #    MAX_NIGHTLY_SCORES - the actual spend ceiling this guard exists
 #    to protect).
-TOP100_FAILURE_RETRY_HOURS = 24
+TOP100_FAILURE_RETRY_HOURS = 20  # audit fix B2 / Fable finding T11 (10 Oct 2026)
 TOP100_FAILURE_MAX_ATTEMPTS = 3
 TOP100_MAX_SUBMISSIONS_PER_UTC_DAY = 2
 TOP100_MAX_ENTRANTS_PER_UTC_DAY = 2 * MAX_NIGHTLY_SCORES
@@ -4117,14 +4135,20 @@ def seed_pool_presence_for_v6_once(log=print):
         log(f"[top100] pool presence seeding: could not write marker file: {e}")
 
 
-def run_nightly(log=print):
+def run_nightly(log=print, scan_day=None):
     """The scheduler's own entry point (scheduler_engine._run_top100 -
     same "let it raise, retry-cap sees a real failure" contract as
     quote_recorder's own run_*_recorder()): re-selects the pool, then
     polls any in-flight batch before submitting a new one - see this
     module's own docstring for why poll-then-submit, never both at
-    once."""
-    select_top100_pool(log=log)
+    once.
+
+    `scan_day` (audit fix B2 / Fable finding T6, 10 Oct 2026): passed
+    straight through to select_top100_pool() - see that function's
+    own docstring for why this must be the scheduler's own logical
+    scan night, never a fresh wall-clock read taken this deep into
+    the call."""
+    select_top100_pool(log=log, scan_day=scan_day)
     poll_and_ingest_batch(log=log)
     submit_nightly_batch(log=log)
 

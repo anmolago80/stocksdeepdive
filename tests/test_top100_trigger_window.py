@@ -151,8 +151,11 @@ print("[no_fire_while_scan_still_running] with no scan_day marked pending yet "
 # Supporting check: _loop() actually calls _mark_top100_pending() from
 # both the due-scan and catch-up blocks - once on normal completion,
 # once (with reason="timeout") in each block's own TimeoutError handler
-# - and the top100 trigger block itself now calls _top100_trigger_due()
-# instead of the old plain hour/date test.
+# - and the top100 trigger block itself now calls _run_top100_job_if_
+# due() (audit fix B2/T5/T6, 10 Oct 2026 - extracted out of _loop()
+# purely so it's directly testable, no behaviour change from the
+# extraction itself), whose own source in turn calls _top100_trigger_
+# due() instead of the old plain hour/date test.
 # ======================================================================
 import inspect
 _loop_src = inspect.getsource(se._loop)
@@ -160,10 +163,13 @@ assert '_mark_top100_pending(today, datetime.now(timezone.utc), "completed")' in
 assert '_mark_top100_pending(today, datetime.now(timezone.utc), "timeout")' in _loop_src
 assert '_mark_top100_pending(ref_night, datetime.now(timezone.utc), "completed")' in _loop_src
 assert '_mark_top100_pending(ref_night, datetime.now(timezone.utc), "timeout")' in _loop_src
-assert "_top100_trigger_due(state, now, cfg[\"top100_hour\"])" in _loop_src
+assert "_run_top100_job_if_due(state, now, cfg, log)" in _loop_src
+_run_top100_job_if_due_src = inspect.getsource(se._run_top100_job_if_due)
+assert "_top100_trigger_due(state, now, cfg[\"top100_hour\"])" in _run_top100_job_if_due_src
 print("[loop_wiring] _loop() calls _mark_top100_pending() from all 4 sites (due-scan "
-      "completed/timeout, catch-up completed/timeout) and the top100 trigger block "
-      "itself uses _top100_trigger_due(), not the old plain hour/date test OK")
+      "completed/timeout, catch-up completed/timeout) and delegates the top100 trigger "
+      "decision to _run_top100_job_if_due(), which itself uses _top100_trigger_due(), "
+      "not the old plain hour/date test OK")
 
 
 # ======================================================================

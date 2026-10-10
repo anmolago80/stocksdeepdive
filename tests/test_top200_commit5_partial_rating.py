@@ -232,15 +232,24 @@ check("_log_partial_rating_dry_run() never raises on internal failure", _never_r
 print("[log_line] fires once, correct prefix, never raises on internal failure OK")
 
 # ======================================================================
-# CHECK 7: select_top100_pool() is untouched by this commit - no git
-# diff touches it (verified via `git diff HEAD` in the session, see
-# this commit's own report) - this test asserts the function still
-# exists and is callable with the same signature as before, a cheap
-# sanity check that the module still imports cleanly end to end.
+# CHECK 7: select_top100_pool() is untouched by THIS commit (Commit 5) -
+# no git diff from that task touches it - this test asserts the
+# function still exists and is callable with the same signature shape
+# as before, a cheap sanity check that the module still imports cleanly
+# end to end.
+#
+# Audit fix B2/T6 (10 Oct 2026, instruction_combined_10oct.md PART B)
+# later added an additive, backward-compatible scan_day=None keyword
+# (threading a fixed scan night into as_of instead of a fresh wall-clock
+# read - see tests/test_audit_b2_top100_scheduler_bookkeeping.py CHECK
+# T6). log stays the first/only required positional, still defaulting
+# to print, so every existing caller is unaffected; this check is
+# updated to allow that new parameter rather than pin the pre-B2 shape.
 # ======================================================================
 import inspect
-check("select_top100_pool() signature unchanged (log=print only)",
-      list(inspect.signature(te.select_top100_pool).parameters.keys()) == ["log"])
+check("select_top100_pool() signature still log=print plus additive "
+      "scan_day=None (audit fix B2/T6)",
+      list(inspect.signature(te.select_top100_pool).parameters.keys()) == ["log", "scan_day"])
 
 # ======================================================================
 # CHECK 8: the Admin panel itself renders without raising, via

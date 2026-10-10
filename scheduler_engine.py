@@ -1657,7 +1657,7 @@ def _top100_trigger_due(state, now, top100_hour):
     return now >= gate
 
 
-def _run_top100(log):
+def _run_top100(log, scan_day=None):
     """Top 100 tab, Commit 1: the nightly Top 100 selection/scoring
     pass - see top100_engine.run_nightly()'s own docstring for the
     three stages (re-select the pool, poll any in-flight AI-scoring
@@ -1669,9 +1669,16 @@ def _run_top100(log):
     own per-stage guarding (a bad universe file skipped, a bad batch
     result skipped, a submission failure leaving prior scores intact)
     already means an exception escaping this far is a real problem
-    with the run as a whole, not a single ticker."""
+    with the run as a whole, not a single ticker.
+
+    `scan_day` (audit fix B2 / Fable finding T6, 10 Oct 2026): the
+    _loop() trigger block's own _t100_scan_day (state["top100_pending_
+    for"]) - forwarded to top100_engine.run_nightly()/select_top100_
+    pool() so pool_presence/save_pool() credit the scan night this
+    job was actually triggered for, never a fresh wall-clock read
+    taken after this job has already been running for a while."""
     import top100_engine
-    top100_engine.run_nightly(log=log)
+    top100_engine.run_nightly(log=log, scan_day=scan_day)
 
 
 def _run_top100_poll(log):
@@ -2772,6 +2779,64 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
             _save_state(done_state)
 
 
+def _run_top100_job_if_due(state, now, cfg, log):
+    """Extracted from _loop()'s own inline block purely so it's
+    directly testable (audit fix B2 / Fable findings T5+T6, 10 Oct
+    2026) - no behaviour change from the extraction itself.
+
+    T5: last_top100_date/top100_pending_for used to persist BEFORE
+    the job ran - a crashed or hard-timed-out Top 100 job was marked
+    "done" for that scan night and never retried, exactly the same
+    failure mode the backup/volume_check jobs already learned from
+    (18 Sep 2026) and the nightly scan itself learned from (17 Sep
+    2026 restart-resilience fix - see those jobs' own comments in
+    _loop()). Persists ONLY once _run_top100() returns without
+    raising, with its own _DAILY_JOB_RETRY_CAP-attempts cap
+    (top100_attempts).
+
+    T6: that attempts cap, and the scan_day passed into _run_top100()
+    (-> top100_engine.run_nightly() -> select_top100_pool(), see that
+    function's own docstring), are both keyed by the SCAN NIGHT this
+    job is for (_t100_scan_day = state["top100_pending_for"]) - never
+    by wall-clock `today` - so a job attempted or still running across
+    a midnight boundary still counts against, and credits pool_
+    presence for, the night it's actually working for."""
+    if not _top100_trigger_due(state, now, cfg["top100_hour"]):
+        return
+    _t100_scan_day = state["top100_pending_for"]
+    _t100_finished_at = state.get("top100_pending_finished_at", "?")
+    _t100_via_timeout = state.get("top100_pending_reason") == "timeout"
+    _t100_attempts = state.get("top100_attempts", {})
+    _n_t100_today = _t100_attempts.get(_t100_scan_day, 0)
+    if _n_t100_today >= _DAILY_JOB_RETRY_CAP:
+        log(f"[scheduler] Top 100 for {_t100_scan_day} skipped - already "
+            f"attempted {_DAILY_JOB_RETRY_CAP}/{_DAILY_JOB_RETRY_CAP} times")
+        return
+    if not _acquire_job_lock("top100", log):
+        log("[scheduler] Top 100 job skipped - another process already holds the lock")
+        return
+    try:
+        state = _load_state()
+        state["top100_attempts"] = {_t100_scan_day: _n_t100_today + 1}
+        _save_state(state)
+        log(f"[scheduler] Top 100 due for {_t100_scan_day} (nightly finished "
+            f"{_t100_finished_at} UTC, hour gate {cfg['top100_hour']}) "
+            f"[attempt {_n_t100_today + 1}/{_DAILY_JOB_RETRY_CAP}]")
+        if _t100_via_timeout:
+            log("[scheduler] Top 100 running after a timed-out nightly")
+        log("[scheduler] starting Top 100 selection + AI-scoring batch")
+        _record_job("top100", log, lambda lg: _run_top100(lg, scan_day=_t100_scan_day))
+        state = _load_state()
+        state["last_top100_date"] = _t100_scan_day
+        state["top100_pending_for"] = None
+        state["top100_pending_reason"] = None
+        _save_state(state)
+    except Exception as e:
+        log(f"[scheduler] Top 100 job failed: {e}")
+    finally:
+        _release_job_lock("top100")
+
+
 def _loop(log):
     global _last_heartbeat, _top100_boot_poll_attempted, _last_heartbeat_log_at
     # CRITICAL (25 Sep 2026, owner-reported): unconditional, first line
@@ -3346,32 +3411,13 @@ def _loop(log):
                 # and state.get("last_top100_date") != today` test - see
                 # _top100_trigger_due()'s own docstring for the overrun-
                 # past-midnight bug this closes and the exact window
-                # math. `today` is intentionally NOT used here any more;
-                # the scan_day this fires for is whatever _mark_top100_
-                # pending() recorded (today for a due-scan, an earlier
-                # date for a catch-up), read back from state itself.
-                if _top100_trigger_due(state, now, cfg["top100_hour"]):
-                    _t100_scan_day = state["top100_pending_for"]
-                    _t100_finished_at = state.get("top100_pending_finished_at", "?")
-                    _t100_via_timeout = state.get("top100_pending_reason") == "timeout"
-                    state = _load_state()
-                    state["last_top100_date"] = _t100_scan_day
-                    state["top100_pending_for"] = None
-                    state["top100_pending_reason"] = None
-                    _save_state(state)
-                    log(f"[scheduler] Top 100 due for {_t100_scan_day} (nightly finished "
-                        f"{_t100_finished_at} UTC, hour gate {cfg['top100_hour']})")
-                    if _t100_via_timeout:
-                        log("[scheduler] Top 100 running after a timed-out nightly")
-                    if _acquire_job_lock("top100", log):
-                        try:
-                            log("[scheduler] starting Top 100 selection + AI-scoring batch")
-                            _record_job("top100", log, _run_top100)
-                        finally:
-                            _release_job_lock("top100")
-                    else:
-                        log("[scheduler] Top 100 job skipped - another process "
-                            "already holds the lock")
+                # math. See _run_top100_job_if_due()'s own docstring
+                # for the B2/T5/T6 fix (deferred persist + attempts cap
+                # + scan-night-keyed scan_day threading) this now
+                # carries, extracted into its own function purely so
+                # it's directly testable without driving this while
+                # loop - no behaviour change from the extraction itself.
+                _run_top100_job_if_due(state, now, cfg, log)
 
                 # Top 100 Commit 2 (25 Sep 2026, owner-reported): hourly
                 # poll for a pending AI-scoring batch, independent of
