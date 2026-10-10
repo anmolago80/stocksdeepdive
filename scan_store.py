@@ -34,8 +34,22 @@ from datetime import datetime, timezone
 # PART 6 STEP 6.1 (8 Oct 2026, Director-directed, instruction_health_
 # fixes_chart_and_new_markets.md): DAX/CAC 40/AEX/SMI/OMX Stockholm 30
 # added, private from the start, same rule.
+# Director's next round correction (9 Oct 2026): TSX 60 removed from
+# this default - there is NO PRIVATE_UNIVERSES variable set on Railway,
+# so this code default is what's actually live in production. Removing
+# TSX 60 here is what makes it public (readable via scan_store.
+# load_scan()'s own default allow_private=False) - the exact, and only,
+# change this commit makes. TSX Composite stays private, unchanged.
+# TSX 60 stays excluded from the Top 200 regardless, via top100_engine.
+# is_top200_excluded()'s own SEPARATE code default (the next round's
+# own item 3) - privacy and Top 200 eligibility are two independent
+# levers, and this commit only pulls the privacy one. Committed, not
+# pushed - Andrew's own separate go is still needed before this takes
+# effect in production (see this round's own item 4 report for the
+# couplings - the Scanner picker's own Canada band is a further,
+# separate SCANNER_PRESENTATION_LIVE gate, untouched by this commit).
 _DEFAULT_PRIVATE_UNIVERSES = (
-    "FTSE 100, FTSE 250, TSX 60, TSX Composite, Nikkei 225, TOPIX 500, "
+    "FTSE 100, FTSE 250, TSX Composite, Nikkei 225, TOPIX 500, "
     "DAX, CAC 40, AEX, SMI, OMX Stockholm 30"
 )
 
@@ -53,7 +67,8 @@ def _private_universe_set():
 def is_private_universe(name):
     """True iff `name` is in the PRIVATE_UNIVERSES set - see this
     module's own header comment for the env var's exact semantics
-    (unset -> code default FTSE 100/FTSE 250/TSX 60/TSX Composite;
+    (unset -> code default FTSE 100/FTSE 250/TSX Composite/Nikkei 225/
+    TOPIX 500/DAX/CAC 40/AEX/SMI/OMX Stockholm 30 - TSX 60 is public;
     ""/"none" -> nothing private). Re-reads the env var on every call
     (cheap - a handful of string ops, never a file/network read) rather
     than caching it at import time, so a changed Railway variable takes
