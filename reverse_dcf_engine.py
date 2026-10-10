@@ -41,7 +41,7 @@ share is positive), so bisection over [GROWTH_MIN, GROWTH_MAX] is
 well-posed and converges in well under 100 iterations for a 0.01% tolerance.
 """
 
-from fcf_valuation_engine import dcf_intrinsic_value, DEFAULT_GROWTH_YEARS
+from fcf_valuation_engine import dcf_intrinsic_value, growth_end_rate_for, DEFAULT_GROWTH_YEARS
 
 # Bisection bounds and tolerance, per the instruction doc - deliberately far
 # wider than fcf_valuation_engine's own forward-looking growth ceiling (this
@@ -53,16 +53,39 @@ TOLERANCE = 0.0001   # 0.01%, as an absolute decimal width on the bisection inte
 _MAX_ITERATIONS = 100
 
 
-def _dcf_value_for_growth(fcf_per_share, growth_rate, discount_rate, perpetual_rate, growth_years):
+def _dcf_value_for_growth(fcf_per_share, growth_rate, discount_rate, perpetual_rate, growth_years, end_rate):
     """Bare, unclamped mirror of dcf_intrinsic_value()'s own stage-1/
     stage-2 discounting loop - see this module's docstring for why this
     one piece of arithmetic is duplicated rather than reused (the real
     function clamps growth_rate to a forward-looking band that a reverse
-    solve must be able to search outside of)."""
+    solve must be able to search outside of).
+
+    Audit fix C5 / Fable finding V5 (10 Oct 2026, instruction_combined_
+    10oct.md PART C): this used to compound `growth_rate` FLAT across
+    every year of the horizon - but the forward model (dcf_intrinsic_
+    value()'s own "Stage 1" loop, "Growth-path option E") fades from
+    growth_rate down to `end_rate` over years 6-growth_years (flat for
+    years 1-5, or the whole horizon if growth_rate is already at or
+    below end_rate) - see that loop's own comment for the exact formula
+    and rationale. Without this, the reverse solve was answering "what
+    FLAT growth rate justifies this price", a different question from
+    what the forward model (and its own Intrinsic Value figure) are
+    actually assuming - the two numbers could disagree even when
+    correctly computed, purely from using two different growth-path
+    SHAPES. `end_rate` is the SAME per-ticker value (growth_end_rate_
+    for(), floored at perpetual_rate) compute() passes to every call
+    here - fixed for the whole bisection, exactly like the forward
+    model fixes it once per DCF run; only the CANDIDATE growth_rate
+    varies while searching."""
+    fade = growth_rate > end_rate
     intrinsic = 0.0
     cash_flow = fcf_per_share
     for year in range(1, growth_years + 1):
-        cash_flow = cash_flow * (1 + growth_rate)
+        if year <= 5 or growth_years <= 5 or not fade:
+            g_t = growth_rate
+        else:
+            g_t = growth_rate - (growth_rate - end_rate) * (year - 5) / (growth_years - 5)
+        cash_flow = cash_flow * (1 + g_t)
         intrinsic += cash_flow / ((1 + discount_rate) ** year)
     terminal_cf = cash_flow * (1 + perpetual_rate)
     terminal_value = terminal_cf / (discount_rate - perpetual_rate)
@@ -70,13 +93,21 @@ def _dcf_value_for_growth(fcf_per_share, growth_rate, discount_rate, perpetual_r
     return intrinsic
 
 
-def _solve_growth(fcf_per_share, price, discount_rate, perpetual_rate, growth_years):
+def _solve_growth(fcf_per_share, price, discount_rate, perpetual_rate, growth_years, end_rate):
     """Bisection for the growth rate g in [GROWTH_MIN, GROWTH_MAX] at which
     _dcf_value_for_growth(...) == price. Returns (g, capped) where capped
     is "low" if the price implies growth below GROWTH_MIN, "high" if it
-    implies growth above GROWTH_MAX, else None (a real interior solution)."""
-    v_lo = _dcf_value_for_growth(fcf_per_share, GROWTH_MIN, discount_rate, perpetual_rate, growth_years)
-    v_hi = _dcf_value_for_growth(fcf_per_share, GROWTH_MAX, discount_rate, perpetual_rate, growth_years)
+    implies growth above GROWTH_MAX, else None (a real interior solution).
+
+    `end_rate` (audit fix C5 / Fable finding V5): threaded straight
+    through to _dcf_value_for_growth() - see that function's own
+    docstring. _dcf_value_for_growth() stays monotonically increasing
+    in `growth_rate` with `end_rate` held fixed (every yearly rate g_t,
+    faded or flat, is a non-decreasing function of growth_rate for a
+    fixed end_rate), so bisection remains well-posed exactly as before
+    this fix."""
+    v_lo = _dcf_value_for_growth(fcf_per_share, GROWTH_MIN, discount_rate, perpetual_rate, growth_years, end_rate)
+    v_hi = _dcf_value_for_growth(fcf_per_share, GROWTH_MAX, discount_rate, perpetual_rate, growth_years, end_rate)
 
     if price <= v_lo:
         return GROWTH_MIN, "low"
@@ -88,7 +119,7 @@ def _solve_growth(fcf_per_share, price, discount_rate, perpetual_rate, growth_ye
         if (hi - lo) < TOLERANCE:
             break
         mid = (lo + hi) / 2.0
-        v_mid = _dcf_value_for_growth(fcf_per_share, mid, discount_rate, perpetual_rate, growth_years)
+        v_mid = _dcf_value_for_growth(fcf_per_share, mid, discount_rate, perpetual_rate, growth_years, end_rate)
         if v_mid < price:
             lo = mid
         else:
@@ -188,7 +219,13 @@ def compute(
         out["reason"] = "no positive FCF base"
         return out
 
-    g_star, capped = _solve_growth(fcf_per_share, current_price, d0, p0, growth_years)
+    # Audit fix C5 / Fable finding V5 (10 Oct 2026): the SAME end_rate
+    # computation dcf_intrinsic_value()'s own stage-1 fade loop uses
+    # (growth_end_rate_for(info, currency), floored at the perpetual
+    # rate just resolved) - see _dcf_value_for_growth()'s own docstring
+    # for why the reverse solve needs this too.
+    end_rate = max(growth_end_rate_for(info, currency), p0)
+    g_star, capped = _solve_growth(fcf_per_share, current_price, d0, p0, growth_years, end_rate)
 
     out.update({
         "ok": True,
