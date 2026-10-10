@@ -103,6 +103,64 @@ DUAL_CLASS_SHARE_RATIO = 1.3
 # number) instead of a fabricated intermediate value.
 DUAL_CLASS_SHARE_RATIO_MAX = 3.0
 
+# Audit fix C2 / Fable finding V1 (10 Oct 2026, instruction_combined_
+# 10oct.md PART C): a genuine DUAL-LISTED company - the SAME economic
+# interest listed on two separate exchanges under two separate share
+# registries (RIO Tinto plc/Limited's dual-listed structure, News
+# Corp's ASX CDIs over its US-listed shares, James Hardie's and
+# Amcor's own ASX-CHESS-over-primary-listing structures) - is a
+# different situation from the dual-CLASS tickers above (SHARE_CLASS_
+# PAIRS): info["sharesOutstanding"] on the ASX line here only counts
+# that exchange's OWN register, not the combined group total, and that
+# gap is routinely well past DUAL_CLASS_SHARE_RATIO_MAX's own 3x
+# ceiling - unlike a genuine second share class, so the existing tiers
+# below correctly reject it outright as "far more likely a bad Yahoo
+# field". Explicit and hand-maintained, same precedent and reasoning as
+# SHARE_CLASS_PAIRS above - never inferred, and never accepted on the
+# ratio alone (see _dual_listed_group_shares()'s own marketCap/price
+# cross-check, required precisely because this group is otherwise
+# indistinguishable from "a bad Yahoo field" on the ratio test alone).
+DUAL_LISTED_TICKERS = frozenset({"RIO.AX", "NWS.AX", "JHX.AX", "AMC.AX"})
+
+# How closely Yahoo's own marketCap, divided by price, must agree with
+# a DUAL_LISTED_TICKERS candidate for it to be trusted as the group
+# total marketCap was actually computed from - independent corroboration
+# standing in for DUAL_CLASS_SHARE_RATIO_MAX's own ceiling, which this
+# path deliberately bypasses.
+DUAL_LISTED_MARKETCAP_TOLERANCE = 0.10
+
+
+def _dual_listed_group_shares(info, shares, ticker):
+    """(group_shares_or_None, note_or_None) - only for a ticker on the
+    explicit DUAL_LISTED_TICKERS list above, and only when info[
+    "impliedSharesOutstanding"] clears DUAL_CLASS_SHARE_RATIO_MAX (the
+    zone the ordinary tiers below reject outright) AND Yahoo's own
+    marketCap/price independently corroborates it within DUAL_LISTED_
+    MARKETCAP_TOLERANCE - never accepted on the ratio alone, since a
+    ratio this extreme is otherwise indistinguishable from a bad Yahoo
+    field (see DUAL_CLASS_SHARE_RATIO_MAX's own comment). Returns
+    (None, None) - exactly like "not a candidate at all" elsewhere in
+    this module - for every ticker not on the list, or where the
+    corroboration check itself can't run (no implied/price/marketCap)
+    or fails: the caller then falls through to the pre-existing tiers
+    completely unchanged."""
+    if ticker is None or ticker.strip().upper() not in DUAL_LISTED_TICKERS:
+        return None, None
+    implied = info.get("impliedSharesOutstanding")
+    if not implied or implied <= shares * DUAL_CLASS_SHARE_RATIO_MAX:
+        return None, None
+    price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+    market_cap = info.get("marketCap")
+    if not price or not market_cap:
+        return None, None
+    implied_from_cap = market_cap / price
+    if abs(implied_from_cap - implied) > DUAL_LISTED_MARKETCAP_TOLERANCE * implied:
+        return None, None
+    return implied, (
+        f"dual-listed group share count ({implied:,.0f}) used instead of this exchange's own "
+        f"register ({shares:,.0f}) - corroborated by marketCap/price ({implied_from_cap:,.0f})"
+    )
+
 # How closely a corroborating filed diluted-shares figure (tier 3's own
 # targeted fetch, reused here for verification rather than as a
 # separate candidate) must agree with an "implied" candidate (tier 2)
@@ -201,12 +259,19 @@ def whole_company_shares(info, income_df=None, ticker=None):
     unless a whole-company figure that clears DUAL_CLASS_SHARE_RATIO (and,
     as of audit fixes Commit 4, stays within DUAL_CLASS_SHARE_RATIO_MAX and
     - for the "implied" tier only - corroborates) was found; `flagged` is
-    True whenever it was; `source` is "bundle" | "implied" | "filed" | None.
+    True whenever it was; `source` is "dual_listed_group" | "bundle" |
+    "implied" | "filed" | None - "dual_listed_group" (audit fix C2 /
+    Fable finding V1, 10 Oct 2026) is the one case that DELIBERATELY
+    exceeds DUAL_CLASS_SHARE_RATIO_MAX, only for the explicit
+    DUAL_LISTED_TICKERS list, only when marketCap/price corroborates -
+    see that constant's own comment.
     `note` (new, audit fixes Commit 4, 30 Sep 2026, owner-directed) is a
     short explanation string whenever a candidate was FOUND but REJECTED
     (ratio above the sanity ceiling, or an "implied" candidate that a
     known ticker's own filed diluted count didn't corroborate) - None
-    whenever no candidate existed at all, same as before this fix
+    whenever no candidate existed at all, same as before this fix -
+    EXCEPT "dual_listed_group" (above), which sets a disclosure note
+    even on acceptance, per this task's own explicit instruction.
     (a caller like fcf_valuation_engine.dcf_intrinsic_value() threads
     this into meta["share_count_note"] rather than discarding it).
 
@@ -227,6 +292,19 @@ def whole_company_shares(info, income_df=None, ticker=None):
     shares = info.get("sharesOutstanding") or 0
     if shares <= 0:
         return shares, False, None, None
+
+    # Audit fix C2 / Fable finding V1 (10 Oct 2026): checked BEFORE
+    # every tier below, for the small explicit DUAL_LISTED_TICKERS list
+    # only - see that constant's and _dual_listed_group_shares()'s own
+    # comments. Returns (None, None) for every other ticker, or when
+    # the marketCap/price corroboration doesn't hold even for one of
+    # these four - the caller then falls through to the pre-existing
+    # tiers completely unchanged (e.g. a genuine income_df bundle for
+    # one of these tickers, were a caller ever to supply one, is never
+    # pre-empted by a check that didn't actually pass).
+    _dl_shares, _dl_note = _dual_listed_group_shares(info, shares, ticker)
+    if _dl_shares:
+        return _dl_shares, True, "dual_listed_group", _dl_note
 
     if income_df is not None:
         filed = _row_from_income_df(income_df, _DILUTED_SHARES_ROW_NAMES)
