@@ -13411,8 +13411,28 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
                             # visitor the plain-words translation -
                             # never the raw text, once the switch is
                             # live for everyone.
-                            na_reason=(_na_reason_for_viewer(_orow.get("price_unit_suspect_reason"))
-                                       if _on_show_ccy and _orow.get("price_unit_suspect") else None))
+                            #
+                            # PUSH 2 follow-up (Andrew's go, 10 Oct 2026,
+                            # instruction_combined_10oct.md): a fund row
+                            # (nightly_scan.py's own "Is Fund"/"Fund
+                            # Reason", non-US/non-AU only) withholds
+                            # Intrinsic Value/MOS the same way the price-
+                            # unit guard does, but had NO na_reason wired
+                            # here at all - every visitor (owner and non-
+                            # owner alike) saw a bare "N/A" with zero
+                            # explanation. "Fund Reason" is already a
+                            # plain-English, user-facing sentence (unlike
+                            # price_unit_suspect_reason's internal string),
+                            # so it's shown AS STORED to every viewer -
+                            # never routed through _na_reason_for_viewer()'s
+                            # owner/non-owner technical-vs-translated
+                            # split, which doesn't apply here. Checked
+                            # first since a fund row's price-unit-suspect
+                            # reason (if any) is irrelevant once Intrinsic
+                            # Value is already withheld for being a fund.
+                            na_reason=(_orow.get("Fund Reason") if _orow.get("Is Fund") else
+                                       (_na_reason_for_viewer(_orow.get("price_unit_suspect_reason"))
+                                        if _on_show_ccy and _orow.get("price_unit_suspect") else None)))
                 # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO
                 # false positive): DISPLAY-ONLY sanity marker when the DCF
                 # intrinsic value is more than 3x the current price - see

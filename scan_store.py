@@ -48,8 +48,17 @@ from datetime import datetime, timezone
 # effect in production (see this round's own item 4 report for the
 # couplings - the Scanner picker's own Canada band is a further,
 # separate SCANNER_PRESENTATION_LIVE gate, untouched by this commit).
+# PUSH 2 (Andrew's go, 10 Oct 2026, instruction_combined_10oct.md):
+# FTSE 100, FTSE 250 and TSX Composite removed from this default too -
+# same mechanism, same single lever (privacy only, never Top 200
+# eligibility - is_top200_excluded() still independently excludes all
+# four UK/Canada universes via its own non-US/non-AU derivation, see
+# that function's own docstring). All four United Kingdom/Canada
+# universes (FTSE 100, FTSE 250, TSX 60, TSX Composite) are now public;
+# Japan (Nikkei 225, TOPIX 500) and the five European universes stay
+# private, unchanged.
 _DEFAULT_PRIVATE_UNIVERSES = (
-    "FTSE 100, FTSE 250, TSX Composite, Nikkei 225, TOPIX 500, "
+    "Nikkei 225, TOPIX 500, "
     "DAX, CAC 40, AEX, SMI, OMX Stockholm 30"
 )
 
@@ -67,9 +76,9 @@ def _private_universe_set():
 def is_private_universe(name):
     """True iff `name` is in the PRIVATE_UNIVERSES set - see this
     module's own header comment for the env var's exact semantics
-    (unset -> code default FTSE 100/FTSE 250/TSX Composite/Nikkei 225/
-    TOPIX 500/DAX/CAC 40/AEX/SMI/OMX Stockholm 30 - TSX 60 is public;
-    ""/"none" -> nothing private). Re-reads the env var on every call
+    (unset -> code default Nikkei 225/TOPIX 500/DAX/CAC 40/AEX/SMI/
+    OMX Stockholm 30 - FTSE 100/FTSE 250/TSX 60/TSX Composite are all
+    public; ""/"none" -> nothing private). Re-reads the env var on every call
     (cheap - a handful of string ops, never a file/network read) rather
     than caching it at import time, so a changed Railway variable takes
     effect on the next request without a redeploy being required for

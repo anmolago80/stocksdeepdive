@@ -11,11 +11,20 @@ Covers:
     Kingdom, Canada, Japan, Europe, in that order), every currently-
     private universe's pill marked "(private)".
   - switch ON, non-owner: the new bands exist, but since every
-    universe in them is STILL private, not one of their pills is
-    visible to a non-owner - each of the four new bands is skipped
-    entirely (no empty row rendered).
+    universe in Japan/Europe is STILL private, those two bands are
+    skipped entirely (no empty row rendered); United Kingdom and
+    Canada now render in full (see the PUSH 2 update below).
   - the Europe band's five pills each carry their OWN country flag,
     not one shared band flag.
+
+UPDATED (Andrew's go, PUSH 2, 10 Oct 2026, instruction_combined_
+10oct.md): FTSE 100, FTSE 250 and TSX Composite removed from
+scan_store._DEFAULT_PRIVATE_UNIVERSES (same mechanism as TSX 60's own
+9 Oct correction) - all four United Kingdom/Canada universes
+(FTSE 100, FTSE 250, TSX 60, TSX Composite) are now public. Japan
+(Nikkei 225, TOPIX 500) and Europe (DAX, CAC 40, AEX, SMI, OMX
+Stockholm 30) are UNCHANGED, still fully private - those two bands
+still never appear for a non-owner, with or without the switch.
 
 Run: python3 tests/test_part4_step4_2_picker_rows_and_private_markers.py
 """
@@ -95,47 +104,52 @@ _band_order = [
 ]
 check("switch OFF, OWNER: all six bands appear",
       _band_order == ["AUSTRALIA", "USA", "UNITED KINGDOM", "CANADA", "JAPAN", "EUROPE"])
-check("switch OFF, OWNER: FTSE 100 pill is marked (private)",
-      "FTSE 100 (private)" in _html_off_owner)
-# TSX 60 removed from scan_store._DEFAULT_PRIVATE_UNIVERSES by the
-# Director's correction (9 Oct 2026, instruction_health_fixes_chart_
-# and_new_markets.md) - it's public now, so its own pill must NOT carry
-# the (private) marker; TSX Composite stays private, unchanged.
-check("switch OFF, OWNER: TSX 60 pill is NOT marked (private) (made public)",
+# PUSH 2 (Andrew's go, 10 Oct 2026): FTSE 100/FTSE 250/TSX Composite
+# removed from scan_store._DEFAULT_PRIVATE_UNIVERSES - all four UK/
+# Canada universes are now public, so none of their pills carry the
+# (private) marker any more (TSX 60 was already public since the
+# 9 Oct correction).
+check("switch OFF, OWNER: FTSE 100 pill is NOT marked (private) (made public, PUSH 2)",
+      "FTSE 100 (private)" not in _html_off_owner)
+check("switch OFF, OWNER: FTSE 250 pill is NOT marked (private) (made public, PUSH 2)",
+      "FTSE 250 (private)" not in _html_off_owner)
+check("switch OFF, OWNER: TSX 60 pill is NOT marked (private) (made public, 9 Oct correction)",
       "TSX 60 (private)" not in _html_off_owner)
-check("switch OFF, OWNER: TSX Composite pill is marked (private)",
-      "TSX Composite (private)" in _html_off_owner)
+check("switch OFF, OWNER: TSX Composite pill is NOT marked (private) (made public, PUSH 2)",
+      "TSX Composite (private)" not in _html_off_owner)
+# Japan/Europe are UNCHANGED by PUSH 2 - still fully private.
 check("switch OFF, OWNER: Nikkei 225 pill is marked (private)",
       "Nikkei 225 (private)" in _html_off_owner)
 check("switch OFF, OWNER: DAX pill is marked (private)", "DAX (private)" in _html_off_owner)
-print("[switch_off_owner_sees_everything] the owner sees all six bands, every private pill "
-      "clearly marked, even while the switch itself is off OK")
+print("[switch_off_owner_sees_everything] the owner sees all six bands; every UK/Canada "
+      "pill is now unmarked (public since PUSH 2), every Japan/Europe pill still marked "
+      "(private), even while the switch itself is off OK")
 
 # ======================================================================
-# CHECK 9-10: switch ON, non-owner - United Kingdom/Japan/Europe still
-# don't render (every universe in them is still private - the switch
-# alone never makes a universe public). Canada is a DELIBERATE
-# exception since the Director's correction (9 Oct 2026) made TSX 60
-# public: with the switch on, a non-owner now sees the Canada band,
-# carrying only the TSX 60 pill (no "(private)" marker) - TSX
-# Composite stays hidden from them, still private.
+# CHECK 9-13: switch ON, non-owner - Japan/Europe still don't render
+# (every universe in them is still private - the switch alone never
+# makes a universe public). United Kingdom and Canada NOW render in
+# full (PUSH 2, 10 Oct 2026): every universe in both bands is public,
+# so both bands appear with every pill, none marked (private).
 # ======================================================================
 _html_on_nonowner = _render("someone-else@example.com", switch_on=True)
-check("switch ON, non-owner: still no United Kingdom/Japan/Europe band - "
-      "nothing in them is public yet",
-      "UNITED KINGDOM" not in _html_on_nonowner
-      and "JAPAN" not in _html_on_nonowner and "EUROPE" not in _html_on_nonowner)
-check("switch ON, non-owner: Canada band NOW appears, with the TSX 60 pill only "
-      "(public since the Director's correction) and no (private) marker on it",
+check("switch ON, non-owner: still no Japan/Europe band - nothing in them is public",
+      "JAPAN" not in _html_on_nonowner and "EUROPE" not in _html_on_nonowner)
+check("switch ON, non-owner: United Kingdom band NOW appears, with both FTSE 100 and "
+      "FTSE 250 pills, neither marked (private)",
+      "UNITED KINGDOM" in _html_on_nonowner and "FTSE 100" in _html_on_nonowner
+      and "FTSE 250" in _html_on_nonowner and "FTSE 100 (private)" not in _html_on_nonowner
+      and "FTSE 250 (private)" not in _html_on_nonowner)
+check("switch ON, non-owner: Canada band NOW appears, with BOTH TSX 60 and TSX Composite "
+      "pills (TSX Composite public since PUSH 2), neither marked (private)",
       "CANADA" in _html_on_nonowner and "TSX 60" in _html_on_nonowner
-      and "TSX 60 (private)" not in _html_on_nonowner)
-check("switch ON, non-owner: TSX Composite still NOT shown to them (still private)",
-      "TSX Composite" not in _html_on_nonowner)
+      and "TSX Composite" in _html_on_nonowner and "TSX 60 (private)" not in _html_on_nonowner
+      and "TSX Composite (private)" not in _html_on_nonowner)
 check("switch ON, non-owner: AUSTRALIA/USA still present, unaffected",
       "AUSTRALIA" in _html_on_nonowner and "USA" in _html_on_nonowner)
-print("[switch_on_still_private] turning the presentation switch on does not, by itself, "
-      "reveal a PRIVATE universe to a non-owner - TSX 60 is visible only because the "
-      "Director's correction already made it public, independent of this switch OK")
+print("[switch_on_uk_canada_public] turning the presentation switch on now reveals the "
+      "United Kingdom and Canada bands IN FULL to a non-owner - every universe in both is "
+      "public since PUSH 2; Japan/Europe stay fully private and still don't render OK")
 
 # ======================================================================
 # CHECK 11-12: the Europe band's five pills each carry their OWN flag

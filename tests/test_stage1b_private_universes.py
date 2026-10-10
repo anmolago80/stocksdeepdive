@@ -158,17 +158,28 @@ print("[T2_tsx60_subset] TSX 60 strict-subset-of-TSX-Composite accepted when a g
 
 # ======================================================================
 # T3: scan_store privacy primitives - default DENY vs PRIVATE_UNIVERSES.
+#
+# UPDATED (PUSH 2, Andrew's go, 10 Oct 2026, instruction_combined_
+# 10oct.md): FTSE 100/FTSE 250/TSX Composite removed from scan_store.
+# _DEFAULT_PRIVATE_UNIVERSES (on top of TSX 60's own 9 Oct correction)
+# - all four United Kingdom/Canada universes are now public, so none
+# of them fit this section's own "the private universe" test subject
+# any more. Swapped to Nikkei 225/DAX - the next still-private pair -
+# throughout T3/T4/T5/T8 below. T1/T2/T7/T9 above/below are untouched:
+# none of them test privacy itself (T1/T2 are universe-integrity
+# checks, T7 is scheduling cadence, T9 is USD/AUD-only), so FTSE 100's
+# own public status doesn't affect any of their assertions.
 # ======================================================================
 os.environ.pop("PRIVATE_UNIVERSES", None)
-assert scan_store.is_private_universe("FTSE 100") is True
-assert scan_store.is_private_universe("TSX Composite") is True
+assert scan_store.is_private_universe("Nikkei 225") is True
+assert scan_store.is_private_universe("DAX") is True
 assert scan_store.is_private_universe("S&P 500") is False
 os.environ["PRIVATE_UNIVERSES"] = ""
-assert scan_store.is_private_universe("FTSE 100") is False
+assert scan_store.is_private_universe("Nikkei 225") is False
 os.environ["PRIVATE_UNIVERSES"] = "none"
-assert scan_store.is_private_universe("FTSE 100") is False
+assert scan_store.is_private_universe("Nikkei 225") is False
 os.environ.pop("PRIVATE_UNIVERSES", None)
-print("[T3_is_private] FTSE 100/TSX Composite private by default, S&P 500 never - "
+print("[T3_is_private] Nikkei 225/DAX private by default, S&P 500 never - "
       "''/'none' clears privacy entirely OK")
 
 _PUB_ROW = {
@@ -187,15 +198,15 @@ _PRIV_ONLY_ROW = {
     "Psychology": 90.0, "Discovery (lite)": 90.0, "Sector": "Technology",
 }
 scan_store.save_scan("S&P 500", [_PUB_ROW], "fixture")
-scan_store.save_scan("FTSE 100", [_PRIV_ROW, _PRIV_ONLY_ROW], "fixture")
+scan_store.save_scan("Nikkei 225", [_PRIV_ROW, _PRIV_ONLY_ROW], "fixture")
 
-assert "FTSE 100" not in scan_store.list_saved_universes()
-assert "FTSE 100" in scan_store.list_saved_universes(include_private=True)
-assert scan_store.load_scan("FTSE 100") is None
-assert scan_store.load_scan_raw("FTSE 100") is None
-assert scan_store.load_scan_raw("FTSE 100", allow_private=True) is not None
+assert "Nikkei 225" not in scan_store.list_saved_universes()
+assert "Nikkei 225" in scan_store.list_saved_universes(include_private=True)
+assert scan_store.load_scan("Nikkei 225") is None
+assert scan_store.load_scan_raw("Nikkei 225") is None
+assert scan_store.load_scan_raw("Nikkei 225", allow_private=True) is not None
 print("[T3_scan_store_deny] list_saved_universes()/load_scan()/load_scan_raw() all "
-      "deny FTSE 100 by default, all serve it with allow_private=True OK")
+      "deny Nikkei 225 by default, all serve it with allow_private=True OK")
 
 
 # ======================================================================
@@ -207,7 +218,7 @@ assert found is not None and found["universe"] == "S&P 500", found
 assert found["row"]["Company Name"] == "Shared Co (public row)", found["row"]
 found_allow = scan_store.find_ticker_row("SHARED.AX", allow_private=True)
 assert found_allow is not None
-print("[T5_dual_universe] SHARED.AX (saved under both FTSE 100 and S&P 500) resolves "
+print("[T5_dual_universe] SHARED.AX (saved under both Nikkei 225 and S&P 500) resolves "
       "to its PUBLIC (S&P 500) row by default OK")
 
 
@@ -225,26 +236,26 @@ os.environ.pop("PRIVATE_UNIVERSES", None)
 tickers_with_private_files = _run_pool_and_cleanup()
 assert "PRIVONLY.L" not in tickers_with_private_files, tickers_with_private_files
 
-_ftse100_path = scan_store._path("FTSE 100")
-_saved_ftse100_bytes = open(_ftse100_path, "rb").read()
-os.remove(_ftse100_path)
+_nikkei225_path = scan_store._path("Nikkei 225")
+_saved_nikkei225_bytes = open(_nikkei225_path, "rb").read()
+os.remove(_nikkei225_path)
 tickers_without_private_files = _run_pool_and_cleanup()
 
 assert tickers_with_private_files == tickers_without_private_files, (
     tickers_with_private_files, tickers_without_private_files)
 print(f"[T4_byte_identical] select_top100_pool() output is IDENTICAL "
-      f"({len(tickers_with_private_files)} ticker(s)) whether FTSE 100's saved scan "
+      f"({len(tickers_with_private_files)} ticker(s)) whether Nikkei 225's saved scan "
       f"file exists (default PRIVATE_UNIVERSES, excluded) or doesn't exist at all OK")
 
-with open(_ftse100_path, "wb") as f:
-    f.write(_saved_ftse100_bytes)
+with open(_nikkei225_path, "wb") as f:
+    f.write(_saved_nikkei225_bytes)
 
 os.environ["PRIVATE_UNIVERSES"] = ""
 tickers_still_gated = _run_pool_and_cleanup()
 assert "PRIVONLY.L" not in tickers_still_gated, tickers_still_gated
 assert "SHARED.AX" in tickers_still_gated, tickers_still_gated
 print("[T4_still_excluded_by_top200] with PRIVATE_UNIVERSES='' alone, PRIVONLY.L "
-      "(FTSE 100) STILL does not appear - top100_engine.is_top200_excluded()'s own "
+      "(Nikkei 225) STILL does not appear - top100_engine.is_top200_excluded()'s own "
       "code default (next round item 3, 8 Oct 2026) excludes every non-US/non-"
       "Australian universe regardless of privacy; SHARED.AX (an ASX ticker, via "
       "S&P 500) is unaffected and still appears OK")
@@ -381,7 +392,7 @@ with mock.patch.object(nightly_scan, "run_universe_scan", return_value=_fake_pay
                             side_effect=lambda *a, **k: _calls.__setitem__("snapshot", _calls["snapshot"] + 1)), \
          mock.patch.object(insider_engine, "refresh_universe",
                             side_effect=lambda *a, **k: _calls.__setitem__("insider", _calls["insider"] + 1)):
-        sched._run_nightly({"universes": ["FTSE 100"]}, log=lambda *a, **k: None, run_night="2026-10-03")
+        sched._run_nightly({"universes": ["Nikkei 225"]}, log=lambda *a, **k: None, run_night="2026-10-03")
 
 assert _calls["snapshot"] == 0, _calls
 assert _calls["alert"] == 0, _calls

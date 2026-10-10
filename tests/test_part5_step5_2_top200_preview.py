@@ -63,13 +63,18 @@ def check(label, condition):
 # CHECK 1-2: preview_universes() - unset/set.
 # ======================================================================
 check("preview_universes() is [] when unset", te.preview_universes() == [])
-# TSX Composite (not TSX 60) - the Director's correction (9 Oct 2026)
-# made TSX 60 public, so it no longer fits this feature's own purpose
-# (previewing candidates from a market that's still PRIVATE before
-# making it public). TSX Composite stays private, unchanged.
-os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"
-check('preview_universes() == ["FTSE 100", "TSX Composite"] when set',
-      te.preview_universes() == ["FTSE 100", "TSX Composite"])
+# Nikkei 225, DAX (not FTSE 100/TSX Composite) - PUSH 2 (Andrew's go,
+# 10 Oct 2026, instruction_combined_10oct.md) made FTSE 100, FTSE 250
+# AND TSX Composite public (on top of TSX 60's own 9 Oct correction),
+# so none of the four UK/Canada universes fit this feature's own
+# purpose any more (previewing candidates from a market that's still
+# PRIVATE before making it public). Nikkei 225/DAX stay private,
+# unchanged - the next still-private pair, one per distinct country
+# (Japan/Germany) to keep exercising the "grouped by country" checks
+# below meaningfully.
+os.environ["TOP200_PREVIEW_UNIVERSES"] = "Nikkei 225, DAX"
+check('preview_universes() == ["Nikkei 225", "DAX"] when set',
+      te.preview_universes() == ["Nikkei 225", "DAX"])
 os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 
 # ======================================================================
@@ -77,18 +82,18 @@ os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 # save_scan() - the real writer), one with a real stored score (via
 # top100_store.save_score() - the real writer), one entirely WAITING.
 # ======================================================================
-scan_store.save_scan("FTSE 100", [
-    {"Ticker": "BARC.L", "Type": "STOCK", "Company Name": "Barclays PLC", "Price": 250.5,
-     "Intrinsic Value": 300.0, "MOS %": 16.5, "Long Score": 60.0, "Quality": 55.0,
+scan_store.save_scan("Nikkei 225", [
+    {"Ticker": "7203.T", "Type": "STOCK", "Company Name": "Toyota Motor Corp", "Price": 2500.0,
+     "Intrinsic Value": 3000.0, "MOS %": 16.5, "Long Score": 60.0, "Quality": 55.0,
      "Psychology": 5.0, "Discovery (lite)": 30.0, "Moat": 50.0,
      "Growth Used": 0.05, "FCF Source": "reported", "Dividend Yield %": 4.2},
-    {"Ticker": "VOD.L", "Type": "STOCK", "Company Name": "Vodafone Group PLC", "Price": 75.0,
-     "Intrinsic Value": 90.0, "MOS %": 16.7, "Long Score": None, "Quality": 45.0,
+    {"Ticker": "6758.T", "Type": "STOCK", "Company Name": "Sony Group Corp", "Price": 750.0,
+     "Intrinsic Value": 900.0, "MOS %": 16.7, "Long Score": None, "Quality": 45.0,
      "Psychology": 5.0, "Discovery (lite)": 25.0, "Moat": 35.0,
      "Growth Used": 0.02, "FCF Source": "reported", "Dividend Yield %": 6.1},
 ], source_label="test fixture")
-scan_store.save_scan("TSX Composite", [
-    {"Ticker": "RY.TO", "Type": "STOCK", "Company Name": "Royal Bank of Canada", "Price": 140.0,
+scan_store.save_scan("DAX", [
+    {"Ticker": "SIE.DE", "Type": "STOCK", "Company Name": "Siemens AG", "Price": 140.0,
      "Intrinsic Value": 160.0, "MOS %": 12.5, "Long Score": 70.0, "Quality": 65.0,
      "Psychology": 5.0, "Discovery (lite)": 35.0, "Moat": 60.0,
      "Growth Used": 0.04, "FCF Source": "reported", "Dividend Yield %": 3.8},
@@ -97,7 +102,7 @@ scan_store.save_scan("TSX Composite", [
 _dims = {key: {"score": 4, "justification": "test fixture", "source_period": "RP2026-09-30"}
          for key in te.DIMENSION_KEYS}
 top100_store.save_score(
-    ticker="BARC.L", quarter="RP2026-09-30", model=te.MODEL_TOP100,
+    ticker="7203.T", quarter="RP2026-09-30", model=te.MODEL_TOP100,
     rubric_version=te.RUBRIC_VERSION, dims=_dims, not_rated=False,
     most_recent_quarter="2026-09-30",
     inversion_scenario="test", inversion_severity=2, current_headwind=None,
@@ -106,7 +111,7 @@ top100_store.save_score(
     munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None,
     prompt="{}", raw_response="{}",
 )
-# VOD.L and RY.TO stay WAITING (no score, no failure recorded).
+# 6758.T and SIE.DE stay WAITING (no score, no failure recorded).
 
 # ======================================================================
 # CHECK 3-5: _log_preview_universe_cost_estimate() - fires regardless
@@ -116,12 +121,12 @@ top100_store.save_score(
 _log_lines = []
 te._log_preview_universe_cost_estimate(log=_log_lines.append)
 _joined = "\n".join(_log_lines)
-check("one advisory line for FTSE 100 (2 candidates, 1 with no stored Long Score at all - "
-      "VOD.L's own scan row carries none)",
-      "'FTSE 100': 2 candidate(s), 1 with no stored score yet, est. one-time cost $0.02" in _joined)
-check("one advisory line for TSX Composite (1 candidate, RY.TO's own scan row already "
+check("one advisory line for Nikkei 225 (2 candidates, 1 with no stored Long Score at all - "
+      "6758.T's own scan row carries none)",
+      "'Nikkei 225': 2 candidate(s), 1 with no stored score yet, est. one-time cost $0.02" in _joined)
+check("one advisory line for DAX (1 candidate, SIE.DE's own scan row already "
       "has a Long Score, so nothing left to score - $0.00)",
-      "'TSX Composite': 1 candidate(s), 0 with no stored score yet, est. one-time cost $0.00" in _joined)
+      "'DAX': 1 candidate(s), 0 with no stored score yet, est. one-time cost $0.00" in _joined)
 check("fires with the switch UNSET too (purely advisory, not gated by TOP200_PREVIEW_UNIVERSES)",
       len(_log_lines) >= 2)
 
@@ -132,14 +137,14 @@ check("fires with the switch UNSET too (purely advisory, not gated by TOP200_PRE
 # ======================================================================
 check("preview_candidates_by_country() is {} when TOP200_PREVIEW_UNIVERSES is unset",
       te.preview_candidates_by_country() == {})
-os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"
+os.environ["TOP200_PREVIEW_UNIVERSES"] = "Nikkei 225, DAX"
 _by_country = te.preview_candidates_by_country()
-check('United Kingdom group has BARC.L and VOD.L', {
-    "United Kingdom": sorted(r["ticker"] for r in _by_country.get("United Kingdom", [])),
-}["United Kingdom"] == ["BARC.L", "VOD.L"])
-check('Canada group has RY.TO', [r["ticker"] for r in _by_country.get("Canada", [])] == ["RY.TO"])
-check("United Kingdom sorted by value_score descending (BARC.L 60 before VOD.L 40)",
-      [r["ticker"] for r in _by_country["United Kingdom"]] == ["BARC.L", "VOD.L"])
+check('Japan group has 7203.T and 6758.T', {
+    "Japan": sorted(r["ticker"] for r in _by_country.get("Japan", [])),
+}["Japan"] == ["6758.T", "7203.T"])
+check('Germany group has SIE.DE', [r["ticker"] for r in _by_country.get("Germany", [])] == ["SIE.DE"])
+check("Japan sorted by value_score descending (7203.T 60 before 6758.T None)",
+      [r["ticker"] for r in _by_country["Japan"]] == ["7203.T", "6758.T"])
 
 # ======================================================================
 # CHECK 10: byte-identical proof - select_top100_pool()'s own return
@@ -149,17 +154,17 @@ check("United Kingdom sorted by value_score descending (BARC.L 60 before VOD.L 4
 # ======================================================================
 os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 _pool_unset = te.select_top100_pool(log=lambda *a, **k: None)
-os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"
+os.environ["TOP200_PREVIEW_UNIVERSES"] = "Nikkei 225, DAX"
 _pool_set = te.select_top100_pool(log=lambda *a, **k: None)
 os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 check("select_top100_pool()'s own return value is byte-identical whether "
-      "TOP200_PREVIEW_UNIVERSES is set or not (FTSE 100/TSX Composite are both "
+      "TOP200_PREVIEW_UNIVERSES is set or not (Nikkei 225/DAX are both "
       "still PRIVATE and excluded from the real pool either way)",
       json.dumps(_pool_unset, sort_keys=True, default=str) ==
       json.dumps(_pool_set, sort_keys=True, default=str))
-check("neither BARC.L nor RY.TO entered the real public pool "
+check("neither 7203.T nor SIE.DE entered the real public pool "
       "(still excluded by _eligible_scan_payloads()'s private-universe skip)",
-      not any(r["ticker"] in ("BARC.L", "VOD.L", "RY.TO") for r in _pool_unset))
+      not any(r["ticker"] in ("7203.T", "6758.T", "SIE.DE") for r in _pool_unset))
 
 # ======================================================================
 # CHECK 11-14: _render_top200_preview_panel() end to end.
@@ -170,7 +175,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _render(switch_on):
-    _env = f'os.environ["TOP200_PREVIEW_UNIVERSES"] = "FTSE 100, TSX Composite"' if switch_on else \
+    _env = f'os.environ["TOP200_PREVIEW_UNIVERSES"] = "Nikkei 225, DAX"' if switch_on else \
            'os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)'
     script = f"""
 import os, sys
@@ -193,11 +198,11 @@ check("switch unset: just the explanatory caption, no expander, no table",
 
 _at_on = _render(switch_on=True)
 _expander_labels = [e.label for e in _at_on.get("expander")]
-check('switch set: a "Top 20 United Kingdom" expander and a "Top 20 Canada" expander exist',
-      any("United Kingdom" in l for l in _expander_labels)
-      and any("Canada" in l for l in _expander_labels))
+check('switch set: a "Top 20 Japan" expander and a "Top 20 Germany" expander exist',
+      any("Japan" in l for l in _expander_labels)
+      and any("Germany" in l for l in _expander_labels))
 _metrics_on = {m.label: m.value for m in _at_on.get("metric")}
-check('coverage metrics present: Rated=1 (BARC.L), Waiting=2 (VOD.L, RY.TO)',
+check('coverage metrics present: Rated=1 (7203.T), Waiting=2 (6758.T, SIE.DE)',
       _metrics_on.get("Rated") == "1" and _metrics_on.get("Waiting") == "2")
 check("no exception, no write anywhere (read-only panel)", not _at_on.exception)
 

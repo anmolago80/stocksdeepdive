@@ -281,7 +281,11 @@ scan_store.save_scan("S&P 500", _mk_rows([("DUE_HI", 90), ("DUE_LO", 10), ("ALSO
                                           mode="financials"), source_label="fixture")
 scan_store.save_scan("Russell 2000", _mk_rows([("OTHERPUB_HI", 80), ("OTHERPUB_LO", 5)]),
                       source_label="fixture")
-scan_store.save_scan("FTSE 100", _mk_rows([("PRIV_HI", 99)]), source_label="fixture")
+# Nikkei 225 (not FTSE 100) - PUSH 2 (Andrew's go, 10 Oct 2026,
+# instruction_combined_10oct.md) made FTSE 100 public, so it no longer
+# fits this fixture's "private candidate ranks last" premise. Nikkei
+# 225 stays private, unchanged.
+scan_store.save_scan("Nikkei 225", _mk_rows([("PRIV_HI", 99)]), source_label="fixture")
 # ALSOSTD is non-financials in S&P 500's own saved row - override it standard so it's excluded.
 scan_store.save_scan("S&P 500", _mk_rows([("DUE_HI", 90), ("DUE_LO", 10)], mode="financials")
                       + [{"Ticker": "ALSOSTD", "Long Score": 50, "Moat Mode": "standard"}],

@@ -25,12 +25,17 @@ Covers:
   removed from scan_store._DEFAULT_PRIVATE_UNIVERSES itself - there is
   no PRIVATE_UNIVERSES variable on Railway, so that code default is
   what's actually live. TSX 60 is readable as public BY DEFAULT now
-  (no env var needed); TSX Composite stays private, unchanged. The
-  byte-identical proof below is re-run the other way around: the code
-  DEFAULT (TSX 60 public) vs. an explicit override that puts TSX 60
-  back into PRIVATE_UNIVERSES (simulating the pre-correction state) -
-  still byte-identical, since is_top200_excluded() excludes TSX 60
-  either way.
+  (no env var needed). The byte-identical proof below is re-run the
+  other way around: the code DEFAULT (TSX 60 public) vs. an explicit
+  override that puts TSX 60 back into PRIVATE_UNIVERSES (simulating
+  the pre-correction state) - still byte-identical, since is_top200_
+  excluded() excludes TSX 60 either way.
+
+  UPDATED AGAIN (PUSH 2, Andrew's go, 10 Oct 2026, instruction_
+  combined_10oct.md): FTSE 100, FTSE 250 and TSX Composite removed
+  from the same code default - all four UK/Canada universes are now
+  public BY DEFAULT. is_top200_excluded() is untouched either way
+  (still excludes every non-US/non-AU universe), confirmed below.
   - The scoring-request fingerprint (test_top200_commit4_schema_
     mode.py's own f00c69f5...sha256 check) is re-run unmodified,
     proving _request_params()/the batch entrant-building path is
@@ -125,13 +130,20 @@ scan_store.save_scan("TSX 60", [
      "DCF Unreliable": False, "Growth Source": "analyst"},
 ], source_label="test fixture")
 
-# Current state: code default, PRIVATE_UNIVERSES unset - TSX 60 public,
-# TSX Composite (and every other pre-existing name) still private.
+# Current state: code default, PRIVATE_UNIVERSES unset - all four UK/
+# Canada universes public (TSX 60 since the 9 Oct correction, FTSE
+# 100/FTSE 250/TSX Composite since PUSH 2); Japan/Europe still private.
 os.environ.pop("PRIVATE_UNIVERSES", None)
 check("TSX 60 is readable as PUBLIC by the code default (the Director's correction)",
       scan_store.is_private_universe("TSX 60") is False)
-check("TSX Composite is STILL private by the code default, unchanged",
-      scan_store.is_private_universe("TSX Composite") is True)
+check("TSX Composite is readable as PUBLIC by the code default (PUSH 2)",
+      scan_store.is_private_universe("TSX Composite") is False)
+check("FTSE 100 is readable as PUBLIC by the code default (PUSH 2)",
+      scan_store.is_private_universe("FTSE 100") is False)
+check("FTSE 250 is readable as PUBLIC by the code default (PUSH 2)",
+      scan_store.is_private_universe("FTSE 250") is False)
+check("Nikkei 225 is STILL private by the code default, unchanged",
+      scan_store.is_private_universe("Nikkei 225") is True)
 _pool_default = te.select_top100_pool(log=lambda *a, **k: None)
 check("RY.TO (TSX 60) is NOT in the pool under the code default - it's public but "
       "still Top-200-excluded",

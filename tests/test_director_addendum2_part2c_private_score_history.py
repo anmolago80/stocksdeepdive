@@ -60,14 +60,21 @@ def _save(universe, tickers):
 # ======================================================================
 # C1: scan_store.is_private_only_ticker() - the shared gate.
 # ======================================================================
-_save("FTSE 100", ["AZN.L", "SHEL.L"])       # private by code default
+# Nikkei 225 (not FTSE 100) - PUSH 2 (Andrew's go, 10 Oct 2026,
+# instruction_combined_10oct.md) made FTSE 100 public, so it no longer
+# fits this fixture's own "private universe" premise. Nikkei 225
+# stays private, unchanged - the universe NAME is the only thing that
+# matters to is_private_only_ticker()'s own set logic; the tickers
+# themselves (AZN.L/SHEL.L) are kept as-is everywhere else in this
+# file, purely arbitrary labels for that logic.
+_save("Nikkei 225", ["AZN.L", "SHEL.L"])     # private by code default
 _save("S&P 500", ["AAPL", "MSFT"])           # public
 _save("ASX 200", ["SHEL.L", "BHP.AX"])       # public - shares AZN.L? no, SHEL.L dual-listed fixture
 
 assert scan_store.is_private_only_ticker("AZN.L") is True, \
-    "AZN.L only in private FTSE 100 fixture -> private-only"
+    "AZN.L only in private Nikkei 225 fixture -> private-only"
 assert scan_store.is_private_only_ticker("SHEL.L") is False, \
-    "SHEL.L is in BOTH private FTSE 100 and public ASX 200 fixtures -> not private-only"
+    "SHEL.L is in BOTH private Nikkei 225 and public ASX 200 fixtures -> not private-only"
 assert scan_store.is_private_only_ticker("AAPL") is False, \
     "AAPL only in public S&P 500 fixture -> not private-only"
 assert scan_store.is_private_only_ticker("NEVER.SCANNED") is False, \

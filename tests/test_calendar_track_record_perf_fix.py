@@ -60,14 +60,16 @@ import score_history
 
 # ----------------------------------------------------------------------
 # Fixture: the real 18-universe nightly roster (scheduler_engine.
-# _DEFAULT_NIGHTLY_UNIVERSES), 5 of them private by the real code
-# default (FTSE 100/250, TSX Composite, Nikkei 225, TOPIX 500). TSX 60
-# was private too until the Director's correction (9 Oct 2026,
-# instruction_health_fixes_chart_and_new_markets.md) removed it from
-# scan_store._DEFAULT_PRIVATE_UNIVERSES - it's listed here as public,
-# same as production. Row counts scaled down 1/10th from production
-# for test speed, but the UNIVERSE COUNT (the dimension that matters
-# for this bug) is real.
+# _DEFAULT_NIGHTLY_UNIVERSES), 2 of them private by the real code
+# default (Nikkei 225, TOPIX 500). FTSE 100/250, TSX 60 and TSX
+# Composite were all private too, in stages: TSX 60 was removed from
+# scan_store._DEFAULT_PRIVATE_UNIVERSES by the Director's correction
+# (9 Oct 2026, instruction_health_fixes_chart_and_new_markets.md); FTSE
+# 100, FTSE 250 and TSX Composite were removed by PUSH 2 (Andrew's go,
+# 10 Oct 2026, instruction_combined_10oct.md) - all four UK/Canada
+# universes are listed here as public, same as production. Row counts
+# scaled down 1/10th from production for test speed, but the UNIVERSE
+# COUNT (the dimension that matters for this bug) is real.
 # ----------------------------------------------------------------------
 _UNIVERSES = [
     ("ASX 200", 60, False), ("ASX 300", 60, False), ("ASX All Technology", 40, False),
@@ -75,21 +77,21 @@ _UNIVERSES = [
     ("All Ordinaries", 60, False), ("S&P 400 MidCap", 60, False),
     ("Small Caps (S&P 600)", 60, False), ("Russell 1000", 60, False),
     ("S&P 500 Dividend Aristocrats", 40, False), ("Russell 2000", 60, False),
-    ("FTSE 100", 60, True), ("FTSE 250", 60, True),
-    ("TSX 60", 60, False), ("TSX Composite", 60, True),
+    ("FTSE 100", 60, False), ("FTSE 250", 60, False),
+    ("TSX 60", 60, False), ("TSX Composite", 60, False),
     ("Nikkei 225", 60, True), ("TOPIX 500", 60, True),
 ]
-assert sum(1 for _, _, priv in _UNIVERSES if priv) == 5, "5 private universes, matching the real code default"
+assert sum(1 for _, _, priv in _UNIVERSES if priv) == 2, "2 private universes, matching the real code default"
 
 _PRIVATE_ONLY_TICKER = "JPONLY.T"     # only ever appears under Nikkei 225 (private)
-_DUAL_LISTED_TICKER = "DUAL.AX"      # appears under both TSX Composite (private) and ASX 200 (public)
+_DUAL_LISTED_TICKER = "DUAL.AX"      # appears under both TOPIX 500 (private) and ASX 200 (public)
 _PUBLIC_TICKER = "PUB1"             # only ever appears under S&P 500 (public)
 
 for _uni, _n, _priv in _UNIVERSES:
     rows = [{"Ticker": f"{_uni[:3].upper()}{i}"} for i in range(_n)]
     if _uni == "Nikkei 225":
         rows[0] = {"Ticker": _PRIVATE_ONLY_TICKER}
-    if _uni == "TSX Composite":
+    if _uni == "TOPIX 500":
         rows[0] = {"Ticker": _DUAL_LISTED_TICKER}
     if _uni == "ASX 200":
         rows[0] = {"Ticker": _DUAL_LISTED_TICKER}

@@ -110,8 +110,13 @@ import scan_store
 
 # ======================================================================
 # Production-shaped fixtures (scan_store.save_scan() - the real
-# writer): ASX 200 (the baseline that must never change) and FTSE 100
-# (the private universe under test).
+# writer): ASX 200 (the baseline that must never change) and Nikkei
+# 225 (the private universe under test - not FTSE 100: PUSH 2,
+# Andrew's go, 10 Oct 2026, instruction_combined_10oct.md, made FTSE
+# 100/FTSE 250/TSX Composite public, on top of TSX 60's own 9 Oct
+# correction, so none of the four UK/Canada universes fit this
+# file's own "private universe" premise any more. Nikkei 225 stays
+# private, unchanged).
 # ======================================================================
 scan_store.save_scan("ASX 200", [
     {"Ticker": "CSL.AX", "Type": "STOCK", "Company Name": "CSL Limited", "Price": 280.0,
@@ -119,7 +124,7 @@ scan_store.save_scan("ASX 200", [
      "Psychology": 5.0, "Discovery (lite)": 35.0, "Moat": 65.0,
      "Growth Used": 0.06, "FCF Source": "reported", "Dividend Yield %": 1.1},
 ], source_label="test fixture")
-scan_store.save_scan("FTSE 100", [
+scan_store.save_scan("Nikkei 225", [
     {"Ticker": "BARC.L", "Type": "STOCK", "Company Name": "Barclays PLC", "Price": 250.5,
      "Intrinsic Value": 300.0, "MOS %": 16.5, "Long Score": 60.0, "Quality": 55.0,
      "Psychology": 5.0, "Discovery (lite)": 30.0, "Moat": 50.0,
@@ -176,18 +181,18 @@ def _run(at):
 
 
 # ======================================================================
-# CHECK 1-4: owner + private universe (FTSE 100) deep link.
+# CHECK 1-4: owner + private universe (Nikkei 225) deep link.
 # ======================================================================
-_at_owner = _build(OWNER_EMAIL, qp_universe="FTSE 100")
+_at_owner = _build(OWNER_EMAIL, qp_universe="Nikkei 225")
 _run(_at_owner)
-check("owner + FTSE 100 deep link: raised no exception", not _at_owner.exception)
-check("owner + FTSE 100 deep link: scanner_universe IS FTSE 100 (not ASX 200)",
-      _at_owner.session_state.get("scanner_universe") == "FTSE 100")
+check("owner + Nikkei 225 deep link: raised no exception", not _at_owner.exception)
+check("owner + Nikkei 225 deep link: scanner_universe IS Nikkei 225 (not ASX 200)",
+      _at_owner.session_state.get("scanner_universe") == "Nikkei 225")
 _html_owner = " ".join(m.value or "" for m in _at_owner.get("markdown"))
-_expected_href = app._scanner_universe_href("FTSE 100", "en")
-check('owner + FTSE 100 deep link: the FTSE 100 pill itself is highlighted ("pill on")',
+_expected_href = app._scanner_universe_href("Nikkei 225", "en")
+check('owner + Nikkei 225 deep link: the Nikkei 225 pill itself is highlighted ("pill on")',
       f'class="pill on" href="{_expected_href}"' in _html_owner)
-check("owner + FTSE 100 deep link: the overnight table shows FTSE 100's own "
+check("owner + Nikkei 225 deep link: the overnight table shows Nikkei 225's own "
       "fixture ticker (BARC.L) - the real, reported symptom (landing on ASX 200's "
       "overnight table instead) is gone",
       "BARC.L" in _html_owner)
@@ -200,32 +205,32 @@ check("owner + FTSE 100 deep link: the overnight table shows FTSE 100's own "
 # to an AU/USA default.
 # ======================================================================
 _run(_at_owner)
-check("owner + FTSE 100: survives a SUBSEQUENT rerun (cause 2's own fix) - "
-      "scanner_universe is STILL FTSE 100, not reverted to an AU/USA default",
-      _at_owner.session_state.get("scanner_universe") == "FTSE 100")
-check("owner + FTSE 100: the decoupled expander widget key holds its OWN AU "
-      "fallback locally, while the shared key stays on FTSE 100",
+check("owner + Nikkei 225: survives a SUBSEQUENT rerun (cause 2's own fix) - "
+      "scanner_universe is STILL Nikkei 225, not reverted to an AU/USA default",
+      _at_owner.session_state.get("scanner_universe") == "Nikkei 225")
+check("owner + Nikkei 225: the decoupled expander widget key holds its OWN AU "
+      "fallback locally, while the shared key stays on Nikkei 225",
       _at_owner.session_state.get("scanner_universe_manual") in
       app.scanner_engine.get_universes("Australia")
-      and _at_owner.session_state.get("scanner_universe") == "FTSE 100")
+      and _at_owner.session_state.get("scanner_universe") == "Nikkei 225")
 
 # ======================================================================
-# CHECK 6-8: non-owner + private universe (FTSE 100) deep link ->
+# CHECK 6-8: non-owner + private universe (Nikkei 225) deep link ->
 # refused, no private rows, existing fallback table still shown
 # beneath a plain-English note (never silently substituted with no
 # note at all).
 # ======================================================================
-_at_non = _build(NONOWNER_EMAIL, qp_universe="FTSE 100")
+_at_non = _build(NONOWNER_EMAIL, qp_universe="Nikkei 225")
 _run(_at_non)
-check("non-owner + FTSE 100 deep link: raised no exception", not _at_non.exception)
-check("non-owner + FTSE 100 deep link: scanner_universe stays at the ASX 200 "
+check("non-owner + Nikkei 225 deep link: raised no exception", not _at_non.exception)
+check("non-owner + Nikkei 225 deep link: scanner_universe stays at the ASX 200 "
       "default - refused, not silently granted",
       _at_non.session_state.get("scanner_universe") == "ASX 200")
 _infos_non = " ".join(m.value or "" for m in _at_non.get("info"))
-check('non-owner + FTSE 100 deep link: refusal note reads "FTSE 100 is not public yet."',
-      "FTSE 100 is not public yet." in _infos_non)
+check('non-owner + Nikkei 225 deep link: refusal note reads "Nikkei 225 is not public yet."',
+      "Nikkei 225 is not public yet." in _infos_non)
 _html_non = " ".join(m.value or "" for m in _at_non.get("markdown"))
-check("non-owner + FTSE 100 deep link: no FTSE 100 row (BARC.L) ever rendered, and "
+check("non-owner + Nikkei 225 deep link: no Nikkei 225 row (BARC.L) ever rendered, and "
       "the existing ASX 200 fallback table still renders beneath the note (never "
       "'show nothing')",
       "BARC.L" not in _html_non and "CSL.AX" in _html_non)
