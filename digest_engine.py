@@ -241,10 +241,13 @@ def run_weekly_digest(log=print):
             )
             _send(email, _subject, _email_html(email, rows, site, lang=_lang))
             summary["sent"] += 1
-            log(f"[digest] sent to {email} ({len(rows)} stocks)")
+            # Audit fix B5 (Fable finding S6, 10 Oct 2026): hashed, not
+            # the raw address - see email_auth.log_safe_email()'s own
+            # docstring.
+            log(f"[digest] sent to {email_auth.log_safe_email(email)} ({len(rows)} stocks)")
         except Exception as e:
             summary["errors"] += 1
-            log(f"[digest] {email}: {e}")
+            log(f"[digest] {email_auth.log_safe_email(email)}: {e}")
     return summary
 
 

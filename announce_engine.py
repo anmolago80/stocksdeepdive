@@ -185,10 +185,13 @@ def announce_rebuild(added_tickers, updated_tickers, log=print):
             )
             _send(email, subject, _email_html(tickers, added, updated, site, lang=_lang))
             summary["sent"] += 1
-            log(f"[announce] sent to {email} ({len(tickers)} tickers)")
+            # Audit fix B5 (Fable finding S6, 10 Oct 2026): hashed, not
+            # the raw address - see email_auth.log_safe_email()'s own
+            # docstring.
+            log(f"[announce] sent to {email_auth.log_safe_email(email)} ({len(tickers)} tickers)")
         except Exception as e:
             summary["errors"] += 1
-            log(f"[announce] {email}: {e}")
+            log(f"[announce] {email_auth.log_safe_email(email)}: {e}")
 
         # Best-effort push alongside the email above - same recipient list,
         # same tickers, but its own failure path (a bad/expired push
@@ -206,6 +209,6 @@ def announce_rebuild(added_tickers, updated_tickers, log=print):
                 )
                 summary["push_sent"] += result.get("sent", 0)
             except Exception as e:
-                log(f"[announce] push to {email}: {e}")
+                log(f"[announce] push to {email_auth.log_safe_email(email)}: {e}")
 
     return summary

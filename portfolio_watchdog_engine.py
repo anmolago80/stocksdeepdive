@@ -370,6 +370,10 @@ def run_nightly_watchdog(log=print):
     email_configured = is_configured()
 
     for email, portfolio in owners:
+        # Audit fix B5 (Fable finding S6, 10 Oct 2026): every log line
+        # below uses this short, non-reversible tag instead of the raw
+        # address - see email_auth.log_safe_email()'s own docstring.
+        _safe_email = email_auth.log_safe_email(email)
         try:
             # Español completion, Part 2: resolved once per user (a
             # first-touch-only column - see email_auth.get_signup_lang's
@@ -380,7 +384,7 @@ def run_nightly_watchdog(log=print):
             briefs = []
             for h in holdings:
                 if len(briefs) >= MAX_BRIEFS_PER_USER_PER_NIGHT:
-                    log(f"[watchdog] {email}/{portfolio}: hit the "
+                    log(f"[watchdog] {_safe_email}/{portfolio}: hit the "
                         f"{MAX_BRIEFS_PER_USER_PER_NIGHT}/night cap, stopping early")
                     break
                 ticker = h["ticker"]
@@ -388,7 +392,9 @@ def run_nightly_watchdog(log=print):
                     analysis = _analyze_holding(h)
                 except Exception as e:
                     summary["errors"] += 1
-                    log(f"[watchdog] {email}/{portfolio}/{ticker}: analysis failed: {e}")
+                    # Audit fix B5: error line - portfolio name dropped,
+                    # ticker kept (public market data, not personal).
+                    log(f"[watchdog] {_safe_email}/{ticker}: analysis failed: {e}")
                     continue
 
                 health, news = analysis["health"], analysis["news"]
@@ -407,7 +413,7 @@ def run_nightly_watchdog(log=print):
                 allowed, gate_msg, _tier = ai_gate.check(email, AI_FEATURE)
                 if not allowed:
                     summary["gate_blocked"] += 1
-                    log(f"[watchdog] {email}/{portfolio}: AI gate blocked "
+                    log(f"[watchdog] {_safe_email}/{portfolio}: AI gate blocked "
                         f"({gate_msg}) - stopping this user's run")
                     break
 
@@ -423,7 +429,8 @@ def run_nightly_watchdog(log=print):
                         pass
                 if not result["ok"]:
                     summary["errors"] += 1
-                    log(f"[watchdog] {email}/{portfolio}/{ticker}: AI call failed: "
+                    # Audit fix B5: error line - portfolio name dropped.
+                    log(f"[watchdog] {_safe_email}/{ticker}: AI call failed: "
                         f"{result['error']}")
                     continue
 
@@ -443,7 +450,7 @@ def run_nightly_watchdog(log=print):
                     sent_anything = True
                 except Exception as e:
                     summary["errors"] += 1
-                    log(f"[watchdog] email to {email}: {e}")
+                    log(f"[watchdog] email to {_safe_email}: {e}")
             # Best-effort push alongside the email above, same failure
             # isolation announce_engine.announce_rebuild uses: a bad/
             # expired push subscription must never affect whether the
@@ -457,13 +464,14 @@ def run_nightly_watchdog(log=print):
                     )
                     sent_anything = True
                 except Exception as e:
-                    log(f"[watchdog] push to {email}: {e}")
+                    log(f"[watchdog] push to {_safe_email}: {e}")
             if sent_anything:
                 summary["users_notified"] += 1
-                log(f"[watchdog] notified {email} ({len(briefs)} holdings)")
+                log(f"[watchdog] notified {_safe_email} ({len(briefs)} holdings)")
         except Exception as e:
             summary["errors"] += 1
-            log(f"[watchdog] {email}/{portfolio}: {e}")
+            # Audit fix B5: error line - portfolio name dropped.
+            log(f"[watchdog] {_safe_email}: {e}")
 
     return summary
 

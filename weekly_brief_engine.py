@@ -592,11 +592,14 @@ def run_weekly_brief(log=print):
                 reporting_tickers=reporting_tickers, lang=_lang,
             ))
             summary["sent"] += 1
-            log(f"[weekly_brief] sent to {email} ({len(watchlist_rows)} stocks"
-                f"{', AI brief' if ai_text else ''})")
+            # Audit fix B5 (Fable finding S6, 10 Oct 2026): hashed, not
+            # the raw address - see email_auth.log_safe_email()'s own
+            # docstring.
+            log(f"[weekly_brief] sent to {email_auth.log_safe_email(email)} "
+                f"({len(watchlist_rows)} stocks{', AI brief' if ai_text else ''})")
         except Exception as e:
             summary["errors"] += 1
-            log(f"[weekly_brief] {email}: {e}")
+            log(f"[weekly_brief] {email_auth.log_safe_email(email)}: {e}")
     return summary
 
 

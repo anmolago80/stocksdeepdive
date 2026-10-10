@@ -147,6 +147,23 @@ def _hash(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def log_safe_email(email):
+    """Audit fix B5 (Fable finding S6, 10 Oct 2026, instruction_
+    combined_10oct.md PART B): sha256(email)[:8] - a short, stable,
+    non-reversible per-address tag for log lines (watchdog/digest/
+    weekly brief/announce/alert/results engines), so the SAME address
+    can still be traced across its own log lines (e.g. to spot a
+    repeat failure) without the raw email ever reaching the logs.
+    Reuses this module's own _hash() (already used for codes/sessions
+    - same "a leaked DB/log never yields the raw value" rationale)
+    rather than a second hashlib call - truncated to 8 hex chars,
+    plenty to disambiguate within one process's log volume, short
+    enough to stay readable inline. "" for a falsy/missing email."""
+    if not email:
+        return ""
+    return _hash(email)[:8]
+
+
 def _mailgun_cfg():
     domain = os.environ.get("MAILGUN_DOMAIN", "").strip()
     return {

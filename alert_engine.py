@@ -420,7 +420,10 @@ def send_batched_notifications(log=print):
                 _send(email, subject, _email_html(hits, site, lang=_lang))
                 sent_anything = True
             except Exception as e:
-                log(f"[alert_engine] email to {email} failed: {e}")
+                # Audit fix B5 (Fable finding S6, 10 Oct 2026): hashed,
+                # not the raw address - see email_auth.log_safe_email()'s
+                # own docstring.
+                log(f"[alert_engine] email to {email_auth.log_safe_email(email)} failed: {e}")
         if push_configured:
             try:
                 push_send.send_to_email(
@@ -429,10 +432,10 @@ def send_batched_notifications(log=print):
                 )
                 sent_anything = True
             except Exception as e:
-                log(f"[alert_engine] push to {email} failed: {e}")
+                log(f"[alert_engine] push to {email_auth.log_safe_email(email)} failed: {e}")
         if sent_anything:
             notified += 1
-            log(f"[alert_engine] notified {email} ({n} hit(s))")
+            log(f"[alert_engine] notified {email_auth.log_safe_email(email)} ({n} hit(s))")
 
     alert_store.clear_pending_hits(all_hit_ids)
     return {"users_notified": notified}
@@ -474,11 +477,13 @@ def send_source_health_alert(source, checks, reason, log=print):
             body_html = "<br>".join(html.escape(line) for line in body_lines)
             _send(owner, subject, f"<p style='font-family:monospace'>{body_html}</p>")
         except Exception as e:
-            log(f"[alert_engine] source-health email to {owner} failed: {e}")
+            log(f"[alert_engine] source-health email to "
+                f"{email_auth.log_safe_email(owner)} failed: {e}")
 
     try:
         import push_send
         if push_send.is_configured():
             push_send.send_to_email(owner, subject, body_text[:180], url="/admin-dashboard")
     except Exception as e:
-        log(f"[alert_engine] source-health push to {owner} failed: {e}")
+        log(f"[alert_engine] source-health push to "
+            f"{email_auth.log_safe_email(owner)} failed: {e}")

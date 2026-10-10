@@ -603,7 +603,10 @@ def _notify_results_event(ticker, report_date, after, moved, log=print):
                 _send(email, subject, body_html)
                 ok = True
             except Exception as e:
-                log(f"[results_engine] email to {email} failed: {e}")
+                # Audit fix B5 (Fable finding S6, 10 Oct 2026): hashed,
+                # not the raw address - see email_auth.log_safe_email()'s
+                # own docstring.
+                log(f"[results_engine] email to {email_auth.log_safe_email(email)} failed: {e}")
         if push_configured:
             try:
                 push_send.send_to_email(
@@ -611,7 +614,7 @@ def _notify_results_event(ticker, report_date, after, moved, log=print):
                 )
                 ok = True
             except Exception as e:
-                log(f"[results_engine] push to {email} failed: {e}")
+                log(f"[results_engine] push to {email_auth.log_safe_email(email)} failed: {e}")
         if ok:
             sent += 1
     if sent:
