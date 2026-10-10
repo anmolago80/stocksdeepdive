@@ -275,7 +275,7 @@ with mock.patch("anthropic.Anthropic") as MockClient, \
                 side_effect=lambda **kw: kw):
     instance = MockClient.return_value
     fake_batch = mock.Mock(id="msgbatch_forced")
-    instance.messages.batches.create.return_value = fake_batch
+    instance.with_options.return_value.messages.batches.create.return_value = fake_batch
     forced_logs = []
     # Still at 2/2 batches, 400/480 entrants from Check 4 above.
     result_forced = te.submit_nightly_batch(pool=fake_pool[:10], log=forced_logs.append, force=True)

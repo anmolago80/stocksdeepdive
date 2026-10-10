@@ -188,7 +188,7 @@ with mock.patch("anthropic.Anthropic") as MockClient, \
                 side_effect=_fake_request):
     instance = MockClient.return_value
     fake_batch = mock.Mock(id="msgbatch_solo_test")
-    instance.messages.batches.create.return_value = fake_batch
+    instance.with_options.return_value.messages.batches.create.return_value = fake_batch
     result_id = te.submit_nightly_batch(pool=pool, log=lambda *a, **k: None)
 
 assert result_id == "msgbatch_solo_test", result_id

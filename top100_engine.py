@@ -3371,6 +3371,58 @@ def run_request_blank_strike_conversion_once(model=MODEL_TOP100, log=print):
         log("[top100] request_blank strike conversion: found 0 matching rows")
 
 
+# Audit fix B1 / Fable finding T4 (10 Oct 2026): how long after a
+# submitting-marker's own `attempted_at` timestamp a batch found by
+# batches.list() can still count as "the one that attempt created" -
+# a small backward tolerance for clock skew between this process and
+# Anthropic's own server, never a real window a GENUINE later batch
+# could fall inside (batches.create() calls from this codebase are
+# always for a single process at a time, one in-flight batch).
+_SUBMIT_RECONCILE_SKEW_SECONDS = 5
+
+
+def _reconcile_submitting_marker(marker, log=print):
+    """Resolves a submitting-marker left behind by a create() call
+    whose outcome was never learned (B1/T4 - see submit_nightly_
+    batch()'s own comment at its create() call). Lists recent batches
+    and looks for one created at/after the marker's own attempted_at
+    timestamp (minus a small clock-skew tolerance) - max_retries=0
+    means at most one real attempt was ever made, so a batch found
+    there IS the one that attempt created, and is adopted as this
+    process's own in-flight batch rather than risking a duplicate
+    submission. Returns the adopted batch's id, or None if no
+    matching batch was found (the earlier create() call never reached
+    the server at all) - in that case the marker is cleared and it is
+    safe for the caller to submit fresh. On its OWN failure (batches.
+    list() itself unreachable), the marker is left untouched and None
+    is returned - never guess, try reconciling again next time."""
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        recent = client.messages.batches.list(limit=20)
+    except Exception as e:
+        log(f"[top100] could not reconcile a pending batch submission ({e}) - "
+            f"leaving the marker in place, will retry reconciling next time")
+        return None
+    try:
+        attempted_at = datetime.fromisoformat(marker["attempted_at"])
+    except Exception:
+        attempted_at = None
+    if attempted_at is not None:
+        cutoff = attempted_at - timedelta(seconds=_SUBMIT_RECONCILE_SKEW_SECONDS)
+        for batch in recent:
+            if batch.created_at >= cutoff:
+                top100_store.save_batch_state(batch.id, marker["quarter"], marker["model"], marker["custom_id_map"])
+                top100_store.clear_submitting_marker()
+                log(f"[top100] reconciled a pending submission - batch {batch.id} from an "
+                    f"earlier attempt was found and adopted (never duplicated)")
+                return batch.id
+    top100_store.clear_submitting_marker()
+    log("[top100] pending submission marker cleared - no matching batch ever reached "
+        "the server, safe to submit")
+    return None
+
+
 def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     """Phase 2 of every nightly run, called only when poll_and_ingest_
     batch() found nothing in flight (never both submit AND have a
@@ -3486,6 +3538,21 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     if in_flight is not None:
         log(f"[top100] batch {in_flight['batch_id']} still in progress - not submitting another")
         return None
+    # Audit fix B1 / Fable finding T4 (10 Oct 2026): a prior call may
+    # have attempted batches.create() and never learned the outcome
+    # (process killed, network cut after the request reached the
+    # server but before the response did) - its own "submitting"
+    # marker (written just before ITS create() call, below) would
+    # still be here. Reconcile against batches.list() before doing any
+    # of THIS call's own work, so a real prior submission is adopted
+    # rather than silently duplicated.
+    _marker = top100_store.get_submitting_marker()
+    if _marker is not None:
+        _reconciled = _reconcile_submitting_marker(_marker, log=log)
+        if _reconciled is not None:
+            return _reconciled
+        # else: confirmed no matching batch exists - the marker is
+        # already cleared, safe to fall through and submit fresh.
     pool = (top100_store.current_pool() + top100_store.current_asx_extension()) if pool is None else pool
     if not pool:
         return None
@@ -3645,13 +3712,25 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
                 **_request_params(pack_request_entrants, schema_mode=schema_mode)),
         ))
 
+    # Audit fix B1 / Fable finding T4 (10 Oct 2026): batches.create()
+    # is NOT idempotent - if the request reaches the server and a real
+    # batch is created, but this process never sees the response (a
+    # network cut, the process killed mid-call), an auto-retry would
+    # submit a SECOND real batch with no application-level awareness,
+    # since only one batch.id is ever returned. max_retries=0 means
+    # the SDK itself never retries; the marker written just below lets
+    # the NEXT submit_nightly_batch() call reconcile this attempt's
+    # real outcome (see _reconcile_submitting_marker()) instead.
+    top100_store.save_submitting_marker(today.isoformat(), model, custom_id_map)
     try:
         client = anthropic.Anthropic()
-        batch = client.messages.batches.create(requests=requests)
+        batch = client.with_options(max_retries=0).messages.batches.create(requests=requests)
     except Exception as e:
-        log(f"[top100] batch submission failed: {e}")
+        log(f"[top100] batch submission failed (outcome unknown - will reconcile against "
+            f"batches.list() on the next attempt before submitting again): {e}")
         return None
 
+    top100_store.clear_submitting_marker()
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
     top100_store.record_daily_submission(today.isoformat(), len(entrants))
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "

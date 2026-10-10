@@ -191,7 +191,7 @@ def _fake_batch_create(requests):
 te.set_resubmit_paused(True, log=lambda *a, **k: None)
 with mock.patch.object(te, "_unscored_tickers", return_value=list(FAKE_ENTRANTS)), \
      mock.patch("anthropic.Anthropic") as MockClient:
-    MockClient.return_value.messages.batches.create.side_effect = _fake_batch_create
+    MockClient.return_value.with_options.return_value.messages.batches.create.side_effect = _fake_batch_create
     te.submit_nightly_batch(pool=POOL, log=lambda *a, **k: None)
     # Inspect what was actually submitted via the saved batch state's
     # own custom_id_map instead of reaching into the mock's call args -
@@ -208,7 +208,7 @@ ts.clear_batch_state()
 te.set_resubmit_paused(False, log=lambda *a, **k: None)
 with mock.patch.object(te, "_unscored_tickers", return_value=list(FAKE_ENTRANTS)), \
      mock.patch("anthropic.Anthropic") as MockClient:
-    MockClient.return_value.messages.batches.create.side_effect = _fake_batch_create
+    MockClient.return_value.with_options.return_value.messages.batches.create.side_effect = _fake_batch_create
     te.submit_nightly_batch(pool=POOL, log=lambda *a, **k: None)
     state2 = ts.get_batch_state()
     submitted2 = set()

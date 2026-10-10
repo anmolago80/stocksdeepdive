@@ -392,6 +392,26 @@ def _conn():
             custom_id_map_json TEXT
         )"""
     )
+    # Audit fix B1 / Fable finding T4 (10 Oct 2026): batches.create() is
+    # now called with max_retries=0 (see top100_engine.submit_nightly_
+    # batch()'s own comment) - a non-idempotent create MUST NOT be auto-
+    # retried by the SDK, since a retry after a response-delivery
+    # failure (the request reached the server and a batch WAS created,
+    # but the client never saw the confirmation) would submit a real
+    # second batch. This one-row marker is written BEFORE the create()
+    # call and only cleared once the call's outcome is known - either
+    # a normal success/failure, or, on the NEXT call, after reconciling
+    # against batches.list() to check whether that earlier attempt
+    # actually went through server-side.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_submitting_marker (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            attempted_at TEXT,
+            quarter TEXT,
+            model TEXT,
+            custom_id_map_json TEXT
+        )"""
+    )
     # Audit fixes, Commit 1 (30 Sep 2026, owner-directed, "close the no-
     # resubmit-loop door") - see top100_engine.py's own TOP100_FAILURE_*
     # constants docstring for the full root cause. One row per (ticker,
@@ -1025,6 +1045,44 @@ def get_batch_state():
 def clear_batch_state():
     with _conn() as conn:
         conn.execute("DELETE FROM top100_batch_state WHERE id = 1")
+
+
+def save_submitting_marker(quarter, model, custom_id_map):
+    """Written BEFORE every batches.create() attempt - see that table's
+    own comment above for why (max_retries=0, never silently double-
+    submit on an ambiguous network failure)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO top100_submitting_marker (id, attempted_at, quarter, model, custom_id_map_json)
+                 VALUES (1, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 attempted_at = excluded.attempted_at,
+                 quarter = excluded.quarter,
+                 model = excluded.model,
+                 custom_id_map_json = excluded.custom_id_map_json""",
+            (datetime.now(timezone.utc).isoformat(), quarter, model, json.dumps(custom_id_map)),
+        )
+
+
+def get_submitting_marker():
+    """{"attempted_at","quarter","model","custom_id_map"} for a create()
+    attempt whose outcome is still unknown, or None if none is
+    pending."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM top100_submitting_marker WHERE id = 1"
+        ).fetchone()
+    if not row or not row["attempted_at"]:
+        return None
+    out = dict(row)
+    out["custom_id_map"] = json.loads(out.pop("custom_id_map_json") or "{}")
+    return out
+
+
+def clear_submitting_marker():
+    with _conn() as conn:
+        conn.execute("DELETE FROM top100_submitting_marker WHERE id = 1")
 
 
 # -----------------------------------------------------------------

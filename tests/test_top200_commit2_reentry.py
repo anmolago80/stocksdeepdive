@@ -178,7 +178,7 @@ with mock.patch.object(te, "submit_nightly_batch", wraps=te.submit_nightly_batch
      mock.patch.object(te, "is_resubmit_paused", return_value=False):
     _mock_batch = mock.Mock()
     _mock_batch.id = "msgbatch_reset_test"
-    _MockClient.return_value.messages.batches.create.return_value = _mock_batch
+    _MockClient.return_value.with_options.return_value.messages.batches.create.return_value = _mock_batch
     _result = te.submit_nightly_batch(log=lambda *a, **k: None)
 _logs_after = ts.score_failures_for_model(MODEL, RV)
 assert "RESETME1" not in _logs_after, (
