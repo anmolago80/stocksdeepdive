@@ -332,6 +332,75 @@ def _conn():
             updated_at TEXT NOT NULL
         )"""
     )
+    # instruction_budget_ledger.md Step 1 (9 Oct 2026, Director-directed,
+    # behind LEDGER_LIVE): the spending ledger - A1 (manual grid) and B
+    # (bank CSV import) both write here, same table either way.
+    # user_id is the signed-in email, same IDENTITY convention this
+    # whole module uses (see this file's own module docstring) - never a
+    # separate numeric id. amount_cents is an INTEGER (money is always
+    # integer cents in this table, never a float - the spec's own
+    # explicit rule). category is free text, not a foreign key: Step 1's
+    # own test proves deleting a category from the Plan tab never
+    # deletes or corrupts these rows (they just show "(category
+    # removed)" - a presentation-layer fallback, not a DB constraint).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS ledger_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            description TEXT NOT NULL,
+            raw_description TEXT,
+            category TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            import_batch_id TEXT,
+            note_fx TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    # merchant_key is always stored lower-case (the caller's job, same
+    # as every other lower-cased key in this file) - unique per
+    # (user_id, merchant_key) so "remember my category changes as
+    # rules" is a plain upsert, never a duplicate-rule accumulation.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS ledger_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            merchant_key TEXT NOT NULL,
+            category TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, merchant_key)
+        )"""
+    )
+    # Privacy rule (instruction's own section 0): counts only, never a
+    # transaction description or amount - this table exists purely so
+    # the dedup fingerprint check (Step 4) can tell "N already
+    # imported" without re-reading every row, and so the import history
+    # itself has a plain audit trail.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS ledger_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            rows_read INTEGER NOT NULL,
+            rows_saved INTEGER NOT NULL,
+            rows_skipped INTEGER NOT NULL,
+            date_from TEXT,
+            date_to TEXT
+        )"""
+    )
+    # The user ticks "is a bill" explicitly (Step 3's pace-line maths
+    # needs to know bills_plan vs everyday_plan) - this table is never
+    # populated by guessing from a category's name.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS ledger_category_flags (
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            is_bill INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, category)
+        )"""
+    )
     return conn
 
 
@@ -1104,4 +1173,217 @@ def save_budget_plan(email, name, money_in, categories, country=None, years=None
             "money_in = excluded.money_in, categories_json = excluded.categories_json, "
             "country = excluded.country, years = excluded.years, updated_at = excluded.updated_at",
             (email, name, money_in, categories_json, country, years, now),
+        )
+
+
+# -----------------------------------------------------------------
+# instruction_budget_ledger.md STEP 1 (9 Oct 2026, Director-directed):
+# the Budget Ledger's own data layer - A1 (manual grid) and B (bank CSV
+# import) both call these same functions. Every read/write below takes
+# `email` and scopes its query to it, same IDENTITY rule as the rest of
+# this module (see its own module docstring) - there is no way to read
+# or write another user's rows through any function here, by
+# construction (every WHERE clause includes user_id = ?, and every
+# UPDATE/DELETE additionally re-checks ownership before touching a row
+# by id).
+#
+# Money is always integer cents (amount_cents), never a float -
+# instruction's own explicit rule, so a $12.34 spend round-trips as
+# exactly 1234, never 1233.9999999998 or similar float drift.
+#
+# ledger_entries.category is plain TEXT, never a foreign key into any
+# categories table - the Budget Planner's own 10 preset categories
+# (budget_planner_engine.CATEGORIES) aren't even stored as rows
+# anywhere, so there is nothing to cascade from. Removing a category
+# from the Plan tab (or deleting the whole plan) can therefore never
+# delete or corrupt a ledger_entries row that already used it - the
+# row simply keeps that category text forever; the UI layer (Step 2)
+# is responsible for showing "(category removed)" when it no longer
+# matches any of the plan's current categories.
+# -----------------------------------------------------------------
+
+def create_ledger_entry(email, date, description, category, amount_cents,
+                         source="manual", raw_description=None,
+                         import_batch_id=None, note_fx=None):
+    """Inserts one ledger row for `email` and returns its new id, or
+    None if `email`/`date`/`category` is missing (the caller's job to
+    validate everything else - this is the data layer, not the grid's
+    own per-row validation)."""
+    if not email or not date or not category:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO ledger_entries "
+            "(user_id, date, description, raw_description, category, amount_cents, "
+            "source, import_batch_id, note_fx, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (email, date, description or "", raw_description, category,
+             int(amount_cents), source, import_batch_id, note_fx, now, now),
+        )
+        return cur.lastrowid
+
+
+def _ledger_row_to_dict(row):
+    return {
+        "id": row[0], "user_id": row[1], "date": row[2], "description": row[3],
+        "raw_description": row[4], "category": row[5], "amount_cents": row[6],
+        "source": row[7], "import_batch_id": row[8], "note_fx": row[9],
+        "created_at": row[10], "updated_at": row[11],
+    }
+
+
+_LEDGER_ENTRY_COLUMNS = (
+    "id, user_id, date, description, raw_description, category, amount_cents, "
+    "source, import_batch_id, note_fx, created_at, updated_at"
+)
+
+
+def get_ledger_entry(email, entry_id):
+    """One row, or None if it doesn't exist OR belongs to a different
+    user - the two cases are deliberately indistinguishable (same
+    fail-closed shape as every other per-user read in this app; a
+    caller must never be able to probe for another user's row id by
+    checking which error comes back)."""
+    if not email or entry_id is None:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            f"SELECT {_LEDGER_ENTRY_COLUMNS} FROM ledger_entries WHERE id = ? AND user_id = ?",
+            (entry_id, email),
+        ).fetchone()
+    return _ledger_row_to_dict(row) if row else None
+
+
+def list_ledger_entries(email, date_from, date_to):
+    """Every row for `email` with date in [date_from, date_to]
+    (inclusive, both "YYYY-MM-DD" strings - the month picker's own
+    range), ordered by date then id. Empty list for a month with
+    nothing logged - the caller (app.py) is responsible for the
+    "Nothing logged for <month> yet" empty-state line, not this
+    function."""
+    if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT {_LEDGER_ENTRY_COLUMNS} FROM ledger_entries "
+            "WHERE user_id = ? AND date >= ? AND date <= ? ORDER BY date, id",
+            (email, date_from, date_to),
+        ).fetchall()
+    return [_ledger_row_to_dict(r) for r in rows]
+
+
+def update_ledger_entry(email, entry_id, date=None, description=None,
+                         category=None, amount_cents=None):
+    """Updates only the fields a caller passes (None = leave unchanged -
+    NOT "set to null"); always re-checks user_id = email as part of the
+    UPDATE's own WHERE clause, so this can never touch a row owned by a
+    different user even if handed their row id. Returns True if a row
+    was actually updated, False if no such row exists for this email."""
+    if not email or entry_id is None:
+        return False
+    sets, vals = [], []
+    if date is not None:
+        sets.append("date = ?"); vals.append(date)
+    if description is not None:
+        sets.append("description = ?"); vals.append(description)
+    if category is not None:
+        sets.append("category = ?"); vals.append(category)
+    if amount_cents is not None:
+        sets.append("amount_cents = ?"); vals.append(int(amount_cents))
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    vals.append(datetime.now(timezone.utc).isoformat())
+    vals.extend([entry_id, email])
+    with _conn() as conn:
+        cur = conn.execute(
+            f"UPDATE ledger_entries SET {', '.join(sets)} WHERE id = ? AND user_id = ?",
+            vals,
+        )
+        return cur.rowcount > 0
+
+
+def delete_ledger_entry(email, entry_id):
+    """True if a row owned by `email` was deleted, False otherwise
+    (including "exists but belongs to someone else" - same
+    fail-closed, no-information-leak shape as get_ledger_entry)."""
+    if not email or entry_id is None:
+        return False
+    with _conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM ledger_entries WHERE id = ? AND user_id = ?", (entry_id, email),
+        )
+        return cur.rowcount > 0
+
+
+def get_merchant_rule(email, merchant_key):
+    """The user's own remembered category for this merchant (lower-
+    cased key), or None - "your rule", precedence 1 in the suggestion
+    order (Step 4)."""
+    if not email or not merchant_key:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT category FROM ledger_rules WHERE user_id = ? AND merchant_key = ?",
+            (email, merchant_key.lower()),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def upsert_merchant_rule(email, merchant_key, category):
+    """Creates or updates this user's own rule for `merchant_key`
+    (always stored lower-case). Used by the review screen's "remember
+    my category changes as rules" checkbox (Step 4)."""
+    if not email or not merchant_key or not category:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO ledger_rules (user_id, merchant_key, category, created_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(user_id, merchant_key) DO UPDATE SET "
+            "category = excluded.category",
+            (email, merchant_key.lower(), category, now),
+        )
+
+
+def record_ledger_import(email, rows_read, rows_saved, rows_skipped, date_from, date_to):
+    """Counts-only audit row for one CSV import (Step 4) - never the
+    file content, never a row's own description/amount (section 0's
+    own privacy rule)."""
+    if not email:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO ledger_imports "
+            "(user_id, imported_at, rows_read, rows_saved, rows_skipped, date_from, date_to) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (email, now, rows_read, rows_saved, rows_skipped, date_from, date_to),
+        )
+        return cur.lastrowid
+
+
+def is_category_bill(email, category):
+    """True if this user ticked "is a bill" for `category` - never
+    guessed from the category's name (instruction's own explicit
+    rule)."""
+    if not email or not category:
+        return False
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT is_bill FROM ledger_category_flags WHERE user_id = ? AND category = ?",
+            (email, category),
+        ).fetchone()
+    return bool(row[0]) if row else False
+
+
+def set_category_is_bill(email, category, is_bill):
+    if not email or not category:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO ledger_category_flags (user_id, category, is_bill) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, category) DO UPDATE SET is_bill = excluded.is_bill",
+            (email, category, 1 if is_bill else 0),
         )
