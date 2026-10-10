@@ -2162,6 +2162,16 @@ def dcf_intrinsic_value(
             meta["share_count_source"] = _dc_source
             meta["share_count_note"] = _dc_note
         if shares <= 0:
+            # Audit fix B3 / Fable finding V6 (10 Oct 2026): there is
+            # no usable share count at all for this ticker (bundle/
+            # implied/filed all came back empty - see share_class_
+            # engine.whole_company_shares()'s own docstring), so the
+            # DCF never even starts. Previously left fcf_reason at its
+            # init default of None here, indistinguishable from any
+            # other "DCF never ran" case. Display-only, like every
+            # other fcf_reason value - never affects the math (the
+            # function still returns the same (0, None) it always did).
+            meta["fcf_reason"] = "no_shares"
             return 0, None, meta
 
         # --- Base free cash flow -------------------------------------------

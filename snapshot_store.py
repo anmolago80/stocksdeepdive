@@ -348,6 +348,14 @@ _PUBLIC_FIELD_MAP = {
     # snapshot_render.py's "not currently trading" banner for the one
     # place it changes what's SHOWN, not just what's exposed.
     "Trading Status": "trading_status",
+    # Audit fix B3 (Fable finding V6, 10 Oct 2026, instruction_combined_
+    # 10oct.md PART B): "dcf" | "pe-blend" | "none" - nightly_scan.
+    # analyze_ticker_lite()'s own new "Intrinsic Source" key (see that
+    # module's own comment at its "Intrinsic Value" row entry). Absent
+    # entirely on any row saved before this shipped - public_view()
+    # already omits any key not present on `row`, same "never
+    # fabricate" convention as every other optional field above.
+    "Intrinsic Source": "intrinsic_source",
 }
 
 

@@ -786,7 +786,12 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                             latest_cf_period=_cf_latest_period, currency_converted=True,
                         )
 
-    intrinsic, _ivsrc, _g, iv_meta = resolve_intrinsic_value(
+    # Audit fix B3 / Fable finding V6 (10 Oct 2026): this was captured
+    # under a leading-underscore throwaway name and discarded - app.py's
+    # own live-hook equivalent already captures this same value as
+    # `intrinsic_src` and surfaces it as the row's "Intrinsic Source".
+    # Now used below the same way.
+    intrinsic, ivsrc, _g, iv_meta = resolve_intrinsic_value(
         ticker, quality, info=info, cashflow_df=cashflow_df,
         # Stage 1a (3 Oct 2026, Director-directed): trading_currency_
         # for() adds the .L/.TO suffix fallback this bare info.get()
@@ -1011,6 +1016,12 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         "Quality": quality,
         "Quality Default": bool(quality_default),
         "Intrinsic Value": round(intrinsic, 2) if intrinsic > 0 else None,
+        # Audit fix B3 / Fable finding V6 (10 Oct 2026): "dcf" |
+        # "pe-blend" | "none" - resolve_intrinsic_value()'s own source
+        # label, additive (a brand-new key; every other key on this
+        # row is unchanged) - see snapshot_store._PUBLIC_FIELD_MAP for
+        # how this reaches the public surfaces.
+        "Intrinsic Source": ivsrc,
         "Intrinsic Default": bool(iv_meta.get("value_default", False)),
         # Stage 1b (3 Oct 2026, Director-directed): pure passthrough of
         # fundamentals_data.normalize_pence_quote()'s own guard - see
