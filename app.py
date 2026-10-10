@@ -26491,6 +26491,206 @@ def _ledger_month_options(today):
     return _opts
 
 
+def _ledger_fmt_money(amount):
+    return f"${amount:,.0f}"
+
+
+def _render_ledger_tiles(_bll, plan, spent, bills_plan, everyday_plan, everyday_spent,
+                          days_in_month, today, everyday_entry_count):
+    """Budget Ledger STEP 3 (9 Oct 2026, Director-directed, build go):
+    the four tiles, computed purely from budget_planner_engine's own
+    tested functions - this function only formats/colours what they
+    return, no arithmetic of its own beyond that."""
+    _left = plan - spent
+    _safe = budget_planner_engine.ledger_safe_to_spend_per_day(plan, spent, days_in_month, today)
+    _proj_visible = budget_planner_engine.ledger_projection_visible(today, everyday_entry_count)
+    _proj = budget_planner_engine.ledger_projection(bills_plan, everyday_spent, today, days_in_month) \
+        if _proj_visible else None
+
+    _t1, _t2, _t3, _t4 = st.columns(4)
+    with _t1:
+        st.metric(_bll("tile_spent_label"), _ledger_fmt_money(spent))
+        st.caption(_bll("tile_spent_of_plan", plan=_ledger_fmt_money(plan)))
+    with _t2:
+        if _left < 0:
+            st.metric(_bll("tile_left_label"), "", delta=_ledger_fmt_money(-_left) + " ▲",
+                      delta_color="inverse")
+        else:
+            st.metric(_bll("tile_left_label"), _ledger_fmt_money(_left))
+    with _t3:
+        st.metric(_bll("tile_safe_label"), _ledger_fmt_money(_safe))
+        if _safe <= 0:
+            st.caption(_bll("tile_safe_at_plan"))
+        else:
+            _days_left = max(days_in_month - today + 1, 1)
+            st.caption(_bll("tile_safe_days_left", days=_days_left))
+    with _t4:
+        if not _proj_visible:
+            st.metric(_bll("tile_proj_label"), "—")
+            st.caption(_bll("tile_proj_needs_data"))
+        else:
+            _over = _proj - plan
+            if _over > 0:
+                st.metric(_bll("tile_proj_label"), "", delta=_ledger_fmt_money(_over) + " ▲",
+                          delta_color="inverse")
+                st.caption(_bll("tile_proj_over", amount=_ledger_fmt_money(_over)))
+            else:
+                st.metric(_bll("tile_proj_label"), _ledger_fmt_money(_proj))
+                st.caption(_bll("tile_proj_under", amount=_ledger_fmt_money(-_over)))
+
+
+def _render_ledger_pace_chart(_bll, entries, plan, bills_plan, everyday_plan, days_in_month, today):
+    """STEP 3's pace chart - cumulative daily actual spending (teal),
+    the pace line (grey dashed, bills_plan counted in full from day 1
+    per the mock's own rule), a projection from today to month end
+    (amber dotted), and a flat line at plan (red only if the actual
+    series ever crosses above it - the instruction's own "red only for
+    over-plan" rule)."""
+    _by_day = {}
+    for e in entries:
+        _day = int(e["date"].split("-")[2])
+        _by_day[_day] = _by_day.get(_day, 0) + e["amount_cents"] / 100.0
+    _days = list(range(1, days_in_month + 1))
+    _cum = []
+    _running = 0.0
+    for _d in _days:
+        _running += _by_day.get(_d, 0.0)
+        _cum.append(_running)
+    _actual_days = _days[:today]
+    _actual_vals = _cum[:today]
+
+    _pace_vals = [
+        budget_planner_engine.ledger_pace_line_value(bills_plan, everyday_plan, d, days_in_month)
+        for d in _days
+    ]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=_actual_days, y=_actual_vals, mode="lines", name=_bll("pace_actual"),
+        line=dict(color="#2dd4bf", width=2.5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=_days, y=_pace_vals, mode="lines", name=_bll("pace_pace"),
+        line=dict(color="#8aa0b8", width=1.5, dash="dash"),
+    ))
+    if today < days_in_month and _actual_vals:
+        _proj_days = list(range(today, days_in_month + 1))
+        _everyday_spent_so_far = sum(
+            v for d, v in _by_day.items() if d <= today
+            # NOTE: callers wanting the real "everyday only" split pass
+            # already-filtered entries; this chart's own projection line
+            # uses the same running total as the actual line for
+            # continuity (meets at `today`), ramping toward the tile's
+            # own projection figure at month end.
+        )
+        _proj_end = budget_planner_engine.ledger_projection(
+            bills_plan, max(_actual_vals[-1] - bills_plan, 0.0) if _actual_vals else 0.0,
+            today, days_in_month,
+        )
+        fig.add_trace(go.Scatter(
+            x=[today, days_in_month], y=[_actual_vals[-1] if _actual_vals else 0.0, _proj_end],
+            mode="lines", name=_bll("pace_projection"),
+            line=dict(color="#fbbf24", width=1.5, dash="dot"),
+        ))
+    fig.add_trace(go.Scatter(
+        x=_days, y=[plan] * len(_days), mode="lines", name=_bll("pace_plan_line"),
+        line=dict(color="#fb7185", width=1, dash="longdash"),
+    ))
+    fig.update_layout(
+        height=280, margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        xaxis=dict(gridcolor="#1f3352"), yaxis=dict(gridcolor="#1f3352"),
+    )
+    st.markdown(f"**{_bll('pace_chart_heading')}**")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_ledger_category_chart(_bl, _bll, entries, category_plan_amounts, is_bill_map):
+    """STEP 3's category chart - non-bill categories only, a bar of
+    spent/plan capped visually at 130% with a tick at 100%; bills are
+    listed underneath as plain text, never bars (the mock's own rule)."""
+    _spent_by_cat = {}
+    for e in entries:
+        _spent_by_cat[e["category"]] = _spent_by_cat.get(e["category"], 0) + e["amount_cents"] / 100.0
+
+    _non_bill_cats = [c["id"] for c in budget_planner_engine.CATEGORIES if not is_bill_map.get(c["id"])]
+    _bill_cats = [c["id"] for c in budget_planner_engine.CATEGORIES if is_bill_map.get(c["id"])]
+
+    _any_data = any(_spent_by_cat.get(c) for c in _non_bill_cats) or any(category_plan_amounts.get(c) for c in _non_bill_cats)
+    st.markdown(f"**{_bll('category_chart_heading')}**")
+    if not _any_data:
+        st.caption(_bll("category_chart_no_data"))
+    else:
+        fig = go.Figure()
+        _cats_with_activity = [
+            c for c in _non_bill_cats if _spent_by_cat.get(c) or category_plan_amounts.get(c)
+        ]
+        _labels = [_bl(f"cat.{c}") for c in _cats_with_activity]
+        _pct = []
+        _texts = []
+        for c in _cats_with_activity:
+            _sp = _spent_by_cat.get(c, 0.0)
+            _pl = category_plan_amounts.get(c)
+            if not _pl:
+                _pct.append(0.0)
+                _texts.append(_bll("category_no_plan"))
+            else:
+                _ratio = _sp / _pl
+                _pct.append(min(_ratio * 100, 130))
+                if _sp > _pl:
+                    _texts.append(_bll("category_over", amount=_ledger_fmt_money(_sp - _pl)))
+                else:
+                    _texts.append(_bll("category_of_plan", spent=_ledger_fmt_money(_sp), plan=_ledger_fmt_money(_pl)))
+        _colors = [
+            "#fb7185" if (category_plan_amounts.get(c) and _spent_by_cat.get(c, 0.0) > category_plan_amounts.get(c))
+            else "#2dd4bf"
+            for c in _cats_with_activity
+        ]
+        fig.add_trace(go.Bar(
+            x=_pct, y=_labels, orientation="h", marker_color=_colors,
+            text=_texts, textposition="outside",
+        ))
+        fig.add_vline(x=100, line_dash="dot", line_color="#8aa0b8")
+        fig.update_layout(
+            height=max(200, 40 * len(_labels)), margin=dict(l=10, r=10, t=10, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+            xaxis=dict(range=[0, 140], gridcolor="#1f3352", title="%"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    if _bill_cats:
+        _bill_lines = []
+        for c in _bill_cats:
+            _sp = _spent_by_cat.get(c, 0.0)
+            _pl = category_plan_amounts.get(c)
+            if _pl:
+                _bill_lines.append(
+                    _bll("bills_line", category=_bl(f"cat.{c}"),
+                         spent=_ledger_fmt_money(_sp), plan=_ledger_fmt_money(_pl))
+                )
+        if _bill_lines:
+            st.caption(" · ".join(_bill_lines))
+
+
+def _render_budget_planner_ledger_is_bill_expander(email, _bll, is_bill_map):
+    """The "is a bill" tick next to the category chart - the user ticks
+    it explicitly; never guessed from a category's name (instruction's
+    own explicit rule)."""
+    with st.expander(_bll("is_bill_expander")):
+        for _cat in budget_planner_engine.CATEGORIES:
+            _cid = _cat["id"]
+            _ckey = f"tools_ledger_is_bill_{_cid}__{email}"
+            _new_val = st.checkbox(
+                f"{_cat['icon']} {i18n.t(f'tools.budget.cat.{_cid}', st.session_state.get('lang', 'en'))} "
+                f"- {_bll('is_bill_checkbox')}",
+                value=is_bill_map.get(_cid, False), key=_ckey,
+            )
+            if _new_val != is_bill_map.get(_cid, False):
+                tools_store.set_category_is_bill(email, _cid, _new_val)
+                st.rerun()
+
+
 def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
     """Budget Ledger STEP 2 (9 Oct 2026, Director-directed): A1, the
     spreadsheet grid - manual entry only (B, bank CSV import, is Step
@@ -26524,6 +26724,30 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
 
     _entries = tools_store.list_ledger_entries(email, _month_start, _month_end)
     _entry_ids = [e["id"] for e in _entries]
+
+    # STEP 3 (9 Oct 2026, Director-directed, build go): tiles, above
+    # the grid, computed from the CURRENT active plan (Director's own
+    # decision - the ledger belongs to the account, tiles/charts always
+    # compare against whichever plan is currently selected, never a
+    # per-month stored plan snapshot).
+    _plan_data = tools_store.get_budget_plan(email, active_plan) or {}
+    _plan_categories = _plan_data.get("categories") or {}
+    _is_bill_map = {
+        _cid: tools_store.is_category_bill(email, _cid) for _cid in budget_planner_engine.CATEGORY_IDS
+    }
+    _plan_total = budget_planner_engine.ledger_plan_total(_plan_categories)
+    _bills_plan = budget_planner_engine.ledger_bills_plan(_plan_categories, _is_bill_map)
+    _everyday_plan = budget_planner_engine.ledger_everyday_plan(_plan_total, _bills_plan)
+    _spent_total = budget_planner_engine.ledger_spent_total(_entries)
+    _everyday_spent = budget_planner_engine.ledger_everyday_spent(_entries, _is_bill_map)
+    _days_in_month = budget_planner_engine.ledger_days_in_month(_sel_year, _sel_month)
+    _today_of_month = budget_planner_engine.ledger_today_of_month(_sel_year, _sel_month, _today)
+    _everyday_entry_count = sum(1 for e in _entries if not _is_bill_map.get(e.get("category")))
+
+    _render_ledger_tiles(
+        _bll, _plan_total, _spent_total, _bills_plan, _everyday_plan, _everyday_spent,
+        _days_in_month, _today_of_month, _everyday_entry_count,
+    )
 
     if _entries:
         _grid_df = pd.DataFrame({
@@ -26628,6 +26852,19 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
             st.toast(_bll("saved_toast"), icon="💾")
             st.rerun()
 
+    # STEP 3: the charts, below the grid (same month's entries/plan
+    # already resolved above - no re-fetch needed).
+    with st.container(border=True):
+        _render_ledger_pace_chart(
+            _bll, _entries, _plan_total, _bills_plan, _everyday_plan, _days_in_month, _today_of_month,
+        )
+    _chart_col, _bill_col = st.columns([3, 1])
+    with _chart_col:
+        with st.container(border=True):
+            _render_ledger_category_chart(_bl, _bll, _entries, _plan_categories, _is_bill_map)
+    with _bill_col:
+        _render_budget_planner_ledger_is_bill_expander(email, _bll, _is_bill_map)
+
     if st.button(_bll("export_csv"), key=_tools_plan_key(active_plan, "tools_ledger_export")):
         _export_rows = tools_store.list_ledger_entries(email, _month_start, _month_end)
         _csv_lines = ["Date,What,Category,Amount"]
@@ -26665,12 +26902,71 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
 
 
 def _render_budget_insights_tab(email, active_plan, _bl, _lang):
-    """Budget Ledger STEP 2 placeholder - the Insights tab's real
-    content (last-6-months bar chart vs. the current plan) is Step 3's
-    own deliverable. Exists now only so the tab itself doesn't render
-    empty/broken while Step 2 is live."""
-    st.caption(i18n.t("tools.budget.ledger.month_label", _lang))
-    st.info("Coming in Step 3.")
+    """Budget Ledger STEP 3 (9 Oct 2026, Director-directed, build go):
+    monthly spent for the last 6 months as bars, the plan as a dashed
+    line. Director's own decision: the plan has no month-by-month
+    history, so every month compares against the CURRENT plan's total
+    (never invented, never a stored per-month snapshot) - hence the
+    caption below."""
+    _bll = lambda key, **kw: i18n.t(f"tools.budget.ledger.{key}", _lang, **kw)
+    _today = _ledger_today_brisbane()
+
+    _plan_data = tools_store.get_budget_plan(email, active_plan) or {}
+    _plan_total = budget_planner_engine.ledger_plan_total(_plan_data.get("categories") or {})
+
+    _months = []
+    _total = _today.year * 12 + (_today.month - 1)
+    for _i in range(-5, 1):
+        _t = _total + _i
+        _y, _m = divmod(_t, 12)
+        _months.append((_y, _m + 1))
+
+    st.markdown(f"**{_bll('insights_heading')}**")
+    st.caption(_bll("insights_caption"))
+
+    _labels, _values, _texts, _colors, _has_data = [], [], [], [], []
+    for _y, _m in _months:
+        _start, _end = _ledger_month_bounds(_y, _m)
+        _entries = tools_store.list_ledger_entries(email, _start, _end)
+        _is_current = (_y, _m) == (_today.year, _today.month)
+        _label = _ledger_month_label(_y, _m, _lang)
+        if _is_current:
+            _label = _bll("insights_so_far", month=_label)
+        _labels.append(_label)
+        if not _entries:
+            _values.append(0.0)
+            _texts.append(_bll("insights_no_data"))
+            _colors.append("#5b7290")
+            _has_data.append(False)
+        else:
+            _spent = budget_planner_engine.ledger_spent_total(_entries)
+            _values.append(_spent)
+            _over = _plan_total and _spent > _plan_total
+            if _over:
+                _texts.append(f"${_spent:,.0f} ({_bll('insights_over_plan_tooltip')})")
+                _colors.append("#fb7185")
+            else:
+                _texts.append(f"${_spent:,.0f}")
+                _colors.append("#2dd4bf")
+            _has_data.append(True)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=_labels, y=_values, marker_color=_colors, text=_texts, textposition="outside",
+        hovertext=_texts, hoverinfo="text",
+    ))
+    if _plan_total:
+        fig.add_trace(go.Scatter(
+            x=_labels, y=[_plan_total] * len(_labels), mode="lines", name=_bll("insights_plan_line"),
+            line=dict(color="#8aa0b8", width=1.5, dash="dash"),
+        ))
+    fig.update_layout(
+        height=300, margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+        xaxis=dict(gridcolor="#1f3352"), yaxis=dict(gridcolor="#1f3352"),
+        showlegend=bool(_plan_total),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _dr_scenario_name(scenario_id, country, us_baseline, dl):

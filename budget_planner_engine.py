@@ -202,3 +202,129 @@ def clamp_years(years):
     if years is None:
         return DEFAULT_PROJECTION_YEARS
     return max(MIN_PROJECTION_YEARS, min(int(years), MAX_PROJECTION_YEARS))
+
+
+# --------------------------------------------------------------------------- #
+# Budget Ledger STEP 3 (9 Oct 2026, Director-directed, build go): the
+# tiles/pace-chart/category-chart maths - every definition below is
+# exactly the instruction's own wording, each one independently unit-
+# tested against fixtures (tests/test_budget_ledger_step3_tiles.py).
+# Money in/out here is always plain DOLLARS (float), not cents - the
+# cents/float boundary is tools_store.py's own concern (storage), this
+# module stays "plain numbers the caller supplies", same rule as the
+# rest of this file.
+#
+# Director's own decision (9 Oct 2026): the plan has no month-by-month
+# history, so a past month's "plan" in Insights is simply the CURRENT
+# plan's total, carried back - never invented, never a stored snapshot
+# per month. Every function below that takes a `plan`/`bills_plan`
+# argument is deliberately agnostic to which month it's being asked
+# about for exactly this reason - the caller always passes today's
+# plan, whichever month it's computing tiles/charts for.
+# --------------------------------------------------------------------------- #
+
+def ledger_plan_total(category_plan_amounts):
+    """plan = sum of the user's category plans for the month.
+    category_plan_amounts: {category_id: dollar_amount}, same shape
+    tools_store.get_budget_plan()'s own "categories" field already has -
+    only filled (non-None) categories are ever present in it."""
+    return sum(v for v in (category_plan_amounts or {}).values() if v)
+
+
+def ledger_bills_plan(category_plan_amounts, is_bill_map):
+    """bills_plan = sum of plans for categories flagged is_bill.
+    is_bill_map: {category_id: bool}, same shape tools_store.
+    is_category_bill() answers one category at a time for."""
+    return sum(
+        v for k, v in (category_plan_amounts or {}).items()
+        if v and is_bill_map.get(k)
+    )
+
+
+def ledger_everyday_plan(plan, bills_plan):
+    """everyday_plan = plan - bills_plan."""
+    return plan - bills_plan
+
+
+def ledger_spent_total(entries):
+    """spent = sum of amount_cents for the month, in dollars. Refunds
+    (negative amount_cents, per tools_store's own storage convention)
+    reduce it, same as any other row - no special-casing needed since
+    they're just negative numbers in the same sum.
+    `entries`: list of dicts shaped like tools_store.list_ledger_
+    entries()'s own return value (reads "amount_cents")."""
+    return sum(e["amount_cents"] for e in (entries or [])) / 100.0
+
+
+def ledger_everyday_spent(entries, is_bill_map):
+    """everyday_spent = spent in categories NOT flagged is_bill."""
+    return sum(
+        e["amount_cents"] for e in (entries or [])
+        if not is_bill_map.get(e.get("category"))
+    ) / 100.0
+
+
+def ledger_days_in_month(year, month):
+    """Number of days in this calendar year/month - plain date
+    arithmetic (next month's 1st, minus a day), no `calendar` import."""
+    from datetime import date as _d, timedelta as _td
+    if month == 12:
+        _next_first = _d(year + 1, 1, 1)
+    else:
+        _next_first = _d(year, month + 1, 1)
+    return (_next_first - _td(days=1)).day
+
+
+def ledger_today_of_month(year, month, today_date):
+    """today = today's day of the month, if (year, month) IS the
+    month today_date falls in; days_in_month otherwise (a past month
+    is treated as fully elapsed, per the instruction's own wording -
+    the Ledger's own month picker never offers a future month, so that
+    case is academic here, but this function is agnostic to it too:
+    it falls into the same "not today's month" branch)."""
+    if (today_date.year, today_date.month) == (year, month):
+        return today_date.day
+    return ledger_days_in_month(year, month)
+
+
+def ledger_safe_to_spend_per_day(plan, spent, days_in_month, today):
+    """Safe to spend per day = (plan - spent) / days left, INCLUDING
+    today. On the last day (today == days_in_month), divides by 1, not
+    0. If the result would be <= 0 (already at or past plan), returns
+    0.0 - the caller shows "$0" + "already at plan" for that case."""
+    days_left = max(days_in_month - today + 1, 1)
+    remaining = plan - spent
+    if remaining <= 0:
+        return 0.0
+    return remaining / days_left
+
+
+def ledger_projection_visible(today, everyday_entry_count):
+    """The "On current pace, month ends" tile is hidden (the caller
+    shows "needs a few days of data" instead) until today >= 3 AND
+    there is at least one everyday (non-bill) entry logged."""
+    return today >= 3 and everyday_entry_count > 0
+
+
+def ledger_projection(bills_plan, everyday_spent, today, days_in_month):
+    """projection = bills_plan + everyday_spent / today * days_in_month -
+    "on current pace, what the whole month ends at." Caller is
+    responsible for checking ledger_projection_visible() first; this
+    function itself just does the arithmetic (today=0 would divide by
+    zero, so it returns None rather than raising in that edge case,
+    even though the visibility gate above should already prevent it
+    from ever being called with today < 3)."""
+    if not today:
+        return None
+    return bills_plan + (everyday_spent / today) * days_in_month
+
+
+def ledger_pace_line_value(bills_plan, everyday_plan, day, days_in_month):
+    """One point on the pace chart's own "pace" line (grey dashed):
+    bills_plan + everyday_plan * day / days_in_month - the whole
+    month's bills counted from day 1 (per the mock's own rule: "a
+    category marked as a bill is counted in full on day 1"), the
+    everyday budget ramping up linearly across the month."""
+    if days_in_month <= 0:
+        return bills_plan
+    return bills_plan + everyday_plan * (day / days_in_month)
