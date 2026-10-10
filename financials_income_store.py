@@ -282,7 +282,14 @@ def _save_direct_fetch(ticker, income_df, bundle, source):
     never changes), then saves. A ticker with no cached bundle at all
     is stored UNCONVERTED (currency_converted=False, source suffixed
     "_unconverted") - self-heals the next time this ticker is normally
-    scanned (way 1, which always has a fresh `info` fetch)."""
+    scanned (way 1, which always has a fresh `info` fetch).
+
+    Audit fix C3 / Fable finding V3 (10 Oct 2026, instruction_combined_
+    10oct.md PART C): returns whichever frame was actually saved
+    (`converted`, or the original `income_df` on the unconverted
+    branch) - see fetch_for_deep_dive()'s own comment for the caller
+    that needs this instead of its own raw `income_df`. run_nightly_
+    prepass()'s own call site ignores the return value, unaffected."""
     info = (bundle or {}).get("info") or {}
     fin_ccy = (info.get("financialCurrency") or info.get("currency") or "").upper()
     listing_ccy = (info.get("currency") or "").upper()
@@ -290,9 +297,10 @@ def _save_direct_fetch(ticker, income_df, bundle, source):
         converted = (fundamentals_data._convert_statement_currency(income_df, fin_ccy, listing_ccy)
                      if fin_ccy != listing_ccy else income_df)
         save(ticker, converted, currency=listing_ccy, source=source, currency_converted=True)
-    else:
-        save(ticker, income_df, currency=None, source=f"{source}_unconverted",
-             currency_converted=False)
+        return converted
+    save(ticker, income_df, currency=None, source=f"{source}_unconverted",
+         currency_converted=False)
+    return income_df
 
 
 def fetch_for_deep_dive(ticker):
@@ -303,7 +311,21 @@ def fetch_for_deep_dive(ticker):
     only record_deep_dive_attempt()'s 24h limit. Writes the entry on
     success (currency-resolved via _save_direct_fetch(), above);
     records the attempt either way. Returns the income DataFrame on
-    success, None on failure - never raises."""
+    success, None on failure - never raises.
+
+    Audit fix C3 / Fable finding V3 (10 Oct 2026, instruction_combined_
+    10oct.md PART C): this used to return the RAW, unconverted
+    `income_df` it fetched directly, while _save_direct_fetch() saved
+    a CONVERTED copy to the store - deep_dive_engine.py's own caller
+    reads income_df_currency_converted straight off that store entry
+    (get(ticker)["currency_converted"]) and threads it into dcf_
+    intrinsic_value(), which then correctly skips re-converting... a
+    frame that, in fact, was NEVER converted at all (the raw one this
+    function handed back). The opposite of C1's double-conversion bug:
+    a conversion silently skipped entirely. Now returns whichever
+    frame _save_direct_fetch() actually saved - the same object the
+    store entry's own currency_converted flag describes, so the two
+    can never disagree again."""
     import yfinance as yf
 
     try:
@@ -315,8 +337,7 @@ def fetch_for_deep_dive(ticker):
     if not success:
         return None
     bundle = fundamentals_data.peek_cached_bundle(ticker)
-    _save_direct_fetch(ticker, income_df, bundle, source="yfinance_deepdive")
-    return income_df
+    return _save_direct_fetch(ticker, income_df, bundle, source="yfinance_deepdive")
 
 
 # ======================================================================
