@@ -1387,3 +1387,68 @@ def set_category_is_bill(email, category, is_bill):
             "ON CONFLICT(user_id, category) DO UPDATE SET is_bill = excluded.is_bill",
             (email, category, 1 if is_bill else 0),
         )
+
+
+def save_ledger_month(email, adds, updates, deletes):
+    """Budget Ledger STEP 2 (9 Oct 2026, Director-directed): the grid's
+    own Save button - applies every add/update/delete from one Save
+    click in a SINGLE sqlite transaction, so "on a validation error
+    nothing is saved" (the instruction's own words) is a real atomicity
+    guarantee, not just "the caller happened to validate everything
+    first" - a mid-save exception (a bad id, a DB error partway
+    through) leaves the DB exactly as it was before this call, not
+    half-applied.
+
+    adds: list of dicts, each {date, description, category, amount_cents}.
+    updates: list of dicts, each {id, date, description, category, amount_cents}.
+    deletes: list of entry ids (int).
+    Every row is scoped to `email` - an update/delete for an id that
+    doesn't belong to this email silently affects zero rows (same
+    fail-closed, no-information-leak shape as update_ledger_entry/
+    delete_ledger_entry above), it does NOT raise or abort the rest of
+    the transaction.
+
+    Returns the number of rows actually added (updates/deletes aren't
+    counted - the grid only needs to know how many NEW ids to assign)."""
+    if not email:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    added = 0
+    with _conn() as conn:
+        for a in (adds or []):
+            conn.execute(
+                "INSERT INTO ledger_entries "
+                "(user_id, date, description, raw_description, category, amount_cents, "
+                "source, import_batch_id, note_fx, created_at, updated_at) "
+                "VALUES (?, ?, ?, NULL, ?, ?, 'manual', NULL, NULL, ?, ?)",
+                (email, a["date"], a.get("description") or "", a["category"],
+                 int(a["amount_cents"]), now, now),
+            )
+            added += 1
+        for u in (updates or []):
+            conn.execute(
+                "UPDATE ledger_entries SET date = ?, description = ?, category = ?, "
+                "amount_cents = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (u["date"], u.get("description") or "", u["category"],
+                 int(u["amount_cents"]), now, u["id"], email),
+            )
+        for d in (deletes or []):
+            conn.execute(
+                "DELETE FROM ledger_entries WHERE id = ? AND user_id = ?", (d, email),
+            )
+    return added
+
+
+def delete_all_ledger_data(email):
+    """The Ledger tab's own "Delete all my ledger data" two-step
+    button - permanently removes every ledger_entries/ledger_rules/
+    ledger_imports/ledger_category_flags row for this email, in one
+    transaction. Never touches budget_plans/budget_plan_names (the
+    Plan tab's own data) or any other user's rows."""
+    if not email:
+        return
+    with _conn() as conn:
+        conn.execute("DELETE FROM ledger_entries WHERE user_id = ?", (email,))
+        conn.execute("DELETE FROM ledger_rules WHERE user_id = ?", (email,))
+        conn.execute("DELETE FROM ledger_imports WHERE user_id = ?", (email,))
+        conn.execute("DELETE FROM ledger_category_flags WHERE user_id = ?", (email,))

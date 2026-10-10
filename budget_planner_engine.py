@@ -11,6 +11,10 @@ no file I/O - so it is trivially unit testable and safe to import from
 anywhere (including a future tool that wants the same projection maths -
 see the shared PROJECTION panel note below).
 
+instruction_budget_ledger.md (9 Oct 2026) added is_ledger_live() below -
+a one env-var read, same minimal-dependency spirit as the rest of this
+module (it's a switch check, not network/file I/O).
+
 THE TEN PRESET CATEGORIES (spec's own set/order, icon + id): a visitor
 skips whichever don't apply - every value defaults to blank/None, never 0
 forced, so an unfilled category is excluded from money_out rather than
@@ -50,6 +54,8 @@ everywhere the UI shows them (never "expected return").
 Never touches scoring engines, never suggests cutting an expense or
 buying a product, never names a specific ETF/fund ticker."""
 
+import os
+
 # --------------------------------------------------------------------------- #
 # The ten preset monthly categories - spec's own set, in spec's own order.
 # id is the persistence key (tools_store); icon+label render on the page
@@ -68,6 +74,19 @@ CATEGORIES = [
     {"id": "other", "icon": "❔"},          # ❔ Everything else
 ]
 CATEGORY_IDS = [c["id"] for c in CATEGORIES]
+
+
+def is_ledger_live():
+    """The Budget Ledger's own switch (instruction_budget_ledger.md, 9
+    Oct 2026, Director-directed) - same unset/""/0/off=OFF, 1/on=ON
+    pattern as scanner_engine.is_scanner_presentation_live()/currency_
+    view_engine.is_currency_view_live(). Unset = only the owner sees
+    the Ledger/Insights tabs; "1" = every signed-in user does. Andrew
+    sets the Railway variable himself later - Claude Code never does.
+    Re-read on every call (cheap - one env var lookup) so a later
+    change takes effect on the next request with no redeploy needed."""
+    raw = (os.environ.get("LEDGER_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
 
 # Source: long-run NOMINAL total-return averages (dividends/distributions
 # reinvested), before tax and fund fees - the S&P 500 figure is the

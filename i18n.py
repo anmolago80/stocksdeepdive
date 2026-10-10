@@ -1441,6 +1441,51 @@ EN = {
     "tools.budget.chart_invested": "Invested",
     "tools.budget.chart_saved": "Just saved",
 
+    # instruction_budget_ledger.md (9 Oct 2026, Director-directed,
+    # behind LEDGER_LIVE): the spending ledger - Plan/Ledger/Insights
+    # sub-tabs inside the Budget Planner tool.
+    "tools.budget.tab_plan": "Plan",
+    "tools.budget.tab_ledger": "Ledger",
+    "tools.budget.tab_insights": "Insights",
+    "tools.budget.ledger.month_label": "Month",
+    "tools.budget.ledger.grid_date": "Date",
+    "tools.budget.ledger.grid_what": "What",
+    "tools.budget.ledger.grid_category": "Category",
+    "tools.budget.ledger.grid_amount": "Amount",
+    "tools.budget.ledger.amount_help": "Use a minus for a refund.",
+    "tools.budget.ledger.save_button": "Save",
+    "tools.budget.ledger.unsaved_changes": "{n} unsaved changes",
+    "tools.budget.ledger.saved_toast": "Saved.",
+    "tools.budget.ledger.export_csv": "Export CSV",
+    "tools.budget.ledger.empty_month": (
+        "Nothing logged for {month} yet. Type below or import from your bank."
+    ),
+    "tools.budget.ledger.error_heading": "Couldn't save - please fix these rows:",
+    "tools.budget.ledger.error_date_out_of_month": (
+        "Row {row}: the date must be inside {month}."
+    ),
+    "tools.budget.ledger.error_date_missing": "Row {row}: a date is required.",
+    "tools.budget.ledger.error_what_too_long": (
+        "Row {row}: \"What\" must be 80 characters or fewer."
+    ),
+    "tools.budget.ledger.error_amount_required": (
+        "Row {row}: an amount is required and can't be zero."
+    ),
+    "tools.budget.ledger.delete_all_expander": "Delete all my ledger data",
+    "tools.budget.ledger.delete_all_warning": (
+        "This permanently deletes every row you've ever logged or imported "
+        "for this account. This can't be undone."
+    ),
+    "tools.budget.ledger.delete_all_button": "Delete all my ledger data",
+    "tools.budget.ledger.delete_all_confirm": "Yes, delete everything",
+    "tools.budget.ledger.delete_all_cancel": "Cancel",
+    "tools.budget.ledger.delete_all_done": "All your ledger data has been deleted.",
+    "tools.budget.ledger.category_removed": "(category removed)",
+    "common.month.1": "January", "common.month.2": "February", "common.month.3": "March",
+    "common.month.4": "April", "common.month.5": "May", "common.month.6": "June",
+    "common.month.7": "July", "common.month.8": "August", "common.month.9": "September",
+    "common.month.10": "October", "common.month.11": "November", "common.month.12": "December",
+
     # Mega-batch Part 20: tool #2 in the Tools registry, "Cash vs Offset
     # vs Borrow" - the debt-recycling decision tool. See
     # debt_recycling_engine.py's own module docstring for the maths this
@@ -5410,6 +5455,48 @@ ES = {
     "tools.budget.saved_note": "Guardado automáticamente en tu cuenta.",
     "tools.budget.chart_invested": "Invertido",
     "tools.budget.chart_saved": "Solo ahorrado",
+
+    "tools.budget.tab_plan": "Plan",
+    "tools.budget.tab_ledger": "Registro",
+    "tools.budget.tab_insights": "Análisis",
+    "tools.budget.ledger.month_label": "Mes",
+    "tools.budget.ledger.grid_date": "Fecha",
+    "tools.budget.ledger.grid_what": "Qué",
+    "tools.budget.ledger.grid_category": "Categoría",
+    "tools.budget.ledger.grid_amount": "Importe",
+    "tools.budget.ledger.amount_help": "Usa un signo menos para un reembolso.",
+    "tools.budget.ledger.save_button": "Guardar",
+    "tools.budget.ledger.unsaved_changes": "{n} cambios sin guardar",
+    "tools.budget.ledger.saved_toast": "Guardado.",
+    "tools.budget.ledger.export_csv": "Exportar CSV",
+    "tools.budget.ledger.empty_month": (
+        "Nada registrado en {month} todavía. Escribe abajo o importa desde tu banco."
+    ),
+    "tools.budget.ledger.error_heading": "No se pudo guardar - corrige estas filas:",
+    "tools.budget.ledger.error_date_out_of_month": (
+        "Fila {row}: la fecha debe estar dentro de {month}."
+    ),
+    "tools.budget.ledger.error_date_missing": "Fila {row}: se requiere una fecha.",
+    "tools.budget.ledger.error_what_too_long": (
+        "Fila {row}: \"Qué\" debe tener 80 caracteres o menos."
+    ),
+    "tools.budget.ledger.error_amount_required": (
+        "Fila {row}: se requiere un importe y no puede ser cero."
+    ),
+    "tools.budget.ledger.delete_all_expander": "Eliminar todos mis datos del registro",
+    "tools.budget.ledger.delete_all_warning": (
+        "Esto elimina permanentemente cada fila que hayas registrado o "
+        "importado para esta cuenta. No se puede deshacer."
+    ),
+    "tools.budget.ledger.delete_all_button": "Eliminar todos mis datos del registro",
+    "tools.budget.ledger.delete_all_confirm": "Sí, eliminar todo",
+    "tools.budget.ledger.delete_all_cancel": "Cancelar",
+    "tools.budget.ledger.delete_all_done": "Se han eliminado todos los datos de tu registro.",
+    "tools.budget.ledger.category_removed": "(categoría eliminada)",
+    "common.month.1": "enero", "common.month.2": "febrero", "common.month.3": "marzo",
+    "common.month.4": "abril", "common.month.5": "mayo", "common.month.6": "junio",
+    "common.month.7": "julio", "common.month.8": "agosto", "common.month.9": "septiembre",
+    "common.month.10": "octubre", "common.month.11": "noviembre", "common.month.12": "diciembre",
 
     "tools.debt_recycling.title": "Efectivo vs. Offset vs. Endeudarse",
     "tools.debt_recycling.subtitle": (

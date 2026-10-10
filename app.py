@@ -26338,7 +26338,19 @@ def _render_budget_planner_tool(email):
     switching plans can never leak a stale value from a different one -
     the auto-save at the end of this function stays unconditional and
     automatic exactly as before, just now scoped to whichever plan is
-    active."""
+    active.
+
+    instruction_budget_ledger.md (9 Oct 2026, Director-directed):
+    while LEDGER_LIVE is unset AND the visitor isn't the owner, this
+    renders EXACTLY what it always has (title, subtitle, plan switcher,
+    then the Plan tab's own body directly - no st.tabs() wrapper at
+    all) - see tests/test_budget_ledger_step2_grid.py's own byte-
+    identical proof. Once live (owner preview, or LEDGER_LIVE=1 for
+    everyone), a second-level Plan/Ledger/Insights st.tabs() appears,
+    sharing the SAME _active_plan the plan switcher above already
+    resolved (Director's own decision: "the ledger belongs to the
+    account, not to a named plan - tiles and charts compare against
+    the CURRENTLY SELECTED plan")."""
     _lang = st.session_state.get("lang", "en")
     _bl = lambda key, **kw: i18n.t(f"tools.budget.{key}", _lang, **kw)
 
@@ -26352,6 +26364,28 @@ def _render_budget_planner_tool(email):
         tools_store.rename_budget_plan, tools_store.delete_budget_plan,
     )
 
+    if budget_planner_engine.is_ledger_live() or ai_gate.is_owner(email):
+        _tab_plan, _tab_ledger, _tab_insights = st.tabs(
+            [_bl("tab_plan"), _bl("tab_ledger"), _bl("tab_insights")]
+        )
+        with _tab_plan:
+            _render_budget_plan_subtab(email, _active_plan, _bl)
+        with _tab_ledger:
+            _render_budget_ledger_tab(email, _active_plan, _bl, _lang)
+        with _tab_insights:
+            _render_budget_insights_tab(email, _active_plan, _bl, _lang)
+    else:
+        _render_budget_plan_subtab(email, _active_plan, _bl)
+
+
+def _render_budget_plan_subtab(email, _active_plan, _bl):
+    """The Budget Planner's own original body (unchanged since Part 18/
+    Part 30) - now the "Plan" sub-tab's content once LEDGER_LIVE/owner
+    preview is on, and the WHOLE tool's content (no tabs wrapper) while
+    it's off. `_active_plan`/`_bl` are resolved once by the caller
+    (_render_budget_planner_tool) and passed in, never recomputed here,
+    so Ledger/Insights always see the exact same active plan this tab
+    does."""
     _saved = tools_store.get_budget_plan(email, _active_plan) or {}
     _saved_categories = _saved.get("categories") or {}
 
@@ -26418,6 +26452,225 @@ def _render_budget_planner_tool(email):
         country=st.session_state.get(f"{_proj_key_prefix}_country"),
         years=st.session_state.get(f"{_proj_key_prefix}_years"),
     )
+
+
+def _ledger_today_brisbane():
+    """Today's date in Australia/Brisbane (fixed UTC+10, no DST - the
+    instruction's own explicit fallback timezone) - used only to pick
+    the Ledger's default starting month. Every stored date is a plain
+    "YYYY-MM-DD" string, never timezone-aware itself."""
+    return (datetime.now(timezone.utc) + timedelta(hours=10)).date()
+
+
+def _ledger_month_bounds(year, month):
+    """("YYYY-MM-01", "YYYY-MM-<last day>") ISO date strings for this
+    year/month - no `calendar` import needed, just date arithmetic."""
+    _first = _date(year, month, 1)
+    if month == 12:
+        _next_first = _date(year + 1, 1, 1)
+    else:
+        _next_first = _date(year, month + 1, 1)
+    _last = _next_first - timedelta(days=1)
+    return _first.isoformat(), _last.isoformat()
+
+
+def _ledger_month_label(year, month, lang):
+    return f"{i18n.t(f'common.month.{month}', lang)} {year}"
+
+
+def _ledger_month_options(today):
+    """The last 12 months plus the current one, oldest first - the
+    month picker's own options. Deliberately simple range arithmetic
+    (no `calendar` import) since only the (year, month) pair matters
+    here, never a day-of-month."""
+    _opts = []
+    for _i in range(-12, 1):
+        _total = (today.year * 12 + (today.month - 1)) + _i
+        _oy, _om = divmod(_total, 12)
+        _opts.append((_oy, _om + 1))
+    return _opts
+
+
+def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
+    """Budget Ledger STEP 2 (9 Oct 2026, Director-directed): A1, the
+    spreadsheet grid - manual entry only (B, bank CSV import, is Step
+    4). Director's own decisions this round: the ledger belongs to the
+    ACCOUNT (email), not to any one named plan - `active_plan` is only
+    used to scope widget keys consistently with the rest of this tool,
+    never to filter which ledger rows are shown. Grid category options
+    are all 10 preset CATEGORIES (not just ones with a nonzero plan
+    amount)."""
+    _bll = lambda key, **kw: i18n.t(f"tools.budget.ledger.{key}", _lang, **kw)
+    _today = _ledger_today_brisbane()
+
+    _month_key = _tools_plan_key(active_plan, "tools_ledger_month")
+    _month_options = _ledger_month_options(_today)
+    if st.session_state.get(_month_key) not in _month_options:
+        st.session_state[_month_key] = (_today.year, _today.month)
+    _month_labels = [_ledger_month_label(y, m, _lang) for y, m in _month_options]
+    _current_idx = _month_options.index(st.session_state[_month_key])
+    _picked_label = st.selectbox(
+        _bll("month_label"), _month_labels, index=_current_idx,
+        key=_tools_plan_key(active_plan, "tools_ledger_month_select"),
+    )
+    _sel_year, _sel_month = _month_options[_month_labels.index(_picked_label)]
+    st.session_state[_month_key] = (_sel_year, _sel_month)
+    _month_start, _month_end = _ledger_month_bounds(_sel_year, _sel_month)
+    _month_label_str = _ledger_month_label(_sel_year, _sel_month, _lang)
+
+    _cat_id_to_label = {c["id"]: _bl(f"cat.{c['id']}") for c in budget_planner_engine.CATEGORIES}
+    _cat_label_to_id = {v: k for k, v in _cat_id_to_label.items()}
+    _cat_labels = list(_cat_id_to_label.values())
+
+    _entries = tools_store.list_ledger_entries(email, _month_start, _month_end)
+    _entry_ids = [e["id"] for e in _entries]
+
+    if _entries:
+        _grid_df = pd.DataFrame({
+            "Date": [_date.fromisoformat(e["date"]) for e in _entries],
+            "What": [e["description"] for e in _entries],
+            "Category": [_cat_id_to_label.get(e["category"], e["category"]) for e in _entries],
+            "Amount": [e["amount_cents"] / 100.0 for e in _entries],
+        })
+    else:
+        st.caption(_bll("empty_month", month=_month_label_str))
+        _grid_df = pd.DataFrame({
+            "Date": [pd.NaT], "What": [""], "Category": [_cat_labels[0]], "Amount": [0.0],
+        })
+
+    _grid_key = _tools_plan_key(active_plan, f"tools_ledger_grid_{_sel_year}_{_sel_month:02d}")
+    _edited_df = st.data_editor(
+        _grid_df,
+        num_rows="dynamic",
+        key=_grid_key,
+        column_config={
+            "Date": st.column_config.DateColumn(_bll("grid_date"), format="DD/MM/YYYY", required=True),
+            "What": st.column_config.TextColumn(_bll("grid_what"), max_chars=80),
+            "Category": st.column_config.SelectboxColumn(_bll("grid_category"), options=_cat_labels),
+            "Amount": st.column_config.NumberColumn(
+                _bll("grid_amount"), format="$%.2f", step=0.01, help=_bll("amount_help"),
+            ),
+        },
+    )
+
+    _diff = st.session_state.get(_grid_key) or {"edited_rows": {}, "added_rows": [], "deleted_rows": []}
+    _n_changes = len(_diff.get("edited_rows") or {}) + len(_diff.get("added_rows") or []) + len(_diff.get("deleted_rows") or [])
+
+    _save_col, _count_col = st.columns([1, 3])
+    with _save_col:
+        _save_clicked = st.button(
+            _bll("save_button"), key=_tools_plan_key(active_plan, "tools_ledger_save"),
+            disabled=(_n_changes == 0),
+        )
+    with _count_col:
+        if _n_changes:
+            st.caption(_bll("unsaved_changes", n=_n_changes))
+
+    if _save_clicked:
+        _errors = []
+        _adds, _updates, _deletes = [], [], []
+
+        def _validate_and_collect(row_label, date_val, what_val, cat_val, amount_val, existing_id):
+            _row_errors = []
+            if date_val is None or (isinstance(date_val, float) and pd.isna(date_val)) or pd.isna(date_val):
+                _row_errors.append(_bll("error_date_missing", row=row_label))
+                _parsed_date = None
+            else:
+                _parsed_date = date_val if isinstance(date_val, _date) else pd.Timestamp(date_val).date()
+                if not (_month_start <= _parsed_date.isoformat() <= _month_end):
+                    _row_errors.append(_bll("error_date_out_of_month", row=row_label, month=_month_label_str))
+            if what_val and len(str(what_val)) > 80:
+                _row_errors.append(_bll("error_what_too_long", row=row_label))
+            if amount_val is None or (isinstance(amount_val, float) and pd.isna(amount_val)) or float(amount_val or 0) == 0.0:
+                _row_errors.append(_bll("error_amount_required", row=row_label))
+            if _row_errors:
+                _errors.extend(_row_errors)
+                return
+            _cat_id = _cat_label_to_id.get(cat_val, cat_val)
+            _amount_cents = round(float(amount_val) * 100)
+            _payload = {
+                "date": _parsed_date.isoformat(), "description": str(what_val or ""),
+                "category": _cat_id, "amount_cents": _amount_cents,
+            }
+            if existing_id is not None:
+                _payload["id"] = existing_id
+                _updates.append(_payload)
+            else:
+                _adds.append(_payload)
+
+        for _idx, _changes in (_diff.get("edited_rows") or {}).items():
+            if _idx >= len(_entry_ids):
+                continue
+            _base_row = _grid_df.iloc[_idx]
+            _date_val = _changes.get("Date", _base_row["Date"])
+            _what_val = _changes.get("What", _base_row["What"])
+            _cat_val = _changes.get("Category", _base_row["Category"])
+            _amount_val = _changes.get("Amount", _base_row["Amount"])
+            _validate_and_collect(f"#{_idx + 1}", _date_val, _what_val, _cat_val, _amount_val, _entry_ids[_idx])
+
+        for _new_idx, _new_row in enumerate(_diff.get("added_rows") or []):
+            _validate_and_collect(
+                _bll("grid_what") + f" +{_new_idx + 1}",
+                _new_row.get("Date"), _new_row.get("What"),
+                _new_row.get("Category") or _cat_labels[0], _new_row.get("Amount"),
+                None,
+            )
+
+        for _idx in (_diff.get("deleted_rows") or []):
+            if _idx < len(_entry_ids):
+                _deletes.append(_entry_ids[_idx])
+
+        if _errors:
+            st.error(_bll("error_heading") + "\n" + "\n".join(f"- {e}" for e in _errors))
+        else:
+            tools_store.save_ledger_month(email, _adds, _updates, _deletes)
+            st.session_state.pop(_grid_key, None)
+            st.toast(_bll("saved_toast"), icon="💾")
+            st.rerun()
+
+    if st.button(_bll("export_csv"), key=_tools_plan_key(active_plan, "tools_ledger_export")):
+        _export_rows = tools_store.list_ledger_entries(email, _month_start, _month_end)
+        _csv_lines = ["Date,What,Category,Amount"]
+        for _r in _export_rows:
+            _cat_disp = _cat_id_to_label.get(_r["category"], _r["category"])
+            _what_q = str(_r["description"] or "").replace('"', '""')
+            _csv_lines.append(
+                f'{_r["date"]},"{_what_q}","{_cat_disp}",{_r["amount_cents"] / 100.0:.2f}'
+            )
+        st.download_button(
+            _bll("export_csv"), data="\n".join(_csv_lines),
+            file_name=f"ledger_{_sel_year}_{_sel_month:02d}.csv", mime="text/csv",
+            key=_tools_plan_key(active_plan, "tools_ledger_export_dl"),
+        )
+
+    with st.expander(_bll("delete_all_expander")):
+        _confirm_key = _tools_plan_key(active_plan, "tools_ledger_delete_all_confirm")
+        if not st.session_state.get(_confirm_key):
+            if st.button(_bll("delete_all_button"), key=_tools_plan_key(active_plan, "tools_ledger_delete_all_btn")):
+                st.session_state[_confirm_key] = True
+                st.rerun()
+        else:
+            st.warning(_bll("delete_all_warning"))
+            _dc1, _dc2 = st.columns(2)
+            with _dc1:
+                if st.button(_bll("delete_all_confirm"), key=_tools_plan_key(active_plan, "tools_ledger_delete_all_yes")):
+                    tools_store.delete_all_ledger_data(email)
+                    st.session_state.pop(_confirm_key, None)
+                    st.toast(_bll("delete_all_done"), icon="🗑️")
+                    st.rerun()
+            with _dc2:
+                if st.button(_bll("delete_all_cancel"), key=_tools_plan_key(active_plan, "tools_ledger_delete_all_no")):
+                    st.session_state.pop(_confirm_key, None)
+                    st.rerun()
+
+
+def _render_budget_insights_tab(email, active_plan, _bl, _lang):
+    """Budget Ledger STEP 2 placeholder - the Insights tab's real
+    content (last-6-months bar chart vs. the current plan) is Step 3's
+    own deliverable. Exists now only so the tab itself doesn't render
+    empty/broken while Step 2 is live."""
+    st.caption(i18n.t("tools.budget.ledger.month_label", _lang))
+    st.info("Coming in Step 3.")
 
 
 def _dr_scenario_name(scenario_id, country, us_baseline, dl):
