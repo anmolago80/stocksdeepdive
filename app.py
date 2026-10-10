@@ -8834,7 +8834,10 @@ def _explain_context_text(dd, metric_key):
         _num_lines(dd.get("moat_contributions"))
     elif metric_key == "margin_of_safety":
         lines.append(f"Price: {dd['price']:,.2f} {dd['currency']}")
-        lines.append(f"Intrinsic Value (DCF base case): {dd['intrinsic_value']:,.2f} {dd['currency']}")
+        _mos_method_label = (
+            "DCF base case" if dd.get("intrinsic_source") == "dcf" else "earnings-based (P/E) estimate"
+        )
+        lines.append(f"Intrinsic Value ({_mos_method_label}): {dd['intrinsic_value']:,.2f} {dd['currency']}")
         lines.append(f"Margin of Safety: {dd['mos']:+.1f}% ({dd['valuation']})")
     elif metric_key == "trade_setup":
         lines.append(f"Trade Setup Score: {dd.get('trade_setup_score')} ({dd.get('trade_setup_signal')})")
