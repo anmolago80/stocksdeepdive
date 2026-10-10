@@ -1113,6 +1113,7 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                     insider_engine.refresh_universe(payload["rows"], log=log)
                 except Exception as e:
                     log(f"[scheduler] insider refresh {universe} failed: {e}")
+            _log_mem(log, f"after scan {universe}")
         except nightly_scan.RateLimitCircuitBreaker as e:
             # URGENT Commit 1 (27 Sep 2026, owner-reported): the next
             # universe in `ordered` would hit the exact same throttled
@@ -1149,6 +1150,7 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                     universe, succeeded=False,
                     elapsed_seconds=time.time() - _scan_started_at,
                     state=_catchup_state)
+            _log_mem(log, f"after scan {universe} (failed)")
     _save_state(_catchup_state)
 
     # Audit fixes Commit 2 (30 Sep 2026, owner-directed): every stage
@@ -1749,6 +1751,7 @@ def _run_top100_poll(log):
     result = top100_engine.poll_and_ingest_batch(log=log)
     if result is None:
         return
+    _log_mem(log, "after Top 200 batch ingest")
     if top100_engine.top100_store.get_batch_state() is not None:
         return
     if result.get("scored", 0) <= 0:
@@ -2500,6 +2503,37 @@ def _record_job(job_name, log, run_fn, lock_name=None, cancel_event=None):
                     job_name, result, detail, time.time() - t0)
             except Exception:
                 pass
+
+
+def _rss_gb():
+    """Current resident set size of THIS process, in GB - best-effort,
+    read straight from /proc/self/status (Linux only, which is what
+    Railway's containers run). Returns None rather than raising if the
+    file isn't there (e.g. local non-Linux dev) or doesn't parse, so a
+    log call site using this never needs its own try/except.
+
+    Memory addendum (9 Oct 2026, Director-directed, diagnosis-only
+    instruction_addendum_memory_cost.md): added purely to give the
+    [mem] log lines below something to report - no other effect, reads
+    nothing from Railway, writes nothing anywhere."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    kb = int(line.split()[1])
+                    return kb / (1024.0 * 1024.0)
+    except Exception:
+        pass
+    return None
+
+
+def _log_mem(log, label):
+    """[mem] rss=X.XXGB <label> - see _rss_gb()'s own docstring. Logs
+    "unavailable" rather than skipping the line entirely if RSS can't
+    be read, so a log search for "[mem]" always finds one line per
+    call site regardless of platform."""
+    rss = _rss_gb()
+    log(f"[mem] rss={rss:.2f}GB {label}" if rss is not None else f"[mem] rss=unavailable {label}")
 
 
 def _process_role():
