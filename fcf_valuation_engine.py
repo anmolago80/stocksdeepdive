@@ -843,16 +843,32 @@ def _ebitda_bridge_base(income_df, avg_capex):
     import back would be circular, same reasoning as the label lists
     above). avg_capex is already negative (capex sign convention - see
     normalized_base_and_series()'s own comment), so it's ADDED, not
-    subtracted, to match that convention."""
+    subtracted, to match that convention.
+
+    Audit fix C6 / Fable finding V8 (10 Oct 2026, instruction_combined_
+    10oct.md PART C): _row() does not drop NaN (unlike every OCF/capex
+    caller above, which filters with `if v == v`), so a latest-year
+    Operating Income or D&A figure missing from a sparse income-
+    statement year silently produced a NaN ebitda_latest/cash_taxes
+    that propagated all the way to the returned base - a NaN FCF base
+    the uplift-cap comparison downstream couldn't catch either, since
+    every NaN comparison is False. Now returns None (the same "can't
+    build a genuine bridge" signal already returned for a missing oi/da
+    row) when either of the two latest-year figures this bridge
+    actually uses is NaN, before doing any arithmetic with them."""
     oi = _row(income_df, _OPERATING_INCOME_LABELS)
     da = _row(income_df, _DA_LABELS)
-    if not oi or not da:
+    if not oi or not da or oi[0] != oi[0] or da[0] != da[0]:
         return None
     ebitda_latest = oi[0] + da[0]
     pretax = _row(income_df, _PRETAX_INCOME_LABELS)
     tax = _row(income_df, _TAX_PROVISION_LABELS)
     pretax_latest = pretax[0] if pretax else None
     tax_latest = tax[0] if tax else None
+    if pretax_latest is not None and pretax_latest != pretax_latest:
+        pretax_latest = None
+    if tax_latest is not None and tax_latest != tax_latest:
+        tax_latest = None
     import auto_compounder_engine
     rate = auto_compounder_engine.effective_tax_rate(tax_latest, pretax_latest)
     cash_taxes = oi[0] * rate
@@ -1157,9 +1173,27 @@ def _ocf_based_base_and_series(cashflow_df, info=None, income_df=None):
                     # substitution exceeding 3x the raw latest-year
                     # figure points to an actual multi-year cycle rather
                     # than a one-off, so only THAT gets capped.
+                    #
+                    # Audit fix C6 / Fable finding V8 (10 Oct 2026,
+                    # instruction_combined_10oct.md PART C): the
+                    # `fcf_base_raw > 0` guard meant this safety valve
+                    # never fired at all whenever the raw latest-year
+                    # figure was itself <= 0 (a one-off-depressed or
+                    # loss-making latest year) - exactly the case where
+                    # a substituted clean-year/EBITDA-bridge base is
+                    # likely to diverge from "raw" the most, and where a
+                    # NaN raw (see _ebitda_bridge_base()'s own NaN-filter
+                    # fix above) previously slipped through uncapped too
+                    # (every NaN comparison is False). Now compares
+                    # against the MAGNITUDE of fcf_base_raw instead of
+                    # requiring it be positive, so a substitution more
+                    # than 3x the size of a loss-making raw figure is
+                    # capped exactly as a substitution more than 3x a
+                    # profitable one already was; a raw of exactly 0 is
+                    # still left uncapped (nothing to multiply).
                     capped_by_uplift = False
-                    if fcf_base_raw is not None and fcf_base_raw > 0 and oneoff_base > FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw:
-                        oneoff_base = FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw
+                    if fcf_base_raw and oneoff_base > FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * abs(fcf_base_raw):
+                        oneoff_base = FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * abs(fcf_base_raw)
                         capped_by_uplift = True
                     return (
                         oneoff_base, clean_growth_series, "ocf-normcapex", False, "average",
@@ -1271,9 +1305,13 @@ def _financials_base_and_series(income_df):
                 if i >= len(distorted) or not distorted[i]
             ]
             fcf_base_raw = series[0]
+            # Audit fix C6 / Fable finding V8 (10 Oct 2026) - same
+            # magnitude-based cap as _ocf_based_base_and_series()'s own
+            # fix above, so a loss-making latest-year net income no
+            # longer leaves this substitution uncapped either.
             capped_by_uplift = False
-            if fcf_base_raw > 0 and oneoff_base > FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw:
-                oneoff_base = FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw
+            if fcf_base_raw and oneoff_base > FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * abs(fcf_base_raw):
+                oneoff_base = FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * abs(fcf_base_raw)
                 capped_by_uplift = True
             return (
                 oneoff_base, clean_growth_series, "net_income_financials", False, None,
