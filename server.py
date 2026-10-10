@@ -161,6 +161,16 @@ except Exception:
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("sdd.server")
+# Audit fix A4 / Fable finding S3 (10 Oct 2026): httpx's own internal
+# "HTTP Request: GET http://127.0.0.1:8501/...?..." line (emitted by
+# _client.send() below for every proxied request, full query string
+# included) logs at INFO - which this module's own basicConfig above
+# would otherwise let through to the root handler. Redacting httpx's
+# own log FORMAT isn't something this module can reach into, so the
+# admin key (passed as ?admin=.../?preview=...) is kept out of the
+# logs by raising this one logger's level instead - its "HTTP
+# Request: ..." line is filtered before it ever reaches a handler.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 PORT = int(os.environ.get("PORT", "8080"))
 STREAMLIT_PORT = int(os.environ.get("STREAMLIT_INTERNAL_PORT", "8501"))
@@ -3780,4 +3790,11 @@ if __name__ == "__main__":
                 ws_max_size=None, timeout_keep_alive=65,
                 # Railway terminates TLS in front of us and passes the real
                 # scheme/IP in X-Forwarded-*.
-                proxy_headers=True, forwarded_allow_ips="*")
+                proxy_headers=True, forwarded_allow_ips="*",
+                # Audit fix A4 / Fable finding S3 (10 Oct 2026): uvicorn's
+                # own access log would otherwise log every request's full
+                # raw path INCLUDING its query string (e.g. a direct
+                # "GET /?admin=..." before _proxy() even runs) - disabled
+                # entirely, same rationale as the httpx logger change
+                # just above (logging.getLogger("httpx").setLevel(...)).
+                access_log=False)
