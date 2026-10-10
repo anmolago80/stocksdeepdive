@@ -2477,7 +2477,13 @@ def _unscored_tickers(pool, model):
             return None
         row_mrq = row.get("most_recent_quarter")
         failure_mrq = failure.get("most_recent_quarter")
-        if row_mrq and failure_mrq and row_mrq != failure_mrq:
+        # Audit fix A2 / Fable finding T3 (10 Oct 2026): STRICTLY
+        # newer only (row_mrq > failure_mrq), not merely different -
+        # most_recent_quarter is an ISO date string (YYYY-MM-DD), so
+        # a live read that comes back OLDER than what's already on
+        # record (a transient data-source regression, never a real
+        # new reporting period) must not trigger a re-entry.
+        if row_mrq and failure_mrq and row_mrq > failure_mrq:
             return "new_results"
         failed_at = failure.get("failed_at")
         age_days = None
@@ -2531,7 +2537,11 @@ def _unscored_tickers(pool, model):
             continue
         row_mrq = row.get("most_recent_quarter")
         score_mrq = score.get("most_recent_quarter")
-        if row_mrq and score_mrq and row_mrq != score_mrq:
+        # Audit fix A2 / Fable finding T3 (10 Oct 2026): STRICTLY
+        # newer only (row_mrq > score_mrq), not merely different -
+        # see _failure_reentry_reason()'s own mirror of this same fix
+        # for the full rationale.
+        if row_mrq and score_mrq and row_mrq > score_mrq:
             out.append((row, "new_results"))
             continue
         age_days = None
