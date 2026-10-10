@@ -3014,7 +3014,20 @@ def poll_and_ingest_batch(log=print):
                 top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
                 saved += 1
     except Exception as e:
+        # Audit fix A1 / Fable finding T1 (10 Oct 2026): a stream
+        # exception (e.g. a dropped connection partway through
+        # client.messages.batches.results()) must be treated like a
+        # retrieve() failure - log and return, never fall through to
+        # record_score_failure()/clear_batch_state() below. Falling
+        # through would wrongly mark whatever tickers happened to be
+        # mid-loop as failed, AND discard the in-flight batch's own
+        # custom_id_map entirely, leaving nothing for a re-poll to
+        # retry for every entrant the stream never reached - while any
+        # ticker that WAS fully parsed before the interruption already
+        # had its real score saved above and is untouched by this
+        # early return.
         log(f"[top100] batch result retrieval failed partway through: {e}")
+        return None
 
     for ticker, reason, mrq, _sm in failure_reasons:
         top100_store.record_score_failure(ticker, state["model"], RUBRIC_VERSION, reason, most_recent_quarter=mrq, schema_mode=_sm)
