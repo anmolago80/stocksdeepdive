@@ -1153,7 +1153,18 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                     state=_catchup_state)
             _log_mem(log, f"after scan {universe} (failed)")
             _malloc_trim_and_log(log, f"after scan {universe} (failed)")
-    _save_state(_catchup_state)
+    # Audit fix A5 / Fable finding T2 (10 Oct 2026): this loop can run
+    # for hours, and _catchup_state was loaded ONCE before it started -
+    # saving that stale snapshot here would silently discard anything
+    # another process (the daily backup job, a manual rescan request,
+    # the watchdog) wrote to scheduler_state.json in the meantime.
+    # Read-modify-write instead: reload fresh, merge in only the ONE
+    # field this loop actually owns (catchup_failures, via _record_
+    # catchup_outcome() above), save that - every other key some other
+    # writer added or changed during the scan survives untouched.
+    _fresh_state = _load_state()
+    _fresh_state["catchup_failures"] = _catchup_state.get("catchup_failures", {})
+    _save_state(_fresh_state)
 
     # Audit fixes Commit 2 (30 Sep 2026, owner-directed): every stage
     # below this point calls yfinance (directly or via a re-fetch/re-
