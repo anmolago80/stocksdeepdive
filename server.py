@@ -62,7 +62,7 @@ import threading
 import time
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import httpx
 from fastapi import FastAPI, Request, Response, WebSocket
@@ -1089,10 +1089,27 @@ def _same_origin(request: Request) -> bool:
     served by this app always sends one of these; a cross-site request
     (an <img>/<form> from another page, or a bare curl) generally won't
     have a matching one. Used to gate the auth-cookie-setting endpoints
-    below against CSRF/session-fixation (see their own docstrings)."""
-    origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    below against CSRF/session-fixation (see their own docstrings).
+
+    Audit fix A3 / Fable finding S1 (10 Oct 2026): this used to be a
+    plain substring check (`host in origin`), so a crafted Origin/
+    Referer where the real host is merely a SUBSTRING - e.g.
+    "https://stocksdeepdive.com.evil.com" (the real host as a prefix
+    of an attacker domain) or "https://evil.com/?r=stocksdeepdive.com"
+    (the real host embedded in a query string) - both wrongly passed.
+    Now an EXACT netloc comparison via urllib.parse.urlsplit, with the
+    Referer fallback held to the same exact standard - never a
+    substring match either way."""
     host = request.headers.get("host", "")
-    return bool(host) and host in origin
+    if not host:
+        return False
+    origin = request.headers.get("origin")
+    if origin:
+        return urlsplit(origin).netloc == host
+    referer = request.headers.get("referer")
+    if referer:
+        return urlsplit(referer).netloc == host
+    return False
 
 
 def _signed_in_email(request: Request):
@@ -1152,6 +1169,14 @@ async def auth_set_cookie(request: Request):
     tok = (body.get("tok") or "").strip()
     if not tok or len(tok) > 256:
         return Response(status_code=400)
+    # Audit fix A3 / Fable finding S2 (10 Oct 2026): same-origin alone
+    # let a caller set sdd_auth to ANY string up to 256 chars, real
+    # session or not - refuse unless the token actually resolves to a
+    # currently-valid session, so this endpoint can never be used to
+    # fixate a cookie to a token that isn't (or is no longer) real.
+    email = await run_in_threadpool(email_auth.session_email, tok)
+    if not email:
+        return Response(status_code=403)
     resp = Response(status_code=204)
     resp.set_cookie("sdd_auth", tok, max_age=90 * 24 * 3600, path="/",
                      httponly=True, secure=_is_https(request), samesite="lax")

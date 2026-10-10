@@ -1995,17 +1995,27 @@ def _render_admin_unlock():
             st.rerun()
         return
     with st.popover("RC view", key="rc_view_pop"):
+        # Audit fix A3 / Fable finding S2 (10 Oct 2026): this was the
+        # only admin-key entry point in this file that didn't already
+        # check the shared lockout first, compare in constant time, and
+        # count a wrong guess toward it - see the ?admin= URL param
+        # branch and the blog editor's own admin-key prompt for the
+        # exact same three-part pattern this now matches.
+        if _admin_key_locked_out():
+            st.error("Too many wrong attempts. Try again later.")
+            return
         _key_try = st.text_input(
             "Access key", type="password", key="rc_view_key_input",
         )
         if st.button("Unlock", key="rc_view_unlock_btn", type="primary"):
-            if _key_try.strip() == _admin_key_env:
+            if hmac.compare_digest(_key_try.strip(), _admin_key_env):
                 st.session_state["full_view_unlocked"] = True
                 st.session_state.pop("full_view_exited", None)
                 st.session_state["_pending_admin_cookie"] = True
                 st.session_state["_pending_fullview_exited_cookie_clear"] = True
                 st.rerun()
             else:
+                _record_admin_key_failure()
                 st.error("Incorrect key.")
 
 
