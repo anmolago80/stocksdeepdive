@@ -4850,15 +4850,25 @@ def _prescore_row_eligible(row, financials_store_live):
     Score is None", not these two).
 
     Deliberately does NOT call is_top200_excluded() or scan_store.
-    is_private_universe() - every TOP200_PRESCORE_UNIVERSES entry is,
-    by construction, both private and Top-200-excluded TODAY (that is
-    the whole point of pre-scoring it before Andrew makes it public) -
-    applying either of those two UNIVERSE-level gates here would
-    always return zero candidates. This function, and every other one
-    in this pre-scoring section, is intentionally standalone - never a
-    shared call into select_top100_pool()'s own private closures - so
-    nothing about this feature can ever change the live pool's own
-    output."""
+    is_private_universe() - eligibility here is ROW-level only, never
+    a universe-level gate, so it makes no difference whether a listed
+    TOP200_PRESCORE_UNIVERSES entry is private (e.g. Nikkei 225,
+    DAX - not yet public on the Scanner at all) or merely Top-200-
+    excluded while already PUBLIC (e.g. FTSE 100/FTSE 250/TSX
+    Composite since push 2, 5711c3c, or TSX 60 since 641a2a6/53d7e55
+    - visible on the Scanner but still excluded from the live Top 200
+    by is_top200_excluded()'s own default derivation) - both are
+    candidate sources pre-scoring exists to help: a country whose
+    data is visible but hasn't yet been given a Top 200 slot. Director
+    follow-up (11 Oct 2026, tests/test_prescore_public_top200_
+    excluded_universes.py) confirmed this directly: no code change
+    was needed here, only this comment, which previously (wrongly)
+    assumed every configured entry would always be private. This
+    function, and every other one in this pre-scoring section, is
+    intentionally standalone - never a shared call into select_
+    top100_pool()'s own private closures - so nothing about this
+    feature can ever change the live pool's own output, regardless of
+    which universes are listed."""
     if row.get("Is Fund"):
         return False
     if row.get("Intrinsic Value") is None:
