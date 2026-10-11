@@ -2840,6 +2840,17 @@ def poll_and_ingest_batch(log=print):
     # reason was already "degenerate_response" coming into this run,
     # not merely "this ticker has failed twice for any reason".
     _existing_failures = top100_store.score_failures_for_model(state["model"], RUBRIC_VERSION)
+    # Top 200 pre-scoring promo (11 Oct 2026, Director-directed,
+    # Andrew's go, instruction_prescoring_promo.md): parallel
+    # accounting, scoped to whatever packs submit_nightly_batch()
+    # itself tagged "is_prescore" (never mixed with a normal entrant in
+    # the same pack - see that function's own comment on why). Every
+    # increment below sits immediately beside the matching normal-
+    # entrant counter it mirrors, so nothing about the existing
+    # saved/failed/token bookkeeping is touched.
+    prescore_saved, prescore_failed = 0, 0
+    prescore_input_tokens, prescore_output_tokens = 0, 0
+    prescore_cache_creation_tokens, prescore_cache_read_tokens = 0, 0
     try:
         for result in client.messages.batches.results(state["batch_id"]):
             entry = custom_id_map.get(result.custom_id)
@@ -2875,6 +2886,7 @@ def poll_and_ingest_batch(log=print):
             # "legacy", same convention as top100_store.schema_mode_
             # for_batch().
             pack_schema_mode = entry.get("schema_mode", "legacy") if isinstance(entry, dict) else "legacy"
+            is_prescore_pack = isinstance(entry, dict) and bool(entry.get("is_prescore"))
             if not entrants_map:
                 continue
             total_requests += 1
@@ -2896,6 +2908,8 @@ def poll_and_ingest_batch(log=print):
                 err_type = _batch_result_error_type(err)
                 for ticker in entrants_map:
                     failed += 1
+                    if is_prescore_pack:
+                        prescore_failed += 1
                     errored_count += 1
                     failure_reasons.append((ticker, err_type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     if errored_count <= _ERRORED_DETAIL_LIMIT:
@@ -2910,6 +2924,8 @@ def poll_and_ingest_batch(log=print):
             if result.result.type != "succeeded":
                 for ticker in entrants_map:
                     failed += 1
+                    if is_prescore_pack:
+                        prescore_failed += 1
                     failure_reasons.append((ticker, result.result.type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
                 _log_request_diagnostic(log, result.custom_id, list(entrants_map.keys()),
@@ -2931,6 +2947,11 @@ def poll_and_ingest_batch(log=print):
             # this fixes.
             total_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
             total_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
+            if is_prescore_pack:
+                prescore_input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
+                prescore_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
+                prescore_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
+                prescore_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
             _degenerate_tickers = set()
             _request_blank_tickers = set()
             _matched_by = {}
@@ -2947,6 +2968,8 @@ def poll_and_ingest_batch(log=print):
                 # carried failed, not just one.
                 for ticker in entrants_map:
                     failed += 1
+                    if is_prescore_pack:
+                        prescore_failed += 1
                     failure_reasons.append((ticker, f"parse_error: {e}", entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                 log(f"[top100] batch result for {sorted(entrants_map)}: could not parse, skipped ({e})")
                 continue
@@ -2985,6 +3008,8 @@ def poll_and_ingest_batch(log=print):
                     # BLANK_MAX_RETRIES - this function only records the
                     # failure, it never stops retrying by itself.
                     failed += 1
+                    if is_prescore_pack:
+                        prescore_failed += 1
                     failure_reasons.append((ticker, "request_blank", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     continue
                 if ticker in _degenerate_tickers:
@@ -3004,8 +3029,12 @@ def poll_and_ingest_batch(log=print):
                             ticker, entrant_info, state, prompt_params, text,
                             matched_by=_matched_by.get(ticker), schema_mode=pack_schema_mode, log=log)
                         saved += 1
+                        if is_prescore_pack:
+                            prescore_saved += 1
                     else:
                         failed += 1
+                        if is_prescore_pack:
+                            prescore_failed += 1
                         failure_reasons.append((ticker, "degenerate_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                         log(f"[top100] {ticker}: degenerate response (sentinel-filled template) - "
                             "not saved, will retry")
@@ -3018,6 +3047,8 @@ def poll_and_ingest_batch(log=print):
                     # already in parsed_by_ticker, are saved below exactly
                     # as if nothing had gone wrong.
                     failed += 1
+                    if is_prescore_pack:
+                        prescore_failed += 1
                     failure_reasons.append((ticker, "missing_from_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: missing from packed batch response, skipped")
                     continue
@@ -3041,6 +3072,8 @@ def poll_and_ingest_batch(log=print):
                 )
                 top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
                 saved += 1
+                if is_prescore_pack:
+                    prescore_saved += 1
     except Exception as e:
         # Audit fix A1 / Fable finding T1 (10 Oct 2026): a stream
         # exception (e.g. a dropped connection partway through
@@ -3079,6 +3112,30 @@ def poll_and_ingest_batch(log=print):
     log(f"[top100] batch {state['batch_id']}: {total_requests} requests, "
         f"{len(blank_request_ids)} blank (ids {', '.join(blank_request_ids)}), "
         f"{saved} scored, {failed} failed")
+
+    # Top 200 pre-scoring promo (11 Oct 2026, Director-directed,
+    # Andrew's go, instruction_prescoring_promo.md): fires only when
+    # THIS batch actually carried at least one pre-score-tagged pack
+    # (prescore_saved/prescore_failed are both 0 on every ordinary
+    # night, so this is a no-op then). The real, ingest-time cost of
+    # exactly those packs - never the pre-submission estimate, never
+    # anything from a normal entrant's own pack - is persisted via
+    # top100_store.add_prescore_actual_cost() (the store, not memory,
+    # per the instruction's own explicit rule) BEFORE being read back
+    # for the cumulative total this line reports, so the figure shown
+    # already includes tonight's own spend.
+    if prescore_saved or prescore_failed:
+        prescore_cost = estimate_batch_cost_usd(
+            prescore_input_tokens, prescore_output_tokens,
+            prescore_cache_creation_tokens, prescore_cache_read_tokens,
+        )
+        top100_store.add_prescore_actual_cost(prescore_cost)
+        _prescore_cumulative = top100_store.get_prescore_cumulative_cost()
+        _prescore_budget = prescore_budget_usd() or 0.0
+        log(f"[prescore] ingested: {prescore_saved} scored, {prescore_failed} failed, "
+            f"actual ${prescore_cost:.2f}; cumulative ${_prescore_cumulative:.2f} "
+            f"of ${_prescore_budget:.2f}")
+
     # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed): schema_mode + packed/solo split
     # for THIS batch, derived straight from custom_id_map (not from the
@@ -3689,6 +3746,22 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         log(f"[top100] {len(entrants)} to score tonight (re-score {counts['new_results'] + counts['age']}, "
             f"newcomers {counts['new_or_rubric']}, deferred (persistence) {deferred})")
 
+    # Top 200 pre-scoring promo (11 Oct 2026, Director-directed,
+    # Andrew's go, instruction_prescoring_promo.md): consulted ONLY on
+    # the normal (not force=True) path - a forced manual refresh (the
+    # owner's "Refresh all" button) is an explicit, owner-initiated
+    # action that must never silently also spend promo budget. "Normal
+    # nightly newcomers always go first" (the instruction's own
+    # capacity rule) holds simply because `entrants` is already fully
+    # resolved and capped by this point - prescore_entrants only ever
+    # fills whatever capacity/budget room is left after that. See
+    # _select_prescore_entrants()'s own docstring for the full rule
+    # set; it never raises and returns [] whenever the feature is off,
+    # so this line is a no-op (byte-identical to before this feature
+    # existed) on every night it isn't configured.
+    prescore_entrants = [] if force else _select_prescore_entrants(
+        len(entrants), daily["entrants"], today, log=log)
+
     # v6 packed requests (1 Oct 2026, owner-directed): group tonight's
     # entrants into packs of up to TOP100_COMPANIES_PER_REQUEST - one
     # Batches API Request per pack, not per company (the actual saving
@@ -3717,6 +3790,28 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     n_solo_packs = len(solo_entrants)
     n_packed_packs = len(packs) - n_solo_packs
 
+    # Top 200 pre-scoring promo (11 Oct 2026): prescore_entrants get
+    # their OWN, separate packs here - NEVER merged into `packs` above
+    # - so every pack is either 100% normal or 100% pre-score. This is
+    # what lets poll_and_ingest_batch() attribute a batch result's real
+    # (ingest-time) token usage cleanly to one side or the other for
+    # the promo budget, with no proportional-split guesswork; it does
+    # NOT change each company's own request content at all - the exact
+    # same TOP100_COMPANIES_PER_REQUEST pack size and solo-retry-for-
+    # request_blank rule apply to both groups. custom_id_map tags each
+    # pack with "is_prescore" below so poll_and_ingest_batch() can tell
+    # them apart at ingest time.
+    _prescore_solo_tickers = {
+        row["ticker"] for row, _reason in prescore_entrants
+        if (_failures_for_packing.get(row["ticker"]) or {}).get("reason") == "request_blank"
+    }
+    _prescore_solo = [e for e in prescore_entrants if e[0]["ticker"] in _prescore_solo_tickers]
+    _prescore_normal = [e for e in prescore_entrants if e[0]["ticker"] not in _prescore_solo_tickers]
+    prescore_packs = [[e] for e in _prescore_solo] + [
+        _prescore_normal[i:i + TOP100_COMPANIES_PER_REQUEST]
+        for i in range(0, len(_prescore_normal), TOP100_COMPANIES_PER_REQUEST)
+    ]
+
     # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed): read the switch ONCE for this
     # whole submission (not per-pack) - see top200_schema_mode()'s own
@@ -3744,9 +3839,15 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         log("[top100] anthropic package not available - skipping tonight's batch")
         return None
 
+    # Pre-score packs are appended AFTER every normal pack - custom_id
+    # numbering just continues the same sequence, nothing special about
+    # where the boundary falls.
+    all_packs = packs + prescore_packs
+    pack_is_prescore = [False] * len(packs) + [True] * len(prescore_packs)
+
     custom_id_map = {}
     requests = []
-    for i, pack in enumerate(packs):
+    for i, pack in enumerate(all_packs):
         custom_id = f"t100-{i}"
         pack_entrants_meta = {}
         pack_request_entrants = []
@@ -3760,7 +3861,10 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
             pack_request_entrants.append({
                 "ticker": ticker, "company_name": row.get("company_name"), "sector": row.get("sector"),
             })
-        custom_id_map[custom_id] = {"entrants": pack_entrants_meta, "schema_mode": schema_mode}
+        custom_id_map[custom_id] = {
+            "entrants": pack_entrants_meta, "schema_mode": schema_mode,
+            "is_prescore": pack_is_prescore[i],
+        }
         requests.append(Request(
             custom_id=custom_id,
             params=MessageCreateParamsNonStreaming(
@@ -3787,10 +3891,17 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
 
     top100_store.clear_submitting_marker()
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
-    top100_store.record_daily_submission(today.isoformat(), len(entrants))
+    # Pre-score entrants count toward the SAME daily entrant total as
+    # every normal entrant (the instruction's own "never raise those
+    # caps" rule) - this is what makes tomorrow night's own capacity
+    # check correctly see tonight's real combined total.
+    top100_store.record_daily_submission(today.isoformat(), len(entrants) + len(prescore_entrants))
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
         f"in {len(packs)} packed request{'s' if len(packs) != 1 else ''} "
-        f"({n_packed_packs} packed, {n_solo_packs} solo) for {model}, schema_mode={schema_mode}")
+        f"({n_packed_packs} packed, {n_solo_packs} solo) for {model}, schema_mode={schema_mode}"
+        + (f"; plus {len(prescore_entrants)} pre-score compan{'y' if len(prescore_entrants) == 1 else 'ies'} "
+           f"in {len(prescore_packs)} more request{'s' if len(prescore_packs) != 1 else ''}"
+           if prescore_entrants else ""))
     return batch.id
 
 
@@ -4621,6 +4732,303 @@ def preview_candidates_by_country():
     for market, rows in by_country.items():
         rows.sort(key=lambda r: (r["value_score"] is None, -(r["value_score"] or 0)))
     return by_country
+
+
+# -----------------------------------------------------------------
+# Top 200 pre-scoring promo (11 Oct 2026, Director-directed, Andrew's
+# go, instruction_prescoring_promo.md) - "use part of Andrew's $100
+# Anthropic promotional credit, hard cap $60, to pre-score the new-
+# market companies most likely to enter the Top 200 once their
+# country is added, so their analysis is already stored and they can
+# join at no further cost." All THREE switches below must be validly
+# set for this to do anything at all - unset/invalid on ANY of them
+# (the default, every night outside 12/13 Oct) means submit_nightly_
+# batch() never even calls _select_prescore_entrants()'s own candidate
+# path, reproducing today's batch entrants byte-for-byte. The live
+# Top 200 pool (select_top100_pool()/_build_best_by_ticker()/
+# _eligible_scan_payloads()) is never touched by anything below -
+# every function here is new and standalone, never shared with that
+# selection path, so nothing here can change what it returns.
+# -----------------------------------------------------------------
+
+def prescore_universes():
+    """TOP200_PRESCORE_UNIVERSES - comma-separated universe names
+    (e.g. "TSX Composite, FTSE 100"), re-split and re-read on every
+    call, same pattern as preview_universes() above. Unset/empty ->
+    []."""
+    raw = os.environ.get("TOP200_PRESCORE_UNIVERSES") or ""
+    return [u.strip() for u in raw.split(",") if u.strip()]
+
+
+def prescore_budget_usd():
+    """TOP200_PRESCORE_BUDGET_USD - the TOTAL actual-spend cap across
+    every night this feature runs. Missing or invalid (not a positive
+    number) -> None, this switch's own "off" value - the instruction's
+    own explicit rule ("a missing or invalid value means off")."""
+    raw = os.environ.get("TOP200_PRESCORE_BUDGET_USD")
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def prescore_until():
+    """TOP200_PRESCORE_UNTIL - the last UTC date this feature may run
+    (e.g. "2026-10-13"). Missing or unparseable -> None - treated as
+    this switch's own "off" value too, same as the other two, so the
+    feature can never run with no end date by accident (the
+    instruction's own "all unset = feature off" framing applied to
+    each switch individually)."""
+    raw = os.environ.get("TOP200_PRESCORE_UNTIL")
+    if not raw or not raw.strip():
+        return None
+    try:
+        return datetime.fromisoformat(raw.strip()).date()
+    except ValueError:
+        return None
+
+
+def is_prescore_active(today=None):
+    """(bool, reason) - all-unset-or-invalid = off ("switch unset").
+    `reason` is None when active, else one of "switch unset" / "past
+    UNTIL" / "budget reached" - the exact three tokens the
+    instruction's own Logging section names. `today` is injectable
+    for tests; defaults to a fresh UTC read."""
+    universes = prescore_universes()
+    budget = prescore_budget_usd()
+    until = prescore_until()
+    if not universes or budget is None or until is None:
+        return False, "switch unset"
+    today = today or datetime.now(timezone.utc).date()
+    if today > until:
+        return False, "past UNTIL"
+    if top100_store.get_prescore_cumulative_cost() >= budget:
+        return False, "budget reached"
+    return True, None
+
+
+def _prescore_failure_blocks(ticker, failures, now):
+    """The instruction's own, deliberately simpler, failure exclusion
+    for pre-scoring: "exclude tickers that already have a score... or
+    a failure still inside its retry window" - nothing about
+    TOP100_FAILURE_MAX_ATTEMPTS/exhaustion, unlike _unscored_tickers()'s
+    own _failure_blocks() closure (the normal nightly path), which
+    permanently skips an exhausted ticker. Pre-scoring is a one-time
+    opportunistic shot across two nights, not a forever-retrying
+    nightly job - once a failure's own TOP100_FAILURE_RETRY_HOURS
+    window has passed, this ticker is eligible for pre-scoring again
+    regardless of its past attempt count, exactly matching the
+    instruction's own literal wording (it names only the retry
+    window, never an attempts ceiling)."""
+    failure = failures.get(ticker)
+    if failure is None:
+        return False
+    failed_at = failure.get("failed_at")
+    if not failed_at:
+        return False
+    try:
+        failed_dt = datetime.fromisoformat(failed_at)
+        if failed_dt.tzinfo is None:
+            failed_dt = failed_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return False
+    return (now - failed_dt).total_seconds() < TOP100_FAILURE_RETRY_HOURS * 3600
+
+
+def _prescore_row_eligible(row, financials_store_live):
+    """Per-row "normal pool eligibility filters" (the instruction's
+    own wording) for a pre-score candidate - mirrors _build_best_by_
+    ticker()'s own per-row checks (stale / DCF-unreliable / fallback-
+    financials - see _is_flagged_stale()/_is_dcf_unreliable()/
+    _financials_pool_ineligible()'s own docstrings), PLUS the two
+    extra exclusions the instruction lists BY NAME that the normal
+    pool doesn't check directly (funds, no Intrinsic Value - see
+    _build_best_by_ticker()'s own docstring: it only checks "Long
+    Score is None", not these two).
+
+    Deliberately does NOT call is_top200_excluded() or scan_store.
+    is_private_universe() - every TOP200_PRESCORE_UNIVERSES entry is,
+    by construction, both private and Top-200-excluded TODAY (that is
+    the whole point of pre-scoring it before Andrew makes it public) -
+    applying either of those two UNIVERSE-level gates here would
+    always return zero candidates. This function, and every other one
+    in this pre-scoring section, is intentionally standalone - never a
+    shared call into select_top100_pool()'s own private closures - so
+    nothing about this feature can ever change the live pool's own
+    output."""
+    if row.get("Is Fund"):
+        return False
+    if row.get("Intrinsic Value") is None:
+        return False
+    if row.get("price_unit_suspect"):
+        return False
+    if _is_flagged_stale(row):
+        return False
+    if _is_dcf_unreliable(row) or resolver_engine.dcf_looks_unreliable(
+        row.get("Intrinsic Value"), row.get("Price")
+    ):
+        return False
+    if financials_store_live and _financials_pool_ineligible(row):
+        return False
+    return True
+
+
+def _prescore_candidates(model, log=print):
+    """Ranked, eligible, not-yet-scored pre-score candidates across
+    every universe named in prescore_universes() - the instruction's
+    own candidate-selection steps 1-3. Each row's own shape matches
+    submit_nightly_batch()'s own entrant shape ({"ticker",
+    "company_name", "sector", "most_recent_quarter"}, plus an internal
+    "_universe" key stripped before that function ever builds a
+    request from it) so it can be appended straight into that
+    function's own packing/custom_id_map logic with no further
+    conversion.
+
+    Ranked by the SAME field pool selection itself uses
+    (_recompute_value_score() - "Value Score"), descending, across
+    ALL listed universes TOGETHER (the instruction's own wording) - a
+    ticker appearing in more than one listed universe keeps only its
+    highest-value_score row (same "best row wins" philosophy as
+    _build_best_by_ticker()'s own per-ticker dedupe, just keyed on
+    value_score alone here since there is no score yet to prefer
+    freshness by).
+
+    Returns the full ranked list - callers are responsible for their
+    own capacity/budget slicing (this function has no opinion on how
+    many of its own candidates actually get queued tonight)."""
+    universes = prescore_universes()
+    if not universes:
+        return []
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    financials_store_live = financials_classifier.is_financials_store_live()
+    now = datetime.now(timezone.utc)
+    best_by_ticker = {}
+    for universe in universes:
+        payload = scan_store.load_scan_raw(universe, allow_private=True)
+        if not payload or payload.get("degraded"):
+            continue
+        for row in payload.get("rows") or []:
+            try:
+                ticker = (row.get("Ticker") or "").strip().upper()
+                if not ticker:
+                    continue
+                if not _prescore_row_eligible(row, financials_store_live):
+                    continue
+                if latest.get(ticker) is not None:
+                    continue
+                if _prescore_failure_blocks(ticker, failures, now):
+                    continue
+                value_score = _recompute_value_score(row)
+                prev = best_by_ticker.get(ticker)
+                if prev is not None and (prev["value_score"] or 0) >= (value_score or 0):
+                    continue
+                best_by_ticker[ticker] = {
+                    "ticker": ticker,
+                    "company_name": row.get("Company Name"),
+                    "sector": scanner_engine.sector_for_ticker(ticker, scan_row=row),
+                    "most_recent_quarter": row.get("Most Recent Quarter"),
+                    "value_score": value_score,
+                    "_universe": universe,
+                }
+            except Exception as e:
+                log(f"[prescore] skipping row with eligibility-check error "
+                    f"({row.get('Ticker', '?')!r} in {universe}): {e}")
+                continue
+    return sorted(best_by_ticker.values(), key=lambda r: r["value_score"] or 0, reverse=True)
+
+
+def _trim_prescore_to_budget(candidates, cumulative_actual, budget):
+    """The instruction's own budget rule: "trim the pre-score list so
+    that cumulative actual spend plus tonight's estimate stays <=
+    BUDGET." `candidates` is expected to already be capacity-trimmed
+    (whatever room is left in tonight's batch/daily caps) before this
+    is called. Binary search on count - estimate_degenerate_resend_
+    cost_usd() (the existing estimator this reuses - same packed-
+    request token estimate submit_nightly_batch() itself logs before
+    submitting) is monotonically non-decreasing in len(rows) (more
+    rows never means fewer packed requests), so the largest count that
+    fits under budget is well-defined. Returns (kept, est_cost_for_
+    kept) - kept is always a PREFIX of `candidates` (the top-ranked
+    ones), never a different subset, so "take from the top" (the
+    instruction's own wording) holds even after this trims for
+    budget."""
+    if not candidates:
+        return [], 0.0
+    lo, hi = 0, len(candidates)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        est = estimate_degenerate_resend_cost_usd(candidates[:mid]) if mid else 0.0
+        if cumulative_actual + est <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    kept = candidates[:lo]
+    return kept, (estimate_degenerate_resend_cost_usd(kept) if kept else 0.0)
+
+
+def _select_prescore_entrants(normal_entrant_count, daily_entrants_so_far, today, log=print):
+    """Called only from submit_nightly_batch()'s own "not force" path,
+    AFTER the normal entrants list is already finalized and capped -
+    "normal nightly newcomers always go first" (the instruction's own
+    capacity rule) is enforced simply by this function never being
+    consulted until that count is already fixed. Returns [(row,
+    "prescore"), ...], already trimmed to whatever capacity AND budget
+    room is left tonight - [] (with an explanatory log line) when the
+    feature is off, or when no room/budget is left. Never raises - any
+    error here must never break the normal nightly submission it rides
+    along with."""
+    try:
+        active, reason = is_prescore_active(today=today)
+        if not active:
+            if prescore_universes() or prescore_budget_usd() is not None or prescore_until() is not None:
+                # At least one switch is set but the feature still
+                # isn't fully active - surface why, so a half-
+                # configured set of switches is never silently a no-
+                # op. When EVERY switch is unset (the default, every
+                # night outside 12/13 Oct), log nothing at all - byte-
+                # identical to before this feature existed, per the
+                # instruction's own test requirement.
+                log(f"[prescore] off - {reason}")
+            return []
+        batch_room = MAX_NIGHTLY_SCORES - normal_entrant_count
+        daily_room = TOP100_MAX_ENTRANTS_PER_UTC_DAY - daily_entrants_so_far - normal_entrant_count
+        room = max(0, min(batch_room, daily_room))
+        if room <= 0:
+            log("[prescore] 0 candidates queued - no room left under tonight's batch/daily caps")
+            return []
+        candidates = _prescore_candidates(MODEL_TOP100, log=log)[:room]
+        if not candidates:
+            log("[prescore] 0 candidates queued - every eligible row is already scored or blocked")
+            return []
+        budget = prescore_budget_usd()
+        cumulative_actual = top100_store.get_prescore_cumulative_cost()
+        kept, est_cost = _trim_prescore_to_budget(candidates, cumulative_actual, budget)
+        if not kept:
+            log(f"[prescore] 0 candidates queued - budget reached (cumulative actual "
+                f"${cumulative_actual:.2f} of ${budget:.2f}, nothing more fits tonight)")
+            return []
+        kept_universe_counts = {}
+        for c in kept:
+            kept_universe_counts[c["_universe"]] = kept_universe_counts.get(c["_universe"], 0) + 1
+        breakdown = ", ".join(
+            f"{u} {kept_universe_counts[u]}" for u in prescore_universes() if u in kept_universe_counts
+        )
+        log(f"[prescore] night {today.isoformat()}: {len(kept)} candidates queued "
+            f"({breakdown}), est ${est_cost:.2f}; cumulative actual ${cumulative_actual:.2f} "
+            f"of ${budget:.2f}")
+        return [
+            ({"ticker": c["ticker"], "company_name": c["company_name"],
+              "sector": c["sector"], "most_recent_quarter": c["most_recent_quarter"]},
+             "prescore")
+            for c in kept
+        ]
+    except Exception as e:
+        log(f"[prescore] selection failed (non-fatal, tonight's normal entrants are unaffected): {e}")
+        return []
 
 
 def _apply_backfill(merit_ordered, model=MODEL_TOP100):

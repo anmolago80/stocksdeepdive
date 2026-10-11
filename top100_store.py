@@ -516,6 +516,22 @@ def _conn():
             last_seen_utc_date TEXT NOT NULL
         )"""
     )
+    # Top 200 pre-scoring promo (11 Oct 2026, Director-directed, Andrew's
+    # go, instruction_prescoring_promo.md): the promotional-credit budget
+    # cap is a TOTAL across every night the feature runs (12/13 Oct), so
+    # the running actual spend has to survive a restart/redeploy between
+    # those nights - a single-row table, same singleton-row convention as
+    # top100_batch_state/top100_submitting_marker above, rather than
+    # anything in process memory. Holds the REAL (ingest-time, token-
+    # based) cost of pre-score-tagged batch results only - never the
+    # pre-submission estimate, and never the normal nightly entrants'
+    # own cost.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_prescore_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cumulative_cost_usd REAL NOT NULL DEFAULT 0
+        )"""
+    )
     return conn
 
 
@@ -1217,6 +1233,43 @@ def get_daily_submission_state(utc_date):
     if not row:
         return {"batches": 0, "entrants": 0}
     return {"batches": row["batches"], "entrants": row["entrants"]}
+
+
+# -----------------------------------------------------------------
+# Top 200 pre-scoring promo (11 Oct 2026, Director-directed, Andrew's
+# go, instruction_prescoring_promo.md) - the running ACTUAL cost of
+# pre-score-tagged batch results, persisted (never kept only in
+# memory, per the instruction's own explicit requirement) so the
+# $BUDGET cap holds across a restart/redeploy and across both nights
+# the feature runs.
+# -----------------------------------------------------------------
+
+def get_prescore_cumulative_cost():
+    """Total real (ingest-time, token-based) USD spent on Top 200
+    pre-scoring so far - 0.0 if the feature has never ingested
+    anything yet. Never the pre-submission estimate, and never
+    anything attributable to a normal (non-pre-score) entrant."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT cumulative_cost_usd FROM top100_prescore_state WHERE id = 1"
+        ).fetchone()
+    return (row["cumulative_cost_usd"] if row else 0.0) or 0.0
+
+
+def add_prescore_actual_cost(amount_usd):
+    """Adds `amount_usd` (one night's real, ingest-time cost of its own
+    pre-score-tagged batch results only) to the persisted running
+    total - called once per ingest, immediately after computing that
+    night's real cost, never accumulated in memory across calls."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO top100_prescore_state (id, cumulative_cost_usd)
+                 VALUES (1, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 cumulative_cost_usd = top100_prescore_state.cumulative_cost_usd + excluded.cumulative_cost_usd""",
+            (amount_usd,),
+        )
 
 
 # -----------------------------------------------------------------
