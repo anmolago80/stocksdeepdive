@@ -249,6 +249,18 @@ _FUND_SECTOR_NAMES = frozenset({
 # regardless of what its stored Sector says now or in the future.
 _FUND_SECTOR_OVERRIDE_NOT_A_FUND = frozenset({"EMG.L"})
 
+# TASK 7 of the Director's overnight queue (12 Oct 2026): exactly these
+# five private universes - see run_universe_scan()'s own per-ticker
+# Sector-assignment comment below for the precedence rule this set
+# gates. Explicit and hand-maintained, same precedent as the sets
+# above - never scan_store._DEFAULT_PRIVATE_UNIVERSES/PRIVATE_UNIVERSES
+# (which also list Nikkei 225/TOPIX 500, and could silently widen this
+# task's own scope if that env var is ever changed for an unrelated
+# reason).
+_EUROPE_YAHOO_SECTOR_UNIVERSES = frozenset({
+    "DAX", "CAC 40", "AEX", "SMI", "OMX Stockholm 30",
+})
+
 
 def _is_sector_fund(ticker, sector):
     """True iff `sector` (the stored Sector field, from the constituent
@@ -1600,7 +1612,25 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                     # None. Popped unconditionally so this scratch key
                     # never reaches scan_store/the saved JSON either way.
                     _yahoo_sector_fallback = row.pop("_fallback_sector", None)
-                    row["Sector"] = _sector_by_ticker.get(t) or _yahoo_sector_fallback
+                    # TASK 7 of the Director's overnight queue (12 Oct
+                    # 2026): a DIFFERENT precedence rule from TASK 3's
+                    # above, not a reuse of it - for exactly these five
+                    # private European universes, Yahoo's own sector is
+                    # preferred over the Wikipedia-scraped "sector"/
+                    # "industry" column EVEN WHEN the pool has one
+                    # (unlike TASK 3, which only reaches for Yahoo when
+                    # the pool has nothing at all). Hardcoded here
+                    # rather than read from scan_store._DEFAULT_PRIVATE_
+                    # UNIVERSES/PRIVATE_UNIVERSES (which also list Nikkei
+                    # 225/TOPIX 500, and could silently widen if a future
+                    # production config change touches that env var) -
+                    # scoped by universe name only. Every other universe
+                    # keeps the exact line TASK 3 already shipped above,
+                    # byte-identical to before this task.
+                    if universe in _EUROPE_YAHOO_SECTOR_UNIVERSES:
+                        row["Sector"] = _yahoo_sector_fallback or _sector_by_ticker.get(t)
+                    else:
+                        row["Sector"] = _sector_by_ticker.get(t) or _yahoo_sector_fallback
 
                     # TASK 2 of instruction_scanner_chips_trusts_japan_
                     # sectors.md (9 Oct 2026, Director-directed, build
