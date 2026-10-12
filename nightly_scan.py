@@ -50,6 +50,7 @@ import fundamentals_data
 import moat_engine
 import peer_context
 import reverse_dcf_engine
+import symbol_mapping
 import scan_checkpoint_store
 import scan_store
 import score_history
@@ -454,10 +455,28 @@ def _growth_coverage_bucket(iv_meta):
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                          perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print,
                          rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None,
-                         shadow_out=None, info_failed_out=None):
+                         shadow_out=None, info_failed_out=None, universe=None,
+                         no_yahoo_price_out=None):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
-    if no usable price data. Also used by digest_engine for the weekly
+    if no usable price data.
+
+    universe/no_yahoo_price_out (Director's overnight queue, TASK 3, 12
+    Oct 2026): both fully optional, None by default - every existing
+    caller that omits them (digest_engine, every pre-existing test
+    fixture, this function's own other call sites) gets zero new
+    behaviour. Only when `universe` is given, the two "no usable price
+    data" returns below (empty 6-month history; every Close in the
+    trailing 3-month window NaN) also call symbol_mapping.log_no_
+    yahoo_price() and set no_yahoo_price_out[0] = True if a list was
+    passed - logging and counting only, never changing which tickers
+    get skipped. The caller (run_universe_scan()) is the only one that
+    passes `universe`, so every universe scanned there (DAX/CAC 40
+    included - see the Director's own TASK 4 finding on why they vanish
+    silently today) gets named in the log identically, with no special-
+    casing by universe name.
+
+    Also used by digest_engine for the weekly
     watchlist email (always attention_lite=True there - a watchlist digest
     can span many users' combined tickers, so it keeps the original
     quota-safe default regardless of how many tickers that turns out to
@@ -555,6 +574,10 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history",
                               rate_limited_out=rate_limited_out)
     if df is None or df.empty:
+        if universe is not None:
+            symbol_mapping.log_no_yahoo_price(universe, ticker, ticker, log=log)
+            if no_yahoo_price_out is not None:
+                no_yahoo_price_out[0] = True
         return None
     _raw_info = _yf_call_with_retry(lambda: tk.info, log, ticker, "info")
     if _raw_info is None and info_failed_out is not None:
@@ -675,6 +698,10 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # trailing bar but no real price data at all. Never fabricate a
         # row from this; the caller (run_universe_scan/run_imported_scan)
         # already treats a None return as "ticker skipped".
+        if universe is not None:
+            symbol_mapping.log_no_yahoo_price(universe, ticker, ticker, log=log)
+            if no_yahoo_price_out is not None:
+                no_yahoo_price_out[0] = True
         return None
     # Commit J (21 Sep 2026, owner-reported): a delisted/halted/merged
     # ticker still clears every check above cleanly - yfinance keeps
@@ -1501,6 +1528,11 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # docstring for why this has to be tracked separately from
     # _consecutive_rate_limited above.
     _info_fetch_failures = 0
+    # Director's overnight queue, TASK 3 (12 Oct 2026): count of tickers
+    # that vanished with no price data at all (either "return None"
+    # branch in analyze_ticker_lite()) - logging and counting only, see
+    # that function's own docstring on `no_yahoo_price_out`.
+    no_yahoo_price_count = 0
     for i, t in enumerate(tickers[_resume_index:], start=_resume_index):
         # Audit fixes Commit 3 (30 Sep 2026, owner-directed): cooperative
         # cancel - checked once per ticker, so a caller whose hard
@@ -1522,14 +1554,19 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
         try:
             _rate_limited_flag = [False]
             _info_failed_flag = [False]
+            _no_yahoo_price_flag = [False]
             row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
                                        rate_limited_out=_rate_limited_flag,
                                        growth_summary_out=_growth_summary,
                                        oneoff_summary_out=_oneoff_summary,
                                        shadow_out=_shadow_rows,
-                                       info_failed_out=_info_failed_flag)
+                                       info_failed_out=_info_failed_flag,
+                                       universe=universe,
+                                       no_yahoo_price_out=_no_yahoo_price_flag)
             if _info_failed_flag[0]:
                 _info_fetch_failures += 1
+            if _no_yahoo_price_flag[0]:
+                no_yahoo_price_count += 1
             if row:
                 _consecutive_rate_limited = 0
                 # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
@@ -1854,7 +1891,8 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     _scan_elapsed = time.time() - _scan_start
     _mins, _secs = divmod(int(_scan_elapsed), 60)
     log(f"[nightly_scan] {universe}: saved {len(rows)} rows, skipped {skipped_no_price} "
-        f"(no price)" + (" (degraded)" if degraded else "") +
+        f"(no price), {no_yahoo_price_count} with no Yahoo price at all" +
+        (" (degraded)" if degraded else "") +
         f" - {len(tickers)} tickers in {_mins}m {_secs}s")
     # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026),
     # extended by the growth-never-zero rewrite (30 Sep 2026, "Yahoo

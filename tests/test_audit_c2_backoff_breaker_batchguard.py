@@ -202,7 +202,8 @@ fake_pool_df = pd.DataFrame({"Ticker": big_pool_tickers})
 
 def _always_rate_limited(ticker, attention_lite=True, discount_rate=None, log=print,
                           rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None,
-                          shadow_out=None, info_failed_out=None):
+                          shadow_out=None, info_failed_out=None, universe=None,
+                          no_yahoo_price_out=None):
     if rate_limited_out is not None:
         rate_limited_out[0] = True
     return None

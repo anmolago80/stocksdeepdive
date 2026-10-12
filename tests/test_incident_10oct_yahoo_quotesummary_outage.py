@@ -499,7 +499,7 @@ def _make_mostly_info_failed(n_info_failed):
     def _side_effect(ticker, attention_lite=True, discount_rate=None, perpetual_rate=None,
                       growth_rate=None, manual_fcf=None, log=print, rate_limited_out=None,
                       growth_summary_out=None, oneoff_summary_out=None, shadow_out=None,
-                      info_failed_out=None):
+                      info_failed_out=None, universe=None, no_yahoo_price_out=None):
         idx = int(ticker[1:].split(".")[0])
         if info_failed_out is not None and idx < n_info_failed:
             info_failed_out[0] = True
