@@ -4919,7 +4919,17 @@ def _prescore_candidates(model, log=print):
     best_by_ticker = {}
     for universe in universes:
         payload = scan_store.load_scan_raw(universe, allow_private=True)
-        if not payload or payload.get("degraded"):
+        # Director's overnight queue, TASK 4 (12 Oct 2026): a listed
+        # pre-score universe with no saved scan, or a degraded one, was
+        # silently skipped - no log line named it or explained why
+        # (the finding from the earlier TASK 2 commit's own test).
+        # Logging only - the skip itself (and therefore every candidate
+        # this function returns) is completely unchanged.
+        if not payload:
+            log(f"[prescore] skipped {universe!r} - no saved scan on disk")
+            continue
+        if payload.get("degraded"):
+            log(f"[prescore] skipped {universe!r} - degraded scan")
             continue
         for row in payload.get("rows") or []:
             try:

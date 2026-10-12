@@ -21,37 +21,32 @@ _prescore_candidates():
         if not payload or payload.get("degraded"):
             continue
 
-BUT - and this is the one thing this task's own premise got wrong,
-caught by actually testing it rather than assuming it - there is
-currently NO log line for this specific skip. This is unlike the
-normal nightly pool-selection path (_eligible_scan_payloads()), which
-logs a line for every one of its own skip reasons ("[top100] skipped
-private universe ...", "[top100] selection: skipping ... - orphaned",
-"[top100] selection: skipping ... - degraded scan"). The pre-scoring
-path's "no payload"/"degraded" `continue` above is silent - nothing
-in the log would currently tell Andrew that Nikkei 225 contributed 0
-pre-score candidates because it has no saved scan, versus (say)
-because every eligible Nikkei 225 row happened to already be scored.
+AT THE TIME THIS FILE WAS FIRST COMMITTED, there was NO log line for
+this specific skip - unlike the normal nightly pool-selection path
+(_eligible_scan_payloads()), which logs a line for every one of its
+own skip reasons. That gap was reported to the Director as a finding
+("fix only if it would crash or block" didn't cover a missing log
+line), not fixed in that commit.
 
-This is NOT fixed here. A missing log line doesn't crash or block the
-batch - the task's own stated bar for touching code - so per its own
-rule this stays a test-only commit, and the gap is reported to the
-Director as a finding, not acted on. (If a log line here is wanted, it
-is one `log(...)` call inside the `continue` branch above - small and
-additive - but that is the Director's call, not assumed here.)
+UPDATE (Director's overnight queue, TASK 4, 12 Oct 2026): the
+Director asked for exactly this log line. _prescore_candidates() now
+logs "[prescore] skipped <universe> - no saved scan on disk" or
+"[prescore] skipped <universe> - degraded scan" for each case -
+logging only, the skip itself (and therefore every candidate this
+function returns) is byte-identical to before. The two checks below
+that used to prove the gap now prove the fix instead - same scenario,
+flipped expectation, not a new test.
 
 Covers:
   - A listed universe with NO saved scan file at all: no crash, 0
     candidates contributed from it, OTHER listed universes' own
-    candidates are completely unaffected.
-  - A listed universe whose saved scan IS marked degraded: same -
-    silently skipped, no crash, no effect on other universes.
+    candidates are completely unaffected, and the skip is now named
+    in the log.
+  - A listed universe whose saved scan IS marked degraded: same - no
+    crash, no effect on other universes, and now named in the log too.
   - End to end through submit_nightly_batch(): the batch submits
     normally (not blocked) using only the universes that DO have real,
     non-degraded data.
-  - The gap itself: no log line names the empty/degraded universe or
-    explains why it contributed nothing - captured and asserted
-    directly, not just described in prose.
 
 ALL FIXTURES IN THIS FILE ARE SYNTHETIC - this sandbox has no outbound
 network access, same disclosure as every other fixture-based test in
@@ -123,11 +118,14 @@ check("no exception raised while a listed universe (Nikkei 225) has no saved sca
 _tickers_with_empty = [c["ticker"] for c in _candidates_with_empty]
 check("DAX's own candidate (DAXGOOD) is completely unaffected by Nikkei 225 having no data",
       _tickers_with_empty == ["DAXGOOD"])
-check("FINDING: no log line names 'Nikkei 225' or explains why it contributed 0 candidates - "
-      "the no-payload skip in _prescore_candidates() is currently silent, unlike the normal "
-      "nightly pool-selection path's own skip-reason log lines. Not fixed here (no crash, no "
-      "block - outside this task's own 'fix only if it would crash or block' rule).",
-      not any("Nikkei 225" in m for m in _logs_empty))
+check("TASK 4 fix: '[prescore] skipped' names 'Nikkei 225' and the reason (no saved scan) - "
+      "the no-payload skip used to be silent; now it logs exactly one plain line",
+      any("[prescore] skipped" in m and "Nikkei 225" in m and "no saved scan" in m
+          for m in _logs_empty))
+check("candidate selection is byte-identical with the new log line present - DAX's own "
+      "candidate (already checked above) is the proof; this just re-confirms the full "
+      "candidates list itself, not just DAX's ticker",
+      _tickers_with_empty == ["DAXGOOD"])
 os.environ.pop("TOP200_PRESCORE_UNIVERSES", None)
 
 
@@ -151,8 +149,9 @@ check("a degraded universe (CAC 40) contributes 0 candidates, with no crash",
       "CACROW" not in _tickers_with_degraded)
 check("DAX's own candidate (DAXGOOD2) is completely unaffected by CAC 40 being degraded",
       _tickers_with_degraded == ["DAXGOOD2"])
-check("same gap for the degraded case: no log line names 'CAC 40' or explains the skip",
-      not any("CAC 40" in m for m in _logs_degraded))
+check("TASK 4 fix: '[prescore] skipped' names 'CAC 40' and the reason (degraded scan)",
+      any("[prescore] skipped" in m and "CAC 40" in m and "degraded scan" in m
+          for m in _logs_degraded))
 os.environ.pop("TOP200_PRESCORE_UNIVERSES", None)
 
 
