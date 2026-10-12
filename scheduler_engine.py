@@ -2208,6 +2208,20 @@ _last_heartbeat = None
 # fresh False and thus its own fresh immediate attempt.
 _top100_boot_poll_attempted = False
 
+# Director's overnight queue, TASK 5 (12 Oct 2026): "another process
+# already holds the lock" used to log every tick (~once a minute) for
+# as long as the OTHER process held the "nightly" lock - a multi-hour
+# nightly scan could leave dozens of identical lines behind in THIS
+# process's own log. Same "plain module global, not persisted"
+# reasoning as _top100_boot_poll_attempted above - this is purely
+# about not repeating the SAME observation tick after tick within one
+# process; a fresh process (or the lock becoming free again) naturally
+# gets a fresh False and therefore its own next "newly observed" log
+# line. No change to _acquire_job_lock()/_release_job_lock() or any
+# locking behaviour - this flag is read/written only around the log
+# call itself.
+_queued_rescan_lock_skip_logged = False
+
 # CRITICAL (25 Sep 2026, owner-reported): wall-clock time of the last
 # "[scheduler] alive" heartbeat LOG line (distinct from _last_heartbeat
 # above, which is an in-process timestamp _record_job/heartbeat_age_
@@ -2704,6 +2718,29 @@ def _top100_poll_status_for_heartbeat():
         return f"unknown ({e})"
 
 
+def _log_at_info(log, message):
+    """Director's overnight queue, TASK 5 (12 Oct 2026): server.py's own
+    FastAPI startup passes scheduler_engine.start_with_retry(log=log.
+    error) - deliberately, so a genuine start() failure is never missed
+    (see that function's own docstring) - but since `log` then runs
+    straight through to _loop() for its ENTIRE tick, not just startup
+    failures, a routine, expected message like "another process already
+    holds the lock" inherits error severity it was never about. Best-
+    effort fix, scoped to just the caller below: if `log` is a bound
+    logging.Logger method (log.__self__ exposes the Logger it belongs
+    to), call that SAME logger's own .info() instead - genuine INFO
+    severity on the exact logger/handlers server.py already configured,
+    not a new, disconnected logging setup. Falls back to calling
+    log(message) unchanged for any other callable (e.g. app.py's own
+    log=print, which was never the severity problem to begin with -
+    plain stdout already reads as info)."""
+    logger = getattr(log, "__self__", None)
+    if logger is not None and hasattr(logger, "info"):
+        logger.info(message)
+    else:
+        log(message)
+
+
 def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
                              abandoned_status, abandoned_info):
     """Audit fixes Commit 3 (30 Sep 2026, owner-directed): one tick's
@@ -2753,8 +2790,10 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
     inline in _loop(), which never returns) specifically so it's
     directly callable/testable on its own, same reasoning as
     _run_top100_poll and every other _run_* helper in this module."""
+    global _queued_rescan_lock_skip_logged
     rescan_request = _load_state().get("rescan_request")
     if not rescan_request:
+        _queued_rescan_lock_skip_logged = False
         return
     if abandoned_status == "alive":
         log(f"[scheduler] queued rescan skipping - abandoned scan worker "
@@ -2766,8 +2805,11 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
             f"active until {rl_cooldown_until}")
         return
     if not _acquire_job_lock("nightly", log):
-        log("[scheduler] queued rescan skipped - another process already holds the lock")
+        if not _queued_rescan_lock_skip_logged:
+            _log_at_info(log, "[scheduler] queued rescan skipped - another process already holds the lock")
+            _queued_rescan_lock_skip_logged = True
         return
+    _queued_rescan_lock_skip_logged = False
     cancel_event = threading.Event()
     timed_out = False
     try:
