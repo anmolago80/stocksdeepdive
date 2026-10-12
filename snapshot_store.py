@@ -367,6 +367,16 @@ _PUBLIC_FIELD_MAP = {
     # its "DCF Unreliable (Symmetric)" row entry for why pool selection
     # must never read this one.
     "DCF Unreliable (Symmetric)": "dcf_unreliable_symmetric",
+    # Director's overnight queue, TASK 2 (12 Oct 2026): the public
+    # snapshot page showed a bare "-" for a fund's withheld Intrinsic
+    # Value with no explanation, unlike the Scanner table (which
+    # already shows the same stored "Fund Reason" string - see
+    # app.py's own na_reason= wiring on its Intrinsic Value cell).
+    # Pure field-name exposure, same whitelisting convention as every
+    # other key above - the string itself is computed once, by
+    # nightly_scan.py, never re-derived here.
+    "Is Fund": "is_fund",
+    "Fund Reason": "fund_reason",
 }
 
 

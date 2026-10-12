@@ -124,7 +124,8 @@ def _stat_cells(pub, moat, lang="en"):
     if lang == "es":
         cells = [
             ("Precio", _fmt(pub.get("price"), suffix=""), None),
-            ("Valor intrínseco", _fmt(pub.get("intrinsic_value")), None),
+            ("Valor intrínseco", _fmt(pub.get("intrinsic_value")),
+             pub.get("fund_reason") if pub.get("is_fund") else None),
             ("Margen de seguridad",
              f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
             ("Crecimiento implícito (DCF inverso)",
@@ -149,7 +150,8 @@ def _stat_cells(pub, moat, lang="en"):
         return cells
     cells = [
         ("Price", _fmt(pub.get("price"), suffix=""), None),
-        ("Intrinsic value", _fmt(pub.get("intrinsic_value")), None),
+        ("Intrinsic value", _fmt(pub.get("intrinsic_value")),
+         pub.get("fund_reason") if pub.get("is_fund") else None),
         ("Margin of safety",
          f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
         ("Implied growth (reverse DCF)",
