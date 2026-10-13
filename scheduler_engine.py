@@ -2380,8 +2380,18 @@ def _abandoned_worker_status(job_name):
     return "alive", info
 
 
-def _record_job(job_name, log, run_fn, lock_name=None, cancel_event=None):
-    """Times run_fn(wrapped_log) and records the result to
+def _record_job(job_name, log, run_fn, lock_name=None, cancel_event=None, log_error=None):
+    """Director's 2-task queue, TASK 1 (13 Oct 2026): `log_error`
+    (optional, defaults to `log` for every pre-existing caller/test
+    that doesn't pass it - no behaviour change there) is a SEPARATE
+    callable for this function's own hard-TIMED-OUT line below - a
+    genuine, actionable failure, deliberately never redirected to info
+    severity the way a caller's routine `log` may have been (see
+    _as_routine_logger()'s own docstring). Every OTHER line in this
+    function (and everything run_fn itself logs through the plain
+    `log`/`_tracking_log`) is unaffected by this parameter.
+
+    Times run_fn(wrapped_log) and records the result to
     admin_metrics_store's job_status table for the Admin Dashboard's
     NIGHTLY JOBS table - WITHOUT changing any _run_* function's own
     body. Every _run_* job already wraps its own work in try/except and
@@ -2469,6 +2479,7 @@ def _record_job(job_name, log, run_fn, lock_name=None, cancel_event=None):
     see that function's own cancel_event docstring), rather than merely
     being ignored forever."""
     lock_name = lock_name or job_name
+    log_error = log_error or log
     fail_count = [0]
 
     def _tracking_log(msg):
@@ -2512,7 +2523,7 @@ def _record_job(job_name, log, run_fn, lock_name=None, cancel_event=None):
             elapsed = time.time() - t0
             result = "timeout"
             detail = f"exceeded {timeout_seconds}s hard timeout - abandoned, still running in background"
-            log(f"[scheduler] {job_name}: TIMED OUT after {elapsed:.0f}s (hard limit "
+            log_error(f"[scheduler] {job_name}: TIMED OUT after {elapsed:.0f}s (hard limit "
                 f"{timeout_seconds}s) - logging and moving on, not waiting any further; "
                 f"the stuck call is abandoned, never force-killed")
             # Audit fixes Commit 3: registers the still-alive worker so
@@ -2718,32 +2729,62 @@ def _top100_poll_status_for_heartbeat():
         return f"unknown ({e})"
 
 
-def _log_at_info(log, message):
-    """Director's overnight queue, TASK 5 (12 Oct 2026): server.py's own
-    FastAPI startup passes scheduler_engine.start_with_retry(log=log.
-    error) - deliberately, so a genuine start() failure is never missed
-    (see that function's own docstring) - but since `log` then runs
-    straight through to _loop() for its ENTIRE tick, not just startup
-    failures, a routine, expected message like "another process already
-    holds the lock" inherits error severity it was never about. Best-
-    effort fix, scoped to just the caller below: if `log` is a bound
-    logging.Logger method (log.__self__ exposes the Logger it belongs
-    to), call that SAME logger's own .info() instead - genuine INFO
-    severity on the exact logger/handlers server.py already configured,
-    not a new, disconnected logging setup. Falls back to calling
-    log(message) unchanged for any other callable (e.g. app.py's own
-    log=print, which was never the severity problem to begin with -
-    plain stdout already reads as info)."""
+def _as_routine_logger(log):
+    """Director's 2-task queue, TASK 1 (13 Oct 2026) - generalises the
+    overnight queue's own TASK 5 fix (originally scoped to one lock-
+    skip line) to the WHOLE scheduler tick: server.py's own FastAPI
+    startup passes scheduler_engine.start_with_retry(log=log.error) -
+    deliberately, so a genuine start() failure is never missed (see
+    that function's own docstring) - but since `log` then runs straight
+    through to _loop() for its ENTIRE tick, every ROUTINE line logged
+    through it (not just this one call site) inherited error severity
+    it was never about: "[scheduler] alive", "[top100] ... selected",
+    "[nightly_scan] ... saved", every "starting X"/"X skipped" line,
+    etc. - anything Railway shows red that was never actually a
+    failure.
+
+    Returns a NEW callable: when `log` is a bound logging.Logger
+    method (log.__self__ exposes the Logger it belongs to), returns
+    that SAME logger's own .info method directly - genuine INFO
+    severity on the exact logger/handlers server.py already
+    configured, never a new, disconnected logging setup. Returns `log`
+    itself, UNCHANGED, for any other callable (e.g. app.py's own
+    log=print, or a test's list.append - neither was ever the severity
+    problem to begin with, so neither is touched).
+
+    _loop() (see its own call site, right after its def line) is the
+    ONE place this is applied, to the WHOLE tick at once - see that
+    function's own comment for exactly which handful of call sites
+    inside it are deliberately EXCLUDED (kept at real error severity,
+    via a separate `_log_error` reference captured before this
+    reassignment) because they report a genuine subsystem failure,
+    not routine progress."""
     logger = getattr(log, "__self__", None)
     if logger is not None and hasattr(logger, "info"):
-        logger.info(message)
-    else:
-        log(message)
+        return logger.info
+    return log
+
+
+def _log_at_info(log, message):
+    """Thin wrapper over _as_routine_logger() above - kept for the
+    direct callers of _run_queued_rescan_tick() (its own existing
+    tests, and any future caller) that invoke it WITHOUT going through
+    _loop()'s own top-level wrapping first, so `log` there is still the
+    raw, possibly error-bound callable _as_routine_logger() needs to
+    see. A call reached via _loop() (whose own `log` is already
+    routine-routed by then) simply re-wraps an already-safe callable,
+    which is a harmless no-op - never a second, different redirect."""
+    _as_routine_logger(log)(message)
 
 
 def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
-                             abandoned_status, abandoned_info):
-    """Audit fixes Commit 3 (30 Sep 2026, owner-directed): one tick's
+                             abandoned_status, abandoned_info, log_error=None):
+    """`log_error` (Director's 2-task queue, TASK 1, 13 Oct 2026):
+    optional, defaults to `log` - forwarded into this function's own
+    _record_job() call below for its hard-TIMED-OUT line; this
+    function has no genuine-failure line of its own besides that one.
+
+    Audit fixes Commit 3 (30 Sep 2026, owner-directed): one tick's
     worth of "is there a queued Rescan-now request, and if so should
     THIS tick start it" - called from _loop() every tick, same as the
     due-scan/catch-up blocks it sits alongside.
@@ -2791,6 +2832,7 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
     directly callable/testable on its own, same reasoning as
     _run_top100_poll and every other _run_* helper in this module."""
     global _queued_rescan_lock_skip_logged
+    log_error = log_error or log
     rescan_request = _load_state().get("rescan_request")
     if not rescan_request:
         _queued_rescan_lock_skip_logged = False
@@ -2836,6 +2878,7 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
                 lg, cancel_event=cancel_event,
             ),
             cancel_event=cancel_event,
+            log_error=log_error,
         )
     except TimeoutError:
         # Same reasoning as the due-scan/catch-up blocks: the lock stays
@@ -2857,10 +2900,19 @@ def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
             _save_state(done_state)
 
 
-def _run_top100_job_if_due(state, now, cfg, log):
+def _run_top100_job_if_due(state, now, cfg, log, log_error=None):
     """Extracted from _loop()'s own inline block purely so it's
     directly testable (audit fix B2 / Fable findings T5+T6, 10 Oct
     2026) - no behaviour change from the extraction itself.
+
+    `log_error` (Director's 2-task queue, TASK 1, 13 Oct 2026):
+    optional, defaults to `log` for a caller that doesn't pass it -
+    used only for this function's own outer "Top 100 job failed" line
+    below, a genuine whole-job failure, deliberately kept separate
+    from whatever routine-vs-error redirect `log` itself may already
+    carry (see _as_routine_logger()'s own docstring). Forwarded into
+    this function's own _record_job() call too, for its hard-TIMED-OUT
+    line.
 
     T5: last_top100_date/top100_pending_for used to persist BEFORE
     the job ran - a crashed or hard-timed-out Top 100 job was marked
@@ -2879,6 +2931,7 @@ def _run_top100_job_if_due(state, now, cfg, log):
     by wall-clock `today` - so a job attempted or still running across
     a midnight boundary still counts against, and credits pool_
     presence for, the night it's actually working for."""
+    log_error = log_error or log
     if not _top100_trigger_due(state, now, cfg["top100_hour"]):
         return
     _t100_scan_day = state["top100_pending_for"]
@@ -2903,20 +2956,40 @@ def _run_top100_job_if_due(state, now, cfg, log):
         if _t100_via_timeout:
             log("[scheduler] Top 100 running after a timed-out nightly")
         log("[scheduler] starting Top 100 selection + AI-scoring batch")
-        _record_job("top100", log, lambda lg: _run_top100(lg, scan_day=_t100_scan_day))
+        _record_job("top100", log, lambda lg: _run_top100(lg, scan_day=_t100_scan_day),
+                    log_error=log_error)
         state = _load_state()
         state["last_top100_date"] = _t100_scan_day
         state["top100_pending_for"] = None
         state["top100_pending_reason"] = None
         _save_state(state)
     except Exception as e:
-        log(f"[scheduler] Top 100 job failed: {e}")
+        log_error(f"[scheduler] Top 100 job failed: {e}")
     finally:
         _release_job_lock("top100")
 
 
 def _loop(log):
     global _last_heartbeat, _top100_boot_poll_attempted, _last_heartbeat_log_at
+    # Director's 2-task queue, TASK 1 (13 Oct 2026): server.py's own
+    # FastAPI startup passes start_with_retry(log=log.error) straight
+    # through to this function, so every ROUTINE line below (and
+    # everything this tick calls into, all the way down through
+    # _run_nightly()/_run_top100()/submit_nightly_batch()/run_universe_
+    # scan() in nightly_scan.py/top100_engine.py - NOT edited by this
+    # task at all) used to inherit error severity it was never about.
+    # `_log_error` keeps the ORIGINAL, possibly error-bound callable
+    # for the handful of genuine, whole-job/whole-subsystem failure
+    # lines below that are deliberately EXCLUDED from the redirect
+    # (search this function for every `_log_error(` call, and see
+    # _run_top100_job_if_due()/_run_queued_rescan_tick()/_record_job()'s
+    # own `log_error` parameters for the three places that same split
+    # continues past this function's own boundary) - this function's
+    # own local `log` is then reassigned to the routine-safe version
+    # for literally everything else, including every line any
+    # downstream module logs through it.
+    _log_error = log
+    log = _as_routine_logger(log)
     # CRITICAL (25 Sep 2026, owner-reported): unconditional, first line
     # of the function, before any work at all - a container boot with
     # NO line like this in its logs means this thread never even
@@ -3015,6 +3088,7 @@ def _loop(log):
                                     lambda lg: _run_nightly(
                                         {**cfg, "universes": due}, lg, cancel_event=_due_cancel_event),
                                     cancel_event=_due_cancel_event,
+                                    log_error=_log_error,
                                 )
                                 # Top 100 trigger window fix (owner-
                                 # approved, 30 Sep 2026): `today` here IS
@@ -3175,6 +3249,7 @@ def _loop(log):
                                             {**cfg, "universes": eligible}, lg, run_night=ref_night,
                                             cancel_event=_catchup_cancel_event),
                                         cancel_event=_catchup_cancel_event,
+                                        log_error=_log_error,
                                     )
                                     # Top 100 trigger window fix (owner-
                                     # approved, 30 Sep 2026): credited to
@@ -3210,7 +3285,7 @@ def _loop(log):
                 # helper in this module.
                 _run_queued_rescan_tick(
                     cfg, log, _rl_cooldown_active, _rl_cooldown_until,
-                    _abandoned_status, _abandoned_info,
+                    _abandoned_status, _abandoned_info, log_error=_log_error,
                 )
 
                 # AI-readiness roadmap Phase 5: nightly (every day, unlike
@@ -3245,12 +3320,12 @@ def _loop(log):
                                 _save_state(state)
                                 log(f"[scheduler] starting portfolio watchdog "
                                     f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
-                                _record_job("watchdog", log, _run_watchdog)
+                                _record_job("watchdog", log, _run_watchdog, log_error=_log_error)
                                 state = _load_state()
                                 state["last_watchdog_date"] = today
                                 _save_state(state)
                             except Exception as e:
-                                log(f"[scheduler] portfolio watchdog failed: {e}")
+                                _log_error(f"[scheduler] portfolio watchdog failed: {e}")
                             finally:
                                 _release_job_lock("watchdog")
                         else:
@@ -3287,12 +3362,13 @@ def _loop(log):
                                 _save_state(state)
                                 log(f"[scheduler] starting ASX quote recorder "
                                     f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
-                                _record_job("quote_recorder_asx", log, _run_quote_recorder_asx)
+                                _record_job("quote_recorder_asx", log, _run_quote_recorder_asx,
+                                            log_error=_log_error)
                                 state = _load_state()
                                 state["last_quote_recorder_asx_date"] = today
                                 _save_state(state)
                             except Exception as e:
-                                log(f"[scheduler] ASX quote recorder failed: {e}")
+                                _log_error(f"[scheduler] ASX quote recorder failed: {e}")
                             finally:
                                 _release_job_lock("quote_recorder_asx")
                         else:
@@ -3312,12 +3388,13 @@ def _loop(log):
                                 _save_state(state)
                                 log(f"[scheduler] starting US quote recorder "
                                     f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
-                                _record_job("quote_recorder_us", log, _run_quote_recorder_us)
+                                _record_job("quote_recorder_us", log, _run_quote_recorder_us,
+                                            log_error=_log_error)
                                 state = _load_state()
                                 state["last_quote_recorder_us_date"] = today
                                 _save_state(state)
                             except Exception as e:
-                                log(f"[scheduler] US quote recorder failed: {e}")
+                                _log_error(f"[scheduler] US quote recorder failed: {e}")
                             finally:
                                 _release_job_lock("quote_recorder_us")
                         else:
@@ -3347,12 +3424,13 @@ def _loop(log):
                                 _save_state(state)
                                 log(f"[scheduler] starting UK quote recorder "
                                     f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
-                                _record_job("quote_recorder_uk", log, _run_quote_recorder_uk)
+                                _record_job("quote_recorder_uk", log, _run_quote_recorder_uk,
+                                            log_error=_log_error)
                                 state = _load_state()
                                 state["last_quote_recorder_uk_date"] = today
                                 _save_state(state)
                             except Exception as e:
-                                log(f"[scheduler] UK quote recorder failed: {e}")
+                                _log_error(f"[scheduler] UK quote recorder failed: {e}")
                             finally:
                                 _release_job_lock("quote_recorder_uk")
                         else:
@@ -3372,12 +3450,13 @@ def _loop(log):
                                 _save_state(state)
                                 log(f"[scheduler] starting TSX quote recorder "
                                     f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
-                                _record_job("quote_recorder_tsx", log, _run_quote_recorder_tsx)
+                                _record_job("quote_recorder_tsx", log, _run_quote_recorder_tsx,
+                                            log_error=_log_error)
                                 state = _load_state()
                                 state["last_quote_recorder_tsx_date"] = today
                                 _save_state(state)
                             except Exception as e:
-                                log(f"[scheduler] TSX quote recorder failed: {e}")
+                                _log_error(f"[scheduler] TSX quote recorder failed: {e}")
                             finally:
                                 _release_job_lock("quote_recorder_tsx")
                         else:
@@ -3402,12 +3481,13 @@ def _loop(log):
                                 _save_state(state)
                                 log(f"[scheduler] starting JP quote recorder "
                                     f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
-                                _record_job("quote_recorder_jp", log, _run_quote_recorder_jp)
+                                _record_job("quote_recorder_jp", log, _run_quote_recorder_jp,
+                                            log_error=_log_error)
                                 state = _load_state()
                                 state["last_quote_recorder_jp_date"] = today
                                 _save_state(state)
                             except Exception as e:
-                                log(f"[scheduler] JP quote recorder failed: {e}")
+                                _log_error(f"[scheduler] JP quote recorder failed: {e}")
                             finally:
                                 _release_job_lock("quote_recorder_jp")
                         else:
@@ -3447,12 +3527,12 @@ def _loop(log):
                                 _save_state(state)
                                 log(f"[scheduler] starting off-site DB backup "
                                     f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
-                                _record_job("backup", log, _run_backup)
+                                _record_job("backup", log, _run_backup, log_error=_log_error)
                                 state = _load_state()
                                 state["last_backup_date"] = today
                                 _save_state(state)
                             except Exception as e:
-                                log(f"[scheduler] db backup failed: {e}")
+                                _log_error(f"[scheduler] db backup failed: {e}")
                             finally:
                                 _release_job_lock("backup")
                         else:
@@ -3471,7 +3551,7 @@ def _loop(log):
                     if _acquire_job_lock("volume_check", log):
                         try:
                             log("[scheduler] starting volume usage check + retention prune")
-                            _record_job("volume_check", log, _run_volume_check)
+                            _record_job("volume_check", log, _run_volume_check, log_error=_log_error)
                         finally:
                             _release_job_lock("volume_check")
                     else:
@@ -3495,7 +3575,7 @@ def _loop(log):
                 # carries, extracted into its own function purely so
                 # it's directly testable without driving this while
                 # loop - no behaviour change from the extraction itself.
-                _run_top100_job_if_due(state, now, cfg, log)
+                _run_top100_job_if_due(state, now, cfg, log, log_error=_log_error)
 
                 # Top 100 Commit 2 (25 Sep 2026, owner-reported): hourly
                 # poll for a pending AI-scoring batch, independent of
@@ -3582,9 +3662,10 @@ def _loop(log):
                             state["last_top100_poll_attempt_at"] = time.time()
                             _save_state(state)
                             log("[scheduler] starting hourly Top 100 batch poll")
-                            _record_job("top100_poll", log, _run_top100_poll, lock_name="top100")
+                            _record_job("top100_poll", log, _run_top100_poll, lock_name="top100",
+                                        log_error=_log_error)
                         except Exception as e:
-                            log(f"[scheduler] hourly Top 100 batch poll failed: {e}")
+                            _log_error(f"[scheduler] hourly Top 100 batch poll failed: {e}")
                         finally:
                             _release_job_lock("top100")
                     else:
@@ -3604,7 +3685,8 @@ def _loop(log):
                     if _acquire_job_lock("earnings_refresh", log):
                         try:
                             log("[scheduler] starting earnings calendar refresh")
-                            _record_job("earnings_refresh", log, _run_earnings_refresh)
+                            _record_job("earnings_refresh", log, _run_earnings_refresh,
+                                        log_error=_log_error)
                         finally:
                             _release_job_lock("earnings_refresh")
                     else:
@@ -3623,7 +3705,7 @@ def _loop(log):
                     if _acquire_job_lock("digest", log):
                         try:
                             log(f"[scheduler] starting weekly digest (forced: {force})")
-                            _record_job("digest", log, _run_digest)
+                            _record_job("digest", log, _run_digest, log_error=_log_error)
                         finally:
                             _release_job_lock("digest")
                     else:
@@ -3638,7 +3720,7 @@ def _loop(log):
                     if _acquire_job_lock("digest", log):
                         try:
                             log("[scheduler] starting weekly digest")
-                            _record_job("digest", log, _run_digest)
+                            _record_job("digest", log, _run_digest, log_error=_log_error)
                         finally:
                             _release_job_lock("digest")
                     else:
@@ -3671,8 +3753,8 @@ def _loop(log):
             # reproduce it - str(e) alone was already useless for this
             # exact incident when the user asked "what was the tick-1
             # exception": this log line had never once fired.
-            log(f"[scheduler] loop error (tick continues): {e!r}\n"
-                f"{traceback.format_exc()}")
+            _log_error(f"[scheduler] loop error (tick continues): {e!r}\n"
+                       f"{traceback.format_exc()}")
         time.sleep(_CHECK_EVERY_SECONDS)
 
 

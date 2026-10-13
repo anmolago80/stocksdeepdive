@@ -156,6 +156,16 @@ print("[no_fire_while_scan_still_running] with no scan_day marked pending yet "
 # purely so it's directly testable, no behaviour change from the
 # extraction itself), whose own source in turn calls _top100_trigger_
 # due() instead of the old plain hour/date test.
+#
+# UPDATE (Director's 2-task queue, TASK 1, 13 Oct 2026 - scheduler log
+# levels): the _run_top100_job_if_due() call site now also passes
+# log_error=_log_error (a SEPARATE callable for that function's own
+# genuine "Top 100 job failed" line, deliberately excluded from this
+# same task's routine-to-info log redirect - see scheduler_engine.
+# _as_routine_logger()'s own docstring) - this assertion is updated to
+# match that literal call-site text, not a behaviour change to what
+# this check itself verifies (which _loop() delegates the top100
+# trigger decision to).
 # ======================================================================
 import inspect
 _loop_src = inspect.getsource(se._loop)
@@ -163,7 +173,7 @@ assert '_mark_top100_pending(today, datetime.now(timezone.utc), "completed")' in
 assert '_mark_top100_pending(today, datetime.now(timezone.utc), "timeout")' in _loop_src
 assert '_mark_top100_pending(ref_night, datetime.now(timezone.utc), "completed")' in _loop_src
 assert '_mark_top100_pending(ref_night, datetime.now(timezone.utc), "timeout")' in _loop_src
-assert "_run_top100_job_if_due(state, now, cfg, log)" in _loop_src
+assert "_run_top100_job_if_due(state, now, cfg, log, log_error=_log_error)" in _loop_src
 _run_top100_job_if_due_src = inspect.getsource(se._run_top100_job_if_due)
 assert "_top100_trigger_due(state, now, cfg[\"top100_hour\"])" in _run_top100_job_if_due_src
 print("[loop_wiring] _loop() calls _mark_top100_pending() from all 4 sites (due-scan "
