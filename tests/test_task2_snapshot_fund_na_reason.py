@@ -16,32 +16,24 @@ slot (the third tuple element, already used for Quality's "estimated"
 note, Discovery's "price/volume attention only" note, moat's erosion
 note) - no new UI concept, no new computation, nothing new stored.
 
-IMPORTANT SCOPE FINDING, proven by CHECK 3 below rather than assumed:
-a STLAP.PA-style row (Intrinsic Source == "pe-blend", Intrinsic Value
-None, not a fund) has NO existing reason anywhere in this codebase to
-reuse - auto_intrinsic_value_engine.get_intrinsic_value()'s own
-docstring states this explicitly: "Returns (0, False) when there's no
-positive EPS to value at all (the caller then shows N/A, which is not
-a default - it's an honest 'unknown')" - no reason string is computed
-or stored for this case, on the Scanner OR anywhere else (the
-Scanner's own na_reason wiring in app.py only ever covers Is Fund and
-price_unit_suspect - confirmed by reading that exact call site). So
-this task's own "reuse the existing na_reason logic; do not write a
-second one" rule means a pe-blend/no-value row is correctly LEFT
-UNCHANGED here (still a bare "-", with no hint) - not a bug, not
-something this commit should invent a new reason for.
-
-price_unit_suspect is NOT wired here either, for a separate reason:
-the Scanner's own version of that reason goes through
-app.py._na_reason_for_viewer() (an owner/non-owner plain-words
-translation, keyed on ai_gate.is_owner() - a Streamlit-session-only
-concept). snapshot_render.py runs in the FastAPI process, a separate
-process from the Streamlit app.py subprocess (see CLAUDE.md's own
-architecture notes) - importing app.py there to reuse that one
-function is not a safe or available option, and duplicating its
-translation table would be writing a second one, which this task
-explicitly forbids. Left unwired, flagged in the commit report for
-the Director's decision, not silently built around either way.
+UPDATE (Director's work queue, TASK 2, 13 Oct 2026 - "plain reason for
+'no value' rows on public pages"): at the time this file was first
+committed, a STLAP.PA-style row (Intrinsic Source == "pe-blend",
+Intrinsic Value None, not a fund) genuinely had no reason anywhere in
+this codebase to reuse, so CHECK 3 below correctly proved it was LEFT
+UNCHANGED (still a bare "-", no hint) rather than something that
+commit should invent a reason for. The Director's follow-up task asked
+for exactly that reason: snapshot_render._intrinsic_value_hint() now
+covers it (a new, named, plain sentence - "no positive per-share
+earnings...", reusing auto_intrinsic_value_engine.get_intrinsic_value()'s
+own documented mechanism, never a guessed number) and price_unit_
+suspect (reusing the EXISTING stored price_unit_suspect_reason string,
+now whitelisted through snapshot_store._PUBLIC_FIELD_MAP same as every
+other field). CHECK 3 below is UPDATED to prove the fix, same scenario,
+flipped expectation - not a new test. Full enumeration and the before/
+after for STLAP.PA/7201.T/6963.T-style fixtures live in the dedicated
+file this task added, tests/test_director_task2_pe_blend_no_value_
+reasons.py.
 
 ALL FIXTURES IN THIS FILE ARE SYNTHETIC - this sandbox has no outbound
 network access, same disclosure as every other fixture-based test in
@@ -99,11 +91,11 @@ check("the fund row's Intrinsic value itself still renders as '-' (value withhel
 
 
 # ======================================================================
-# CHECK 3: a STLAP.PA-style pe-blend/no-value row (NOT a fund) is
-# correctly LEFT UNCHANGED - no reason exists anywhere to reuse for
-# this case (proven, not assumed - see auto_intrinsic_value_engine.
-# get_intrinsic_value()'s own docstring), so this must still render a
-# bare "-" with no hint, exactly as before this commit.
+# CHECK 3: TASK 2 fix - a STLAP.PA-style pe-blend/no-value row (NOT a
+# fund) now shows a plain, named reason ("no positive per-share
+# earnings...") instead of a bare "-" with nothing next to it. Same
+# scenario this file originally proved was unchanged; the expectation
+# is flipped to prove the fix, not a new test.
 # ======================================================================
 _peblend_data = {
     "Company Name": "Example SA", "Price": 42.0, "Intrinsic Value": None,
@@ -112,11 +104,11 @@ _peblend_data = {
     "Is Fund": False, "Intrinsic Source": "pe-blend",
 }
 _peblend_html = snapshot_render.render_snapshot(_snap("STLAX.PA", _peblend_data), "https://stocksdeepdive.com")
-check("a pe-blend/no-value, non-fund row's Intrinsic value still renders '-' with no hint "
-      "div at all next to it - correctly unchanged, since no reason is computed or stored "
-      "for this case anywhere in the codebase (not invented here)",
-      '<div class="lbl">Intrinsic value</div><div class="val">-</div></div>' in
-      _peblend_html.replace("&#x27;", "'"))
+check("TASK 2 fix: a pe-blend/no-value, non-fund row's Intrinsic value cell now carries the "
+      "plain 'no positive per-share earnings' hint instead of a bare, unexplained '-'",
+      "no positive per-share earnings" in _peblend_html)
+check("the value itself is still '-' (withheld, unchanged) - only the explanation is new",
+      '<div class="val">-</div>' in _peblend_html.replace("&#x27;", "'"))
 
 
 # ======================================================================

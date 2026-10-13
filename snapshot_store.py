@@ -377,6 +377,15 @@ _PUBLIC_FIELD_MAP = {
     # nightly_scan.py, never re-derived here.
     "Is Fund": "is_fund",
     "Fund Reason": "fund_reason",
+    # Director's work queue, TASK 2 (13 Oct 2026): a pe-blend row whose
+    # Intrinsic Value is withheld because fundamentals_data._check_
+    # price_unit_guard() flagged the price (GBp/pence cross-check
+    # failed) also showed a bare "-" with no reason. Pure field-name
+    # exposure, same whitelisting convention as every other key above -
+    # both strings are computed once, by fundamentals_data.py/nightly_
+    # scan.py, never re-derived here.
+    "price_unit_suspect": "price_unit_suspect",
+    "price_unit_suspect_reason": "price_unit_suspect_reason",
 }
 
 

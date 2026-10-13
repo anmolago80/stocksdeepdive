@@ -106,6 +106,57 @@ def _not_trading_banner(ticker, lang="en"):
     return i18n.t("snapshot.not_trading_banner_no_date", lang)
 
 
+def _intrinsic_value_hint(pub, lang="en"):
+    """Director's work queue, TASK 2 (13 Oct 2026): "pe-blend rows with
+    no Intrinsic Value still render a bare '-' on /s/<ticker>". Every
+    condition under which a row can have intrinsic_value is None, in
+    the order resolver_engine.resolve_intrinsic_value()/nightly_scan.py
+    actually apply them:
+
+      1. is_fund - unchanged, pre-existing (overnight queue TASK 2,
+         12 Oct 2026): fund_reason is shown as-is.
+      2. price_unit_suspect - nightly_scan.py applies this override
+         AFTER resolve_intrinsic_value() has already run (`if _price_
+         unit_meta.get("price_unit_suspect"): intrinsic = 0`), so it
+         can zero out a row whose own "Intrinsic Source" still reads
+         "dcf" or "pe-blend" from whatever that call found before the
+         override - checked FIRST, regardless of intrinsic_source, to
+         match that real execution order. Reuses the EXISTING stored
+         price_unit_suspect_reason string (fundamentals_data._check_
+         price_unit_guard()'s own text) - never re-derived here.
+      3. intrinsic_source == "pe-blend" and still no value - the ONLY
+         way auto_intrinsic_value_engine.get_intrinsic_value() itself
+         returns (0, False) with a well-formed `info` dict (always the
+         case by this point in the pipeline) is "no positive trailing
+         EPS" (that function's own docstring: "Returns (0, False) when
+         there's no positive EPS to value at all"). Trailing EPS is
+         never persisted to the stored row, so this can't be broken
+         out into several differently-worded sentences from the row
+         alone - one honest, named sentence, not a vague catch-all.
+      4. Everything else (a genuine DCF success with intrinsic_value
+         still None for some other reason, or intrinsic_source ==
+         "none" - the separate fx_unavailable short-circuit, which
+         never reaches the pe-blend method at all) is OUT OF SCOPE for
+         this task ("pe-blend rows") and gets no hint, unchanged.
+
+    Display only - never changes intrinsic_value itself, never writes
+    anything; pure read of fields snapshot_store.public_view() already
+    exposes (is_fund/fund_reason pre-existing; price_unit_suspect/
+    price_unit_suspect_reason/intrinsic_source newly whitelisted this
+    same task)."""
+    if pub.get("is_fund"):
+        return pub.get("fund_reason")
+    if pub.get("intrinsic_value") is not None:
+        return None
+    if pub.get("price_unit_suspect"):
+        return pub.get("price_unit_suspect_reason")
+    if pub.get("intrinsic_source") == "pe-blend":
+        if lang == "es":
+            return "sin ganancias positivas por acción - el método de múltiplo P/E necesita una ganancia para valorar"
+        return "no positive per-share earnings - the P/E-blend method needs a profit to value"
+    return None
+
+
 def _stat_cells(pub, moat, lang="en"):
     """[(label, value, hint), ...] for the stat grid. `pub` is
     snapshot_store.public_view(data)'s output, not the raw stored row -
@@ -125,7 +176,7 @@ def _stat_cells(pub, moat, lang="en"):
         cells = [
             ("Precio", _fmt(pub.get("price"), suffix=""), None),
             ("Valor intrínseco", _fmt(pub.get("intrinsic_value")),
-             pub.get("fund_reason") if pub.get("is_fund") else None),
+             _intrinsic_value_hint(pub, lang="es")),
             ("Margen de seguridad",
              f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
             ("Crecimiento implícito (DCF inverso)",
@@ -151,7 +202,7 @@ def _stat_cells(pub, moat, lang="en"):
     cells = [
         ("Price", _fmt(pub.get("price"), suffix=""), None),
         ("Intrinsic value", _fmt(pub.get("intrinsic_value")),
-         pub.get("fund_reason") if pub.get("is_fund") else None),
+         _intrinsic_value_hint(pub, lang="en")),
         ("Margin of safety",
          f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
         ("Implied growth (reverse DCF)",
