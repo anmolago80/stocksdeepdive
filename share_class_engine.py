@@ -75,6 +75,16 @@ SHARE_CLASS_PAIRS = [
     frozenset({"NWS", "NWSA"}),            # News Corporation
     frozenset({"BRK-A", "BRK-B"}),         # Berkshire Hathaway
     frozenset({"HEI", "HEI-A"}),           # HEICO Corporation
+    # Director's work queue, TASK 3 (13 Oct 2026): Volkswagen AG - two
+    # listed XETRA classes, VOW.DE (ordinary, voting) and VOW3.DE
+    # (preferred, non-voting, far more liquid) - each ticker's own
+    # info["sharesOutstanding"] reflects only its OWN class, the exact
+    # same root cause as HEI/HEI-A above. Real-world symptom this
+    # closes: VOW3.DE's own stored Intrinsic Value sat far above its
+    # price (an undercounted shares denominator OVERSTATES per-share
+    # value, not understates it - see fcf_valuation_engine.
+    # dcf_intrinsic_value()'s own corrected docstring).
+    frozenset({"VOW.DE", "VOW3.DE"}),      # Volkswagen AG
 ]
 
 _KNOWN_MULTI_CLASS_TICKERS = frozenset(

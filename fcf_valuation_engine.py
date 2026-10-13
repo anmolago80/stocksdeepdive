@@ -2021,7 +2021,11 @@ def dcf_intrinsic_value(
     for a dual-class company, info["sharesOutstanding"] can reflect
     only ONE listed class (see share_class_engine.whole_company_
     shares()'s own docstring for the HEI/HEICO root cause this fixes) -
-    understating per-share value for the affected names. None (the
+    an undercounted shares denominator (fcf_per_share = fcf / shares)
+    OVERSTATING per-share value for the affected names (correction,
+    Director's work queue TASK 3, 13 Oct 2026 - this previously, and
+    wrongly, said "understating"; the real-world symptom is a value
+    far ABOVE price, e.g. VOW3.DE, not below it). None (the
     default) means "resolve it the normal way" - see below, NOT "skip
     the correction": A3b moved the actual resolution into share_class_
     engine.whole_company_shares(info, ticker=ticker), called right
