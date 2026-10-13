@@ -4686,52 +4686,129 @@ def _log_preview_universe_cost_estimate(log=print):
 
 
 def preview_candidates_by_country():
-    """PART 5 STEP 5.2: {country: [row, ...]} across every universe
-    named in preview_universes(), each universe's rows read DIRECTLY
-    via scan_store.load_scan_raw(universe, allow_private=True) - the
-    exact same direct read market_readiness_engine.universe_
+    """PART 5 STEP 5.2, reworked by the Director's work queue TASK 1
+    (13 Oct 2026, "make it a real would-be view"): {"by_country":
+    {country: [row, ...]}, "excluded": [row, ...]} across every
+    universe named in preview_universes(), each universe's rows read
+    DIRECTLY via scan_store.load_scan_raw(universe, allow_private=True)
+    - the exact same direct read market_readiness_engine.universe_
     readiness() already uses (PART 3) - never through _eligible_scan_
     payloads()/_build_best_by_ticker()/select_top100_pool(). This
     function is never called by, and never calls, any of those three
     - it cannot affect, and is never affected by, the real public
     pool's own selection.
 
-    Row shape matches market_readiness_engine.top20_by_value_score()'s
-    own per-row dict (ticker/name/currency/price/intrinsic_value/
-    mos_pct/growth_used/data_path/dividend_yield_pct/value_score),
-    plus "universe" (which saved file this candidate came from).
-    "market" grouping is peer_context.market_for(ticker) - inherits
-    that function's own known gap for the five European suffixes
-    (flagged, not fixed, in the PART 4 report): a DAX/CAC 40/AEX/SMI/
-    OMX Stockholm 30 ticker is grouped under "USA" here too until that
-    gap is fixed; this function does not work around it.
+    TASK 1a: every row is now filtered through _prescore_row_eligible()
+    - the SAME per-row eligibility the real pool/pre-scoring already
+    use (never a third, independently-derived copy) - before it can
+    reach "by_country" at all. A row that fails goes into "excluded"
+    instead, carrying "reason" (_prescore_exclusion_reason()'s own
+    plain label: "fund"/"no value"/"price unit suspect"/"stale"/"model
+    unreliable"/"fallback financials") and "universe" - never silently
+    dropped. "excluded" is NOT deduped across universes - the same
+    ticker excluded from two previewed universes for two different
+    reasons shows both, since each is a genuine, independent exclusion
+    the owner may want to see.
 
-    Sorted within each country by value_score descending, rows with
-    no stored score at all last (never dropped - same "never show
-    nothing" rule top20_by_value_score() itself already follows).
-    Returns {} if preview_universes() is empty - the one and only
-    condition under which this returns nothing, matching every other
-    switch's "unset = nothing" contract in this module."""
-    by_country = {}
-    for universe in preview_universes():
+    TASK 1b: ELIGIBLE rows ARE deduped by ticker across every previewed
+    universe - freshest payload generated_at wins, stored Long Score as
+    tiebreak (a missing Long Score never wins over a real one) - the
+    same "freshest row wins" philosophy _build_best_by_ticker() uses
+    for the real pool (just simpler: no DCF-unreliable/fallback-
+    financials exclusion needed here, TASK 1a's eligibility filter
+    above already removed those rows). Each surviving row carries
+    "universes" - every previewed universe this ticker was found
+    ELIGIBLE in, sorted, always including the winning one - so the
+    panel can show "also in: CAC 40" for a ticker previewed from more
+    than one universe.
+
+    TASK 1c: each eligible row also carries "composite" (top100_engine.
+    composite_score() off this ticker's own current-rubric score, via
+    top100_store.latest_scores_for_model() - None if never scored under
+    the current rubric) and "pool_rank_if_added" (_preview_rank_
+    against_pool(): the 1-based rank that composite would take against
+    the CURRENT pool's own rated scores, via _current_pool_rated_
+    composites() - None whenever composite is None, so the panel shows
+    WAITING rather than a fabricated rank for an unscored candidate,
+    exactly like a real unscored pool member).
+
+    TASK 1d: "market" grouping is peer_context.market_for(ticker) -
+    already recognises the five European suffixes (.DE/.PA/.AS/.SW/
+    .ST) as of commit 6ffa7de (Proposal 4 of the 8 Oct fix-proposal
+    round) - the "flagged, not fixed" gap this docstring used to
+    describe is CLOSED, not reopened here; no change needed in
+    peer_context.py for this task.
+
+    Row shape otherwise still matches market_readiness_engine.top20_
+    by_value_score()'s own per-row dict (ticker/name/currency/price/
+    intrinsic_value/mos_pct/growth_used/data_path/dividend_yield_pct/
+    value_score). Sorted within each country by value_score
+    descending, rows with no stored Long Score at all last (never
+    dropped - same "never show nothing" rule top20_by_value_score()
+    itself already follows). Returns {"by_country": {}, "excluded": []}
+    if preview_universes() is empty - the one and only condition under
+    which this returns nothing, matching every other switch's "unset =
+    nothing" contract in this module."""
+    universes = preview_universes()
+    if not universes:
+        return {"by_country": {}, "excluded": []}
+
+    financials_store_live = financials_classifier.is_financials_store_live()
+    excluded = []
+    # ticker -> (gen_dt, tie_break_score, row dict, winning universe, every
+    # eligible universe seen for this ticker so far)
+    best_by_ticker = {}
+    for universe in universes:
         payload = scan_store.load_scan_raw(universe, allow_private=True)
         rows = (payload or {}).get("rows") or []
+        gen_raw = (payload or {}).get("generated_at")
+        try:
+            gen_dt = datetime.fromisoformat(gen_raw) if gen_raw else None
+        except ValueError:
+            gen_dt = None
+        if gen_dt is None:
+            gen_dt = datetime.min.replace(tzinfo=timezone.utc)
         for r in rows:
             ticker = r.get("Ticker")
             if not ticker:
                 continue
-            market = peer_context.market_for(ticker)
-            by_country.setdefault(market, []).append({
-                "ticker": ticker, "name": r.get("Company Name"),
-                "currency": fcf_valuation_engine.trading_currency_for(ticker, info=None),
-                "price": r.get("Price"), "intrinsic_value": r.get("Intrinsic Value"),
-                "mos_pct": r.get("MOS %"), "growth_used": r.get("Growth Used"),
-                "data_path": r.get("FCF Source"), "dividend_yield_pct": r.get("Dividend Yield %"),
-                "value_score": r.get("Long Score"), "universe": universe,
-            })
+            if not _prescore_row_eligible(r, financials_store_live):
+                excluded.append({
+                    "ticker": ticker, "name": r.get("Company Name"),
+                    "universe": universe,
+                    "reason": _prescore_exclusion_reason(r, financials_store_live),
+                })
+                continue
+            long_score = r.get("Long Score")
+            tie_break = (long_score is not None, long_score if long_score is not None else 0)
+            prev = best_by_ticker.get(ticker)
+            if prev is None:
+                best_by_ticker[ticker] = (gen_dt, tie_break, r, universe, {universe})
+                continue
+            prev[4].add(universe)
+            if (gen_dt, tie_break) > (prev[0], prev[1]):
+                best_by_ticker[ticker] = (gen_dt, tie_break, r, universe, prev[4])
+
+    scores = top100_store.latest_scores_for_model(MODEL_TOP100, RUBRIC_VERSION)
+    rated_composites = _current_pool_rated_composites()
+    by_country = {}
+    for ticker, (gen_dt, tie_break, r, universe, seen_universes) in best_by_ticker.items():
+        market = peer_context.market_for(ticker)
+        composite = composite_score(scores.get(ticker))
+        by_country.setdefault(market, []).append({
+            "ticker": ticker, "name": r.get("Company Name"),
+            "currency": fcf_valuation_engine.trading_currency_for(ticker, info=None),
+            "price": r.get("Price"), "intrinsic_value": r.get("Intrinsic Value"),
+            "mos_pct": r.get("MOS %"), "growth_used": r.get("Growth Used"),
+            "data_path": r.get("FCF Source"), "dividend_yield_pct": r.get("Dividend Yield %"),
+            "value_score": r.get("Long Score"), "universe": universe,
+            "universes": sorted(seen_universes),
+            "composite": composite,
+            "pool_rank_if_added": _preview_rank_against_pool(composite, rated_composites),
+        })
     for market, rows in by_country.items():
         rows.sort(key=lambda r: (r["value_score"] is None, -(r["value_score"] or 0)))
-    return by_country
+    return {"by_country": by_country, "excluded": excluded}
 
 
 # -----------------------------------------------------------------
@@ -4884,6 +4961,76 @@ def _prescore_row_eligible(row, financials_store_live):
     if financials_store_live and _financials_pool_ineligible(row):
         return False
     return True
+
+
+def _prescore_exclusion_reason(row, financials_store_live):
+    """Director's work queue, TASK 1a (13 Oct 2026): a plain, named
+    reason a row is NOT eligible, for the Top 200 preview panel's own
+    collapsed "excluded" section - never a silent drop. The actual
+    eligible/excluded SPLIT always comes from calling _prescore_row_
+    eligible() itself (that function is never reimplemented here,
+    per the task's own "do not write a third copy" instruction) - this
+    is called only AFTER that check has already returned False, purely
+    to label WHICH of its own named checks fired, by calling those
+    SAME helpers again (_is_flagged_stale()/_is_dcf_unreliable()/
+    resolver_engine.dcf_looks_unreliable()/_financials_pool_ineligible())
+    in the same order. None if somehow none of them explain it (should
+    not happen if _prescore_row_eligible() already said False) - never
+    guesses a reason it can't support from the row's own stored data."""
+    if row.get("Is Fund"):
+        return "fund"
+    if row.get("Intrinsic Value") is None:
+        return "no value"
+    if row.get("price_unit_suspect"):
+        return "price unit suspect"
+    if _is_flagged_stale(row):
+        return "stale"
+    if _is_dcf_unreliable(row) or resolver_engine.dcf_looks_unreliable(
+        row.get("Intrinsic Value"), row.get("Price")
+    ):
+        return "model unreliable"
+    if financials_store_live and _financials_pool_ineligible(row):
+        return "fallback financials"
+    return None
+
+
+def _current_pool_rated_composites():
+    """Director's work queue, TASK 1c (13 Oct 2026): descending list of
+    composite_score() for every current_pool() ticker that has a
+    CURRENT-rubric score and isn't NOT RATED (composite is not None) -
+    the same "rated" definition top100_render._sort_and_gate_rated()
+    uses. Reads the exact same top100_store primitives top100_render.
+    _enriched_pool() does (current_pool()/latest_scores_for_model()) -
+    not reimplemented here, just assembled in this module instead of
+    that one, because top100_render.py already imports top100_engine.py
+    (this module importing it back would be circular). Deliberately
+    skips _enriched_pool()'s own previous-rubric fallback - a
+    presentation nicety for the real page, irrelevant here since an
+    unscored preview candidate already shows WAITING via _preview_
+    rank_against_pool() returning None, never a stale-rubric composite
+    standing in for a real current-rubric one."""
+    pool = top100_store.current_pool()
+    scores = top100_store.latest_scores_for_model(MODEL_TOP100, RUBRIC_VERSION)
+    composites = []
+    for row in pool:
+        composite = composite_score(scores.get(row["ticker"]))
+        if composite is not None:
+            composites.append(composite)
+    composites.sort(reverse=True)
+    return composites
+
+
+def _preview_rank_against_pool(composite, rated_composites):
+    """Director's work queue, TASK 1c: the 1-based rank `composite`
+    would take if inserted into `rated_composites` (already sorted
+    descending, from _current_pool_rated_composites()) - 1 plus however
+    many pool rows strictly outscore it. None in, None out - a
+    candidate with no stored composite never gets a fabricated rank;
+    the caller shows WAITING for that case instead, exactly like a real
+    unscored pool member."""
+    if composite is None:
+        return None
+    return 1 + sum(1 for c in rated_composites if c > composite)
 
 
 def _prescore_candidates(model, log=print):

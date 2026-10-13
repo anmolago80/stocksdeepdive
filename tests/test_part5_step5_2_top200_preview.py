@@ -12,9 +12,8 @@ purely-additive pieces that WERE built:
     PRIVATE universe with a saved scan, reusing market_readiness_
     engine.top200_dry_run()'s own numbers - fires regardless of the
     switch's own value (purely advisory).
-  - top100_engine.preview_candidates_by_country(): {} when unset;
-    grouped-by-country, sorted-by-value_score when set, read directly
-    via scan_store.load_scan_raw(allow_private=True) - never through
+  - top100_engine.preview_candidates_by_country(): read directly via
+    scan_store.load_scan_raw(allow_private=True) - never through
     _eligible_scan_payloads()/select_top100_pool().
   - app._render_top200_preview_panel(): unset -> caption only, no
     table; set -> per-country expander + coverage metrics.
@@ -25,6 +24,17 @@ purely-additive pieces that WERE built:
     mode.py's own f00c69f5... sha256 check) is re-run here too, to
     prove _request_params()/the batch-submission entrant path is
     byte-for-byte untouched by this commit.
+
+UPDATE (Director's work queue, TASK 1, 13 Oct 2026 - "make it a real
+would-be view"): preview_candidates_by_country() now returns
+{"by_country": {...}, "excluded": [...]} instead of a bare {country:
+[row,...]} dict - CHECK 6-9/11-14 below are updated for the new shape
+(reading _preview["by_country"]/["excluded"]). The eligibility filter,
+cross-universe dedupe, score/rank and already-fixed market grouping
+this task added are covered in their own dedicated file,
+tests/test_director_task1_top200_realistic_preview.py - this file
+keeps proving the ORIGINAL PART 5 scope (switch gating, byte-identical
+pool, fingerprint) still holds on top of that rework.
 
 Run: python3 tests/test_part5_step5_2_top200_preview.py
 """
@@ -131,14 +141,15 @@ check("fires with the switch UNSET too (purely advisory, not gated by TOP200_PRE
       len(_log_lines) >= 2)
 
 # ======================================================================
-# CHECK 6-9: preview_candidates_by_country() - {} unset; grouped +
-# sorted when set; direct scan_store read, never through the real
-# pool's own eligible-payloads path.
+# CHECK 6-9: preview_candidates_by_country() - {"by_country": {},
+# "excluded": []} unset; grouped + sorted when set; direct scan_store
+# read, never through the real pool's own eligible-payloads path.
 # ======================================================================
-check("preview_candidates_by_country() is {} when TOP200_PREVIEW_UNIVERSES is unset",
-      te.preview_candidates_by_country() == {})
+check('preview_candidates_by_country() is {"by_country": {}, "excluded": []} when '
+      "TOP200_PREVIEW_UNIVERSES is unset",
+      te.preview_candidates_by_country() == {"by_country": {}, "excluded": []})
 os.environ["TOP200_PREVIEW_UNIVERSES"] = "Nikkei 225, DAX"
-_by_country = te.preview_candidates_by_country()
+_by_country = te.preview_candidates_by_country()["by_country"]
 check('Japan group has 7203.T and 6758.T', {
     "Japan": sorted(r["ticker"] for r in _by_country.get("Japan", [])),
 }["Japan"] == ["6758.T", "7203.T"])

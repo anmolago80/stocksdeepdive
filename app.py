@@ -33123,11 +33123,20 @@ def _render_top200_preview_panel():
     the real Top 200 coverage panel (_render_top200_coverage_panel())
     is untouched.
 
-    One known, disclosed limitation (PART 4's own finding, not fixed
-    here): peer_context.market_for() doesn't yet recognise the five
-    European suffixes (.DE/.PA/.AS/.SW/.ST), so a DAX/CAC 40/AEX/SMI/
-    OMX Stockholm 30 candidate shows under "USA" below, not "Europe" -
-    see the PART 5 report.
+    Director's work queue, TASK 1 (13 Oct 2026, "make it a real
+    would-be view") - see top100_engine.preview_candidates_by_country()'s
+    own docstring for the full rework: every row is now eligibility-
+    filtered (TASK 1a - ineligible rows render in a collapsed "Excluded"
+    section below with a plain reason, never silently dropped), deduped
+    by ticker across every previewed universe with the winning row's
+    "universes" field showing every universe it was found eligible in
+    (TASK 1b), and each eligible row carries its own stored Claude
+    Research Score ("composite") plus the rank that score would take
+    against the CURRENT pool's own rated scores ("pool_rank_if_added")
+    - None/None shows as WAITING, exactly like a real unscored pool
+    member (TASK 1c). The PART 4 European-suffix gap this docstring
+    used to describe (TASK 1d) is already closed as of commit 6ffa7de;
+    nothing to fix here.
 
     No gate of its own beyond the TOP200_PREVIEW_UNIVERSES check above
     - called only from inside page_admin_dashboard(), after that
@@ -33148,8 +33157,10 @@ def _render_top200_preview_panel():
         "no stored score shows as WAITING, exactly like a real pool member with no score yet - "
         "this panel never scores anything itself."
     )
-    _by_country = top100_engine.preview_candidates_by_country()
-    if not _by_country:
+    _preview = top100_engine.preview_candidates_by_country()
+    _by_country = _preview["by_country"]
+    _excluded = _preview["excluded"]
+    if not _by_country and not _excluded:
         st.info("None of the named universes has a saved scan yet.")
         return
 
@@ -33192,11 +33203,36 @@ def _render_top200_preview_panel():
             st.caption(
                 "Unsliced - no guaranteed count has been set for this market yet (the Director's "
                 "own call, same as TOP20_AU_TARGET was for Australia); every stored candidate is "
-                "shown, ranked by its own stored Long Score."
+                "shown, ranked by its own stored Long Score. 'Research score'/'Rank vs pool' "
+                "come from this ticker's own stored Claude score, if any - WAITING means not yet "
+                "scored, never a guess."
             )
-            st.dataframe(pd.DataFrame(_rows[:20]), hide_index=True, width="stretch")
+            _display_rows = []
+            for _r in _rows[:20]:
+                _display_rows.append({
+                    **_r,
+                    "also in": ", ".join(u for u in _r["universes"] if u != _r["universe"]) or "-",
+                    "research score": (
+                        f"{_r['composite']:.1f}" if _r["composite"] is not None else "WAITING"
+                    ),
+                    "rank vs pool": (
+                        f"#{_r['pool_rank_if_added']}" if _r["pool_rank_if_added"] is not None else "WAITING"
+                    ),
+                })
+            st.dataframe(pd.DataFrame(_display_rows), hide_index=True, width="stretch")
             if len(_rows) > 20:
                 st.caption(f"{len(_rows) - 20} more not shown above.")
+
+    if _excluded:
+        with st.expander(f"Excluded ({len(_excluded)} row(s), not eligible for the Top 200)",
+                          key="admin_top200_preview_excluded_expander"):
+            st.caption(
+                "Same per-row eligibility the real Top 200 pool and pre-scoring already use "
+                "(top100_engine._prescore_row_eligible()) - never silently dropped, each row's "
+                "own reason is shown below. A ticker can appear once per universe it was "
+                "excluded from."
+            )
+            st.dataframe(pd.DataFrame(_excluded), hide_index=True, width="stretch")
 
 
 def _render_portfolio_health_news_v2_comparison_panel():
