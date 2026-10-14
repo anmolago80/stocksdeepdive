@@ -172,16 +172,22 @@ check("TASK 2b: would_enter_counts['Japan'] == 1 (JPNHI.T clears the cutoff)",
       _preview["would_enter_counts"]["Japan"] == 1)
 
 # ======================================================================
-# CHECK: "would displace" - Canada alone (N=1) vs every previewed
-# country (N=2) - the CURRENT pool's own bottom N members, read back,
-# never resimulated.
+# CHECK: "would displace" - Canada alone (N=1), Japan alone (N=1, since
+# TASK 3's own generalization below adds one scenario per ACTUAL
+# previewed country, keyed by that country's own name - not just
+# "canada" hardcoded) vs every previewed country (N=2) - the CURRENT
+# pool's own bottom N members, read back, never resimulated.
 # ======================================================================
-_displace_canada = _preview["would_displace"]["canada"]
+_displace_canada = _preview["would_displace"]["Canada"]
+_displace_japan = _preview["would_displace"]["Japan"]
 _displace_all = _preview["would_displace"]["all"]
 check("TASK 2c: Canada alone would displace exactly 1 pool member (POOL3, the lowest)",
       [d["ticker"] for d in _displace_canada] == ["POOL3"])
 check("TASK 2c: Canada alone's displaced row carries the pool's own stored value_score",
       _displace_canada[0]["value_score"] == _cutoff)
+check("TASK 2c: Japan alone would also displace exactly 1 pool member (POOL3, the lowest) "
+      "(TASK 3's own per-country generalization, keyed by 'Japan', not hardcoded)",
+      [d["ticker"] for d in _displace_japan] == ["POOL3"])
 check("TASK 2c: every previewed country together (Canada + Japan, N=2) would displace "
       "the pool's own 2 lowest members (POOL3 then POOL2)",
       [d["ticker"] for d in _displace_all] == ["POOL2", "POOL3"])
@@ -190,6 +196,9 @@ check("TASK 2c: _pool_lowest_members() independently reproduces the same 2-membe
 check("TASK 2c: a displaced row's 'country' comes from peer_context.market_for(), "
       "not a hand-picked label",
       _displace_canada[0]["country"] == peer_context.market_for("POOL3"))
+check("TASK 3: would_displace has EXACTLY one scenario key per actual previewed country "
+      "(Canada, Japan) plus the fixed 'all' catch-all - no hand-picked name list",
+      set(_preview["would_displace"].keys()) == {"Canada", "Japan", "all"})
 
 os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 

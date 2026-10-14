@@ -33148,10 +33148,12 @@ def _render_top200_preview_panel():
     keys: the current pool's own cutoff (its 200th member's Value
     Score) once at the top; a "would enter: N" count and an "enters
     pool: yes/no"/"WAITING" column per country; and a "Would displace"
-    expander showing the pool's own lowest members that adding Canada
-    alone, or every previewed country, would push out. All three are
-    read-only reads of already-selected data - no second formula, no
-    write.
+    expander showing the pool's own lowest members that adding each
+    previewed country ALONE, or every previewed country together,
+    would push out (overnight queue TASK 3, 14 Oct 2026: generalized
+    from Canada-only to one scenario per ACTUAL previewed country).
+    All three are read-only reads of already-selected data - no second
+    formula, no write.
 
     No gate of its own beyond the TOP200_PREVIEW_UNIVERSES check above
     - called only from inside page_admin_dashboard(), after that
@@ -33269,22 +33271,29 @@ def _render_top200_preview_panel():
             st.dataframe(pd.DataFrame(_excluded), hide_index=True, width="stretch")
 
     _would_displace = _preview.get("would_displace") or {}
-    _displace_canada = _would_displace.get("canada") or []
-    _displace_all = _would_displace.get("all") or []
-    if _displace_canada or _displace_all:
+    if any(_would_displace.values()):
         with st.expander("Would displace (current pool's own lowest members)",
                           key="admin_top200_preview_would_displace_expander"):
             st.caption(
                 "The current pool's own lowest-scoring members (by their already-stored, "
                 "recomputed Value Score) that would be pushed out if the 'would enter' "
                 "candidates above were actually added - read back from the pool exactly as "
-                "selected, never resimulated."
+                "selected, never resimulated. One scenario per previewed country, so each "
+                "country's own slot cost can be judged on its own, plus every previewed "
+                "country together."
             )
-            st.markdown(f"**If Canada alone were added** ({len(_displace_canada)} displaced)")
-            if _displace_canada:
-                st.dataframe(pd.DataFrame(_displace_canada), hide_index=True, width="stretch")
-            else:
-                st.caption("No Canadian candidate here clears the current pool cutoff.")
+            # Overnight queue TASK 3 (14 Oct 2026, "per-country displacement"):
+            # one scenario per ACTUAL previewed country (sorted, so the
+            # render order is stable), "all" shown last.
+            _displace_countries = sorted(c for c in _would_displace if c != "all")
+            for _country in _displace_countries:
+                _displace_rows = _would_displace.get(_country) or []
+                st.markdown(f"**If {_country} alone were added** ({len(_displace_rows)} displaced)")
+                if _displace_rows:
+                    st.dataframe(pd.DataFrame(_displace_rows), hide_index=True, width="stretch")
+                else:
+                    st.caption(f"No {_country} candidate here clears the current pool cutoff.")
+            _displace_all = _would_displace.get("all") or []
             st.markdown(f"**If every previewed country were added** ({len(_displace_all)} displaced)")
             if _displace_all:
                 st.dataframe(pd.DataFrame(_displace_all), hide_index=True, width="stretch")

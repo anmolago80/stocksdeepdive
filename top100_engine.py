@@ -4753,11 +4753,15 @@ def preview_candidates_by_country():
     "pool_cutoff" (pool_value_score_cutoff(): the current pool's own
     200th member's Value Score, None if no pool yet), "would_enter_
     counts" ({country: N} - how many of that country's eligible rows
-    have "enters_pool" True), and "would_displace" ({"canada": [...],
-    "all": [...]} - _pool_lowest_members() for the Canada-alone count
-    and the all-previewed-countries count, each entry {"ticker",
-    "country", "value_score"} for the CURRENT pool's own bottom N
-    members that those new entrants would push out).
+    have "enters_pool" True), and "would_displace" ({country: [...],
+    ..., "all": [...]} - overnight queue TASK 3, 14 Oct 2026: ONE
+    scenario per ACTUAL previewed country, keyed by that country's own
+    name (never a hand-maintained list - any previewed country is
+    covered automatically), plus the fixed "all" catch-all - each
+    _pool_lowest_members() for that scenario's own would-enter count,
+    each entry {"ticker", "country", "value_score"} for the CURRENT
+    pool's own bottom N members that scenario's new entrants would
+    push out).
 
     Row shape otherwise still matches market_readiness_engine.top20_
     by_value_score()'s own per-row dict (ticker/name/currency/price/
@@ -4841,21 +4845,31 @@ def preview_candidates_by_country():
     # (None never counts as entering - no live pool, nothing to
     # compare against); "would displace" is the CURRENT pool's own
     # bottom N members (_pool_lowest_members(), N's own count, never a
-    # second formula) for two scenarios - Canada alone, and every
-    # previewed country together.
+    # second formula).
+    #
+    # Overnight queue TASK 3 (14 Oct 2026, "per-country displacement"):
+    # generalized from the original two hand-picked scenarios (Canada
+    # alone, every previewed country together) to ONE scenario per
+    # ACTUAL previewed country, keyed by that country's own name - the
+    # same key would_enter_counts already uses, never a hand-maintained
+    # list of country names (so a newly previewed country - UK, France,
+    # Germany, Netherlands, Sweden, Switzerland, or any future one - is
+    # covered automatically, with no second place to remember to add
+    # it). "all" stays as the fixed catch-all scenario alongside every
+    # individual country's own.
     would_enter_counts = {
         market: sum(1 for row in rows if row["enters_pool"]) for market, rows in by_country.items()
     }
-    canada_would_enter = would_enter_counts.get("Canada", 0)
     all_would_enter = sum(would_enter_counts.values())
+    would_displace = {
+        market: _pool_lowest_members(count) for market, count in would_enter_counts.items()
+    }
+    would_displace["all"] = _pool_lowest_members(all_would_enter)
     return {
         "by_country": by_country, "excluded": excluded,
         "pool_cutoff": cutoff,
         "would_enter_counts": would_enter_counts,
-        "would_displace": {
-            "canada": _pool_lowest_members(canada_would_enter),
-            "all": _pool_lowest_members(all_would_enter),
-        },
+        "would_displace": would_displace,
     }
 
 
