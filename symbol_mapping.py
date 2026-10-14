@@ -68,6 +68,31 @@ _EUROPEAN_EXCHANGE_SUFFIX = {
     "SIX": ".SW", "NASDAQ_STOCKHOLM": ".ST",
 }
 
+# Director's overnight queue TASK 1 (14 Oct 2026). Root cause (verified
+# in production logs, Rescan 2026-10-14 04:17-04:18 UTC): a Wikipedia
+# constituent table sometimes lists a company by the raw Yahoo symbol
+# of its OWN primary listing on a DIFFERENT exchange, not a bare code
+# for the universe's own exchange - e.g. CAC 40's table lists
+# ArcelorMittal (whose real Yahoo symbol is "MT.AS", Euronext
+# Amsterdam) and DAX's table lists Airbus (whose real Yahoo symbol is
+# "AIR.PA", Euronext Paris). The OLD per-exchange idempotency check
+# only recognised the CURRENT exchange's own suffix, so it treated the
+# foreign suffix as an inner class-share dot, hyphenated it, and
+# appended the current exchange's suffix on top - "MT.AS" under
+# EURONEXT_PARIS became "MT-AS.PA" (not a real Yahoo symbol); "AIR.PA"
+# under XETRA became "AIR-PA.DE" - exactly the two no-Yahoo-price
+# symbols the rescan logged.
+#
+# General fix: every suffix this module ever appends, in one set.
+# `raw` already ending in ANY of them (not just the CURRENT exchange's
+# own) means it is already a complete, valid Yahoo symbol for whatever
+# market it actually trades on - returned unchanged, regardless of
+# which exchange's universe it was scraped from. This replaces (never
+# duplicates) the old per-branch "already ends with MY suffix" checks
+# below, since checking against every suffix already covers the
+# current exchange's own case too.
+_ALL_YAHOO_SUFFIXES = (".L", ".TO", ".T", ".DE", ".PA", ".AS", ".SW", ".ST")
+
 
 def to_yahoo_symbol(raw, exchange, overrides=None):
     """Pure function, no network: `raw` (a symbol as scraped off a
@@ -81,12 +106,18 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
          against `raw` exactly as given (after only a leading/trailing-
          whitespace strip). A hit here is returned verbatim, before
          any transform or idempotency check runs.
-      2. Idempotent: if `raw` already ends with the exchange's own
-         Yahoo suffix (".L" for LSE, ".TO" for TSX, ".T" for TSE, ".DE"/
-         ".PA"/".AS"/".SW"/".ST" for the five PART 6 European exchanges
-         - case-insensitive check, original casing returned), it's
-         returned UNCHANGED - calling this on an already-Yahoo-shaped
-         symbol is always a safe no-op, never a double suffix.
+      2. Idempotent, and NOT limited to the current `exchange`
+         (Director's overnight queue TASK 1, 14 Oct 2026): if `raw`
+         already ends in ANY of this module's own Yahoo suffixes -
+         _ALL_YAHOO_SUFFIXES (".L"/".TO"/".T"/".DE"/".PA"/".AS"/".SW"/
+         ".ST") - case-insensitive check, original casing returned -
+         it's returned UNCHANGED. A symbol scraped off ONE universe's
+         Wikipedia table sometimes already carries the complete, valid
+         Yahoo symbol of its real listing on a DIFFERENT exchange (e.g.
+         CAC 40's table listing ArcelorMittal as "MT.AS", its actual
+         Euronext Amsterdam symbol) - checking every suffix, not just
+         the current exchange's own, means that case is recognised and
+         left alone instead of having a second suffix stacked onto it.
       3. LSE: strip a trailing dot, hyphenate any remaining inner dot,
          append ".L" - see _lse_stem()'s own docstring.
       4. TSX: hyphenate every dot, append ".TO" - see _tsx_stem()'s own
@@ -114,28 +145,29 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
     to_yahoo_symbol("MC", "EURONEXT_PARIS") == "MC.PA";
     to_yahoo_symbol("ASML", "EURONEXT_AMSTERDAM") == "ASML.AS";
     to_yahoo_symbol("NESN", "SIX") == "NESN.SW";
-    to_yahoo_symbol("VOLV.B", "NASDAQ_STOCKHOLM") == "VOLV-B.ST"."""
+    to_yahoo_symbol("VOLV.B", "NASDAQ_STOCKHOLM") == "VOLV-B.ST";
+    to_yahoo_symbol("MT.AS", "EURONEXT_PARIS") == "MT.AS" (ArcelorMittal's
+    real symbol is a different exchange's - returned unchanged, never
+    "MT-AS.PA"); to_yahoo_symbol("AIR.PA", "XETRA") == "AIR.PA" (Airbus's
+    real symbol is a different exchange's - returned unchanged, never
+    "AIR-PA.DE")."""
     overrides = overrides if overrides is not None else SYMBOL_OVERRIDES
     raw = (raw or "").strip()
     if raw in overrides:
         return overrides[raw]
 
+    upper_raw = raw.upper()
+    if any(upper_raw.endswith(suffix) for suffix in _ALL_YAHOO_SUFFIXES):
+        return raw
+
     if exchange == "LSE":
-        if raw.upper().endswith(".L"):
-            return raw
         return f"{_lse_stem(raw)}.L"
     if exchange == "TSX":
-        if raw.upper().endswith(".TO"):
-            return raw
         return f"{_tsx_stem(raw)}.TO"
     if exchange == "TSE":
-        if raw.upper().endswith(".T"):
-            return raw
         return f"{raw}.T"
     if exchange in _EUROPEAN_EXCHANGE_SUFFIX:
         suffix = _EUROPEAN_EXCHANGE_SUFFIX[exchange]
-        if raw.upper().endswith(suffix):
-            return raw
         return f"{_lse_stem(raw)}{suffix}"
 
     raise ValueError(
