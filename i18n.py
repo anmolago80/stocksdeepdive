@@ -4082,6 +4082,35 @@ EN = {
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · USA",
     "top100.tab_full": "Full 200",
+    # Director's TASK 7, final version (14 Oct 2026): one "Top 20" tab
+    # per new market in the pool, after "Top 20 · USA" - see top100_
+    # render._new_market_tab_plan()'s own docstring for which markets
+    # get a tab. "country_europe" is the fixed label for the one
+    # grouped continental-Europe tab (top100_render._EUROPE_COUNTRIES);
+    # the others are real peer_context.market_for() return values.
+    "top100.tab_market": "Top 20 · {country}",
+    "top100.country_canada": "Canada",
+    "top100.country_united_kingdom": "United Kingdom",
+    "top100.country_japan": "Japan",
+    "top100.country_europe": "Europe",
+    # The individual continental-European country names (rule 2a's
+    # per-row country badge on the ONE grouped "Top 20 · Europe" tab
+    # names the row's own country, e.g. "France" - never the group
+    # label "Europe" itself).
+    "top100.country_france": "France",
+    "top100.country_germany": "Germany",
+    "top100.country_netherlands": "Netherlands",
+    "top100.country_switzerland": "Switzerland",
+    "top100.country_sweden": "Sweden",
+    # Rule 6's plain count line, demonym form when known (Canada/
+    # United Kingdom/Japan/Europe today); market_count_line_generic is
+    # the fallback for any future market without one yet on file.
+    "top100.demonym_canada": "Canadian",
+    "top100.demonym_united_kingdom": "British",
+    "top100.demonym_japan": "Japanese",
+    "top100.demonym_europe": "European",
+    "top100.market_count_line": "{count} {demonym} companies are in this week's Top 200.",
+    "top100.market_count_line_generic": "{count} companies from {country} are in this week's Top 200.",
     "top100.empty_tab": "Nothing to show here yet.",
     "top100.col_value_score": "Value Score",
     "top100.col_mos": "MOS",
@@ -7825,6 +7854,22 @@ ES = {
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · EE. UU.",
     "top100.tab_full": "Las 200",
+    "top100.tab_market": "Top 20 · {country}",
+    "top100.country_canada": "Canadá",
+    "top100.country_united_kingdom": "Reino Unido",
+    "top100.country_japan": "Japón",
+    "top100.country_europe": "Europa",
+    "top100.country_france": "Francia",
+    "top100.country_germany": "Alemania",
+    "top100.country_netherlands": "Países Bajos",
+    "top100.country_switzerland": "Suiza",
+    "top100.country_sweden": "Suecia",
+    "top100.demonym_canada": "canadienses",
+    "top100.demonym_united_kingdom": "británicas",
+    "top100.demonym_japan": "japonesas",
+    "top100.demonym_europe": "europeas",
+    "top100.market_count_line": "{count} empresas {demonym} están en el Top 200 de esta semana.",
+    "top100.market_count_line_generic": "{count} empresas de {country} están en el Top 200 de esta semana.",
     "top100.empty_tab": "Aún no hay nada que mostrar aquí.",
     "top100.col_value_score": "Value Score",
     "top100.col_mos": "MOS",

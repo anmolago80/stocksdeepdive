@@ -469,6 +469,142 @@ def _origin_extension_badge_html(lang):
     )
 
 
+# -----------------------------------------------------------------
+# Director's TASK 7, final version (14 Oct 2026): one "Top 20" tab
+# per new market in the public Top 200, built from the pool only - no
+# extension, no extra scoring, no change to selection. Currency can't
+# be reused for these (France/Germany/Netherlands all trade in EUR),
+# so every new tab groups by peer_context.market_for(ticker) - the
+# SAME function the Top 200 preview already uses, never a second,
+# independently-derived country lookup.
+# -----------------------------------------------------------------
+
+# Continental Europe gets ONE tab ("Top 20 · Europe"), never a
+# separate tab per country - defined here as the single place this
+# grouping lives, so adding a future continental-European country
+# market_for() starts returning is a one-line edit. United Kingdom is
+# deliberately NOT in this set (it gets its own tab, same as Canada/
+# Japan) - geographically in Europe, but the Director's own instruction
+# names it alongside Canada/Japan as "every other market", not folded
+# into the continental grouping.
+_EUROPE_COUNTRIES = frozenset({"France", "Germany", "Netherlands", "Switzerland", "Sweden"})
+
+# USA and Australia already have their own dedicated tabs (kept
+# exactly as they are, per the task's own rule 1) - never duplicated
+# here even though peer_context.market_for() also returns these two.
+_EXISTING_TAB_MARKETS = frozenset({"USA", "Australia"})
+
+
+def _market_i18n_slug(market):
+    """"United Kingdom" -> "united_kingdom" - the i18n key suffix for
+    this market's own country-name/demonym lookups below. "Europe"
+    (the synthetic group label, never a real market_for() return
+    value) slugs the same way, to "europe"."""
+    return market.lower().replace(" ", "_")
+
+
+def _new_market_tab_plan(enriched):
+    """Rules 2-4: one (group_key, rows) pair per market actually
+    present in the CURRENT pool, other than USA/Australia (their own
+    tabs already exist) - continental Europe (_EUROPE_COUNTRIES)
+    collapsed into one "Europe" bucket, every other market (Canada,
+    United Kingdom, Japan, or any future non-European market) its own
+    bucket, keyed by peer_context.market_for()'s own return value.
+    Ordered by member count descending, ties broken by name (rule 4).
+    A market with zero pool members never creates a bucket at all
+    (rule 3's "gets no tab" falls out for free - nothing to iterate
+    over). No market name is ever hand-listed here beyond the one
+    _EUROPE_COUNTRIES/_EXISTING_TAB_MARKETS constants above - a brand
+    new country market_for() starts recognising is picked up
+    automatically, same promise top100_engine.is_top200_excluded()'s
+    own derivation makes."""
+    buckets = {}
+    for row in enriched:
+        market = peer_context.market_for(row["ticker"])
+        if market in _EXISTING_TAB_MARKETS:
+            continue
+        key = "Europe" if market in _EUROPE_COUNTRIES else market
+        buckets.setdefault(key, []).append(row)
+    return sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+
+
+def _market_display_name(market, lang):
+    """This market's own translated country/group name - "France",
+    "Europe", etc. - or, for a market not yet on file in i18n.py (a
+    brand new country market_for() has just started returning), the
+    raw market_for() string itself, verbatim - never the untranslated
+    i18n key string i18n.t()'s own generic "missing -> the key itself"
+    fallback would otherwise leak onto the page (see that function's
+    own docstring)."""
+    key = f"top100.country_{_market_i18n_slug(market)}"
+    return i18n.t(key, lang) if key in i18n.EN else market
+
+
+def _market_tab_label(group_key, lang):
+    return _t("tab_market", lang, country=_market_display_name(group_key, lang))
+
+
+def _market_tab_country_badge_html(market, lang):
+    """Rule 2a's "each Europe card shows its country" - the same
+    compact chip style _render_row()'s own "also trades as" chip
+    already uses (never a new colour family), labelled with this
+    row's own market_for() country name. Only ever passed by the
+    Europe tab - a single-country tab's own label already says which
+    country every row is in, so no other tab needs a per-row badge."""
+    label = html.escape(_market_display_name(market, lang))
+    return (
+        "<span style='display:inline-block;background:#0e1930;border:1px solid #2a3f63;"
+        "color:#7f95b3;border-radius:6px;padding:1px 9px;font-size:10.5px;'>"
+        f"{label}</span>"
+    )
+
+
+def _market_count_line(group_key, count, lang):
+    """Rule 6's plain count line, shown when this market's own member
+    count is under 20 - e.g. "12 Canadian companies are in this week's
+    Top 200." / "N European companies are in this week's Top 200." A
+    demonym ("top100.demonym_<slug>") is used when this group_key has
+    one on file; a brand new market without one yet falls back to the
+    plain "companies from <country>" phrasing (top100.market_count_
+    line_generic) rather than a raw, untranslated i18n key leaking
+    onto the page."""
+    demonym_key = f"top100.demonym_{_market_i18n_slug(group_key)}"
+    if demonym_key in i18n.EN:
+        return _t("market_count_line", lang, count=count, demonym=i18n.t(demonym_key, lang))
+    return _t("market_count_line_generic", lang, count=count,
+               country=_market_display_name(group_key, lang))
+
+
+def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows, group_key, filters=None):
+    """Rule 5: those pool members, top 20 by the active sort and active
+    filters, same card rendering as the USA tab (_render_top20_tab()) -
+    rated-gated, no bottom shelf, no extension - `market_rows` is this
+    market's own pre-grouped slice of the pool (_new_market_tab_plan()),
+    filtered by country instead of currency. Rule 6: when this market's
+    own member count (rated, before the 20-row cap) is under 20, the
+    plain count line (_market_count_line()) is shown in ADDITION to
+    every member present, never instead of them."""
+    rows = _sort_and_gate_rated(market_rows, sort_mode)
+    total = len(rows)
+    rows = rows[:20]
+    if not rows:
+        st.caption(_t("empty_tab", lang))
+        return
+    ranked = _ranked_rows_after_filters(rows, filters)
+    if not ranked:
+        st.caption(_t("filter_no_matches", lang))
+    else:
+        for i, row in ranked:
+            country_badge = (
+                _market_tab_country_badge_html(peer_context.market_for(row["ticker"]), lang)
+                if group_key == "Europe" else None
+            )
+            _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
+                        country_badge_html=country_badge)
+    if total < 20:
+        st.caption(_market_count_line(group_key, total, lang))
+
+
 def _tradability_spread_pct(ticker):
     """None if there's no recorded snapshot for `ticker`, or its
     latest recorded spread% otherwise - display-flag only (the task's
@@ -708,7 +844,8 @@ def _row_edge_accent_style(score_row):
     return ""
 
 
-def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=None):
+def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=None,
+                 country_badge_html=None):
     """One RATED company row - rank/ticker(linked), the leading number
     for the active sort (task's own "the leading number on each row is
     the one doing the sorting"), the other stats next to it, the ten
@@ -743,7 +880,16 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     "ASX EXTENSION" badge HTML (or None - every other tab passes
     nothing, unaffected) - Top 20 Australia's own caller (_render_
     top20_australia_tab()) computes this fresh per row, right after
-    the industry tag, matching the mock's own DOM order."""
+    the industry tag, matching the mock's own DOM order.
+
+    `country_badge_html` (Director's TASK 7, 14 Oct 2026): the small
+    country-name chip the "Top 20 · Europe" tab alone passes (rule 2a,
+    "each Europe card shows its country") - None everywhere else,
+    unaffected. Mutually exclusive with `origin_badge_html` in
+    practice (only Australia passes one, only Europe the other), so
+    there's no ordering rule between them beyond both landing right
+    after the "also trades as" chip, same slot origin_badge_html
+    already used alone."""
     ticker = row["ticker"]
     score_row = row["score_row"]
 
@@ -772,6 +918,8 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
         )
     if origin_badge_html:
         header_bits.append(origin_badge_html)
+    if country_badge_html:
+        header_bits.append(country_badge_html)
     header_bits.append(_leading_metric_html(row, sort_mode, lang))
     secondary_html = _secondary_metrics_html(row, sort_mode, lang)
     if secondary_html:
@@ -1693,14 +1841,30 @@ def render_top100_page(lang="en"):
     sort_mode = _render_sort_bar(lang)
     filters = _render_filter_bar(lang, enriched)
 
-    tabs = st.tabs([
-        _t("tab_mixed", lang), _t("tab_au", lang), _t("tab_us", lang), _t("tab_full", lang),
-    ])
+    # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
+    # Mixed/Australia/USA/Full 200 exactly as they were (same four
+    # render calls, same positions relative to each other); rule 2
+    # inserts one tab per OTHER market actually present in the pool
+    # AFTER "Top 20 · USA" and BEFORE "Full 200" - _new_market_tab_plan()
+    # is the one place that decides which markets get a tab and in
+    # what order (rules 2-4), so this function never hand-lists a
+    # country name.
+    market_plan = _new_market_tab_plan(enriched)
+    tab_labels = (
+        [_t("tab_mixed", lang), _t("tab_au", lang), _t("tab_us", lang)]
+        + [_market_tab_label(group_key, lang) for group_key, _rows in market_plan]
+        + [_t("tab_full", lang)]
+    )
+    tabs = st.tabs(tab_labels)
     with tabs[0]:
         _render_top20_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
     with tabs[1]:
         _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
     with tabs[2]:
         _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters)
-    with tabs[3]:
+    for offset, (group_key, market_rows) in enumerate(market_plan):
+        with tabs[3 + offset]:
+            _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows,
+                                      group_key, filters=filters)
+    with tabs[3 + len(market_plan)]:
         _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
