@@ -328,6 +328,125 @@ def _dedupe_share_classes(best_by_ticker, log=print):
         best_by_ticker[winner]["also_trades_as"] = losers[0]
 
 
+# Director: next batch, TASK A (14 Oct 2026, "Cross-listed companies -
+# correcting your TASK 4 finding"). Evidence from production logs (the
+# 2026-10-14 23:00 UTC selection's own "[top100] same company name,
+# NOT in SHARE_CLASS_PAIRS" lines): real cross-market pairs (QSR/
+# QSR.TO, GFL/GFL.TO, CS.TO/CSC.AX, NWS.AX/NWSA, and more) both compete
+# for the pool today, since SHARE_CLASS_PAIRS only covers a SAME-
+# exchange different-share-class pair, never a cross-exchange same-
+# company one. Normalized company names a human has reviewed by hand
+# and found to be a FALSE match (two unrelated companies that happen
+# to share an identical company_name string) go here - never auto-
+# populated, empty until a real one is found.
+CROSS_LISTED_EXCLUDE = frozenset()
+
+
+def _cross_listing_traded_value_usd(row):
+    """avg_volume x price, converted to USD via fcf_valuation_engine.
+    fx_rate() - the SAME existing FX conversion function every other
+    currency-aware valuation path in this codebase already uses, never
+    a second one. None if avg_volume/price is missing, or fx_rate()
+    itself has no basis for a rate ("unavailable" - never invented).
+    trading_currency_for(ticker, info=None) - no live info blob at
+    this point in selection, same "no per-ticker network call at THIS
+    point" rule _build_best_by_ticker()'s own sector-fallback comment
+    already documents - falls back to the ticker's own suffix, exactly
+    like peer_context.market_for()'s own country lookup already does
+    for the SAME ticker."""
+    avg_volume = row.get("avg_volume")
+    price = row.get("price")
+    if not isinstance(avg_volume, (int, float)) or not isinstance(price, (int, float)):
+        return None
+    currency = fcf_valuation_engine.trading_currency_for(row["ticker"], info=None)
+    if currency == "USD":
+        rate = 1.0
+    else:
+        rate, _source = fcf_valuation_engine.fx_rate(currency, "USD")
+        if rate is None:
+            return None
+    return avg_volume * price * rate
+
+
+def _dedupe_cross_listings(best_by_ticker, log=print):
+    """Director: next batch, TASK A. Groups best_by_ticker by the SAME
+    normalized company_name match _report_undocumented_same_name_
+    duplicates() below already uses (.strip().lower(), never a second
+    matcher) - but, unlike that function, ACTS on a group once at
+    least two of its tickers map to DIFFERENT countries via peer_
+    context.market_for() (the SAME function the Top 200 preview
+    already uses). A same-country same-name duplicate is left
+    completely alone here - it stays exactly as today, reported-only
+    by _report_undocumented_same_name_duplicates() below, never auto-
+    merged (that function's own "never merge on company-name
+    similarity alone" rule still applies in full to anything this
+    function doesn't touch).
+
+    Called right after _dedupe_share_classes() (same call site, same
+    "mutated in place, before scoring" contract) - a SHARE_CLASS_PAIRS
+    pair is already collapsed to one ticker before this function ever
+    groups by name, so the two mechanisms never fight over the same
+    pair.
+
+    Winner: higher traded value in a common currency (_cross_listing_
+    traded_value_usd() above - avg_volume x price, converted to USD).
+    If EITHER side's traded value can't be computed (missing avg_
+    volume/price, or fx_rate() has no rate at all), falls back to the
+    higher recomputed Value Score for the WHOLE comparison - never a
+    half-traded-value, half-Value-Score mix, and never a 1.0 FX
+    assumption standing in for a missing rate. Deletes every loser,
+    exactly like _dedupe_share_classes() (frees its pool slot, keeps
+    it out of the AI batch). Sets "also_trades_as" on the survivor,
+    reusing the SAME display field _dedupe_share_classes() already
+    sets and top100_render.py already renders - never a second,
+    parallel badge - but only when the survivor doesn't already carry
+    one (a ticker that already won a SHARE_CLASS_PAIRS merge keeps
+    THAT relationship shown; this function's own merge still removes
+    the cross-listed loser from the pool either way).
+
+    CROSS_LISTED_EXCLUDE above is checked first, by normalized name -
+    a name on that list is never grouped for this function at all."""
+    by_name = {}
+    for ticker, row in best_by_ticker.items():
+        name = (row.get("company_name") or "").strip().lower()
+        if not name or name in CROSS_LISTED_EXCLUDE:
+            continue
+        by_name.setdefault(name, []).append(ticker)
+
+    for name, tickers in by_name.items():
+        if len(tickers) < 2:
+            continue
+        countries = {t: peer_context.market_for(t) for t in tickers}
+        if len(set(countries.values())) < 2:
+            continue  # every ticker in this name group is the SAME country - leave alone
+
+        traded_values = {t: _cross_listing_traded_value_usd(best_by_ticker[t]) for t in tickers}
+        if any(v is None for v in traded_values.values()):
+            ranked = sorted(tickers, key=lambda t: best_by_ticker[t].get("value_score") or 0,
+                             reverse=True)
+            by_traded_value = False
+        else:
+            ranked = sorted(tickers, key=lambda t: traded_values[t], reverse=True)
+            by_traded_value = True
+
+        winner, *losers = ranked
+        for loser in losers:
+            if by_traded_value:
+                log(f"[top100] cross-listing dedupe: kept {winner} (traded value "
+                    f"${traded_values[winner]:,.0f}) over {loser} (traded value "
+                    f"${traded_values[loser]:,.0f}) - same company ({name!r}), "
+                    f"{countries[winner]} vs {countries[loser]}, not in SHARE_CLASS_PAIRS")
+            else:
+                log(f"[top100] cross-listing dedupe: kept {winner} (Value Score "
+                    f"{best_by_ticker[winner].get('value_score') or 0:.1f}) over {loser} "
+                    f"(Value Score {best_by_ticker[loser].get('value_score') or 0:.1f}) - same "
+                    f"company ({name!r}), {countries[winner]} vs {countries[loser]}, traded "
+                    f"value unavailable for at least one side, not in SHARE_CLASS_PAIRS")
+            del best_by_ticker[loser]
+        if not best_by_ticker[winner].get("also_trades_as"):
+            best_by_ticker[winner]["also_trades_as"] = losers[0]
+
+
 def _report_undocumented_same_name_duplicates(best_by_ticker, log=print):
     """Top 100 Commit 3 (27 Sep 2026, owner-reported): after
     _dedupe_share_classes() above has already collapsed every
@@ -687,6 +806,7 @@ def _build_best_by_ticker(log=print):
                 }
 
     _dedupe_share_classes(best_by_ticker, log=log)
+    _dedupe_cross_listings(best_by_ticker, log=log)
     _report_undocumented_same_name_duplicates(best_by_ticker, log=log)
     return best_by_ticker, len(eligible)
 
