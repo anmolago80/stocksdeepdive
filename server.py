@@ -158,8 +158,23 @@ try:
 except Exception:
     visitor_classify = None
 
+# Director's follow-up to 325a368 (14 Oct 2026): Railway's own log
+# viewer marks every stderr line as "error" severity regardless of the
+# Python log level it was actually emitted at - this call's own default
+# stream (stderr, when none is given) was the real root cause behind
+# scheduler_engine._as_routine_logger()'s own fix still showing some
+# lines red. stream=sys.stdout alone was NOT enough: mcp_server.py's
+# own `mcp = FastMCP(...)` (imported above, before this call) already
+# runs mcp.server.fastmcp.utilities.logging.configure_logging() at
+# import time, which calls logging.basicConfig() of its own first -
+# installing a stderr StreamHandler on the root logger. basicConfig()
+# is a documented no-op once the root logger already has a handler, so
+# THIS call, without force=True, never took effect at all. force=True
+# makes this call authoritative regardless of import order - level and
+# message text are unchanged by either part of this fix.
 logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                    stream=sys.stdout, force=True)
 log = logging.getLogger("sdd.server")
 # Audit fix A4 / Fable finding S3 (10 Oct 2026): httpx's own internal
 # "HTTP Request: GET http://127.0.0.1:8501/...?..." line (emitted by
