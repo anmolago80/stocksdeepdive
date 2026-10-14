@@ -169,17 +169,24 @@ print("[T2_tsx60_subset] TSX 60 strict-subset-of-TSX-Composite accepted when a g
 # none of them test privacy itself (T1/T2 are universe-integrity
 # checks, T7 is scheduling cadence, T9 is USD/AUD-only), so FTSE 100's
 # own public status doesn't affect any of their assertions.
+# UPDATED AGAIN (Director's overnight queue TASK 2, 14 Oct 2026):
+# DAX/CAC 40/AEX/SMI/OMX Stockholm 30 removed from scan_store.
+# _DEFAULT_PRIVATE_UNIVERSES too - all five European universes are now
+# public, so DAX no longer fits this section's own "the private
+# universe" pair either. Swapped to Nikkei 225/TOPIX 500 - the only
+# two universes still private by the code default - same swap
+# rationale as above, nothing else in this section changes.
 # ======================================================================
 os.environ.pop("PRIVATE_UNIVERSES", None)
 assert scan_store.is_private_universe("Nikkei 225") is True
-assert scan_store.is_private_universe("DAX") is True
+assert scan_store.is_private_universe("TOPIX 500") is True
 assert scan_store.is_private_universe("S&P 500") is False
 os.environ["PRIVATE_UNIVERSES"] = ""
 assert scan_store.is_private_universe("Nikkei 225") is False
 os.environ["PRIVATE_UNIVERSES"] = "none"
 assert scan_store.is_private_universe("Nikkei 225") is False
 os.environ.pop("PRIVATE_UNIVERSES", None)
-print("[T3_is_private] Nikkei 225/DAX private by default, S&P 500 never - "
+print("[T3_is_private] Nikkei 225/TOPIX 500 private by default, S&P 500 never - "
       "''/'none' clears privacy entirely OK")
 
 _PUB_ROW = {

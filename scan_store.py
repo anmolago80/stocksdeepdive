@@ -57,10 +57,14 @@ from datetime import datetime, timezone
 # universes (FTSE 100, FTSE 250, TSX 60, TSX Composite) are now public;
 # Japan (Nikkei 225, TOPIX 500) and the five European universes stay
 # private, unchanged.
-_DEFAULT_PRIVATE_UNIVERSES = (
-    "Nikkei 225, TOPIX 500, "
-    "DAX, CAC 40, AEX, SMI, OMX Stockholm 30"
-)
+# Director's overnight queue TASK 2 (14 Oct 2026): DAX, CAC 40, AEX,
+# SMI and OMX Stockholm 30 removed from this default too - same single
+# lever, same privacy-only scope. All five European universes are now
+# public; Japan (Nikkei 225, TOPIX 500) stays private, unchanged. They
+# stay Top-200-EXCLUDED regardless - is_top200_excluded()'s own non-
+# US/non-AU derivation is completely untouched by this commit, exactly
+# as it already was for FTSE/TSX above.
+_DEFAULT_PRIVATE_UNIVERSES = "Nikkei 225, TOPIX 500"
 
 
 def _private_universe_set():
@@ -76,8 +80,8 @@ def _private_universe_set():
 def is_private_universe(name):
     """True iff `name` is in the PRIVATE_UNIVERSES set - see this
     module's own header comment for the env var's exact semantics
-    (unset -> code default Nikkei 225/TOPIX 500/DAX/CAC 40/AEX/SMI/
-    OMX Stockholm 30 - FTSE 100/FTSE 250/TSX 60/TSX Composite are all
+    (unset -> code default Nikkei 225/TOPIX 500 - FTSE 100/FTSE 250/
+    TSX 60/TSX Composite/DAX/CAC 40/AEX/SMI/OMX Stockholm 30 are all
     public; ""/"none" -> nothing private). Re-reads the env var on every call
     (cheap - a handful of string ops, never a file/network read) rather
     than caching it at import time, so a changed Railway variable takes

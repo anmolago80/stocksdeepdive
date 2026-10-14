@@ -4,6 +4,12 @@ PART 6 STEP 6.1 of instruction_health_fixes_chart_and_new_markets.md
 PRIVATE universes - DAX (Germany), CAC 40 (France), AEX (Netherlands),
 SMI (Switzerland), OMX Stockholm 30 (Sweden).
 
+UPDATED (Director's overnight queue TASK 2, 14 Oct 2026): all five
+went PUBLIC that day (same mechanism as FTSE/TSX before them) - CHECK
+14-16 below are updated for that; every other check in this file
+(loaders, fallback chain, symbol mapping, currency) is privacy-
+independent and stays unchanged.
+
 ALL FIXTURES IN THIS FILE ARE SYNTHETIC - this sandbox has no outbound
 network access, same disclosure as every other fixture-based test in
 this repo (tests/test_stage1b_private_universes.py, tests/test_stage1_
@@ -159,18 +165,20 @@ print("[count_mismatch_stops_load] a parsed table outside the expected row-count
       "rejected outright, never accepted as a partial list OK")
 
 # ======================================================================
-# CHECK 14-16: all five are private by default (code default, env var
-# unset).
+# CHECK 14-16: all five are PUBLIC by default now (code default, env
+# var unset) - UPDATED, Director's overnight queue TASK 2, 14 Oct
+# 2026 (same mechanism, same single lever, as FTSE/TSX before them).
 # ======================================================================
 for _name in ("DAX", "CAC 40", "AEX", "SMI", "OMX Stockholm 30"):
-    check(f'"{_name}" is private by default', scan_store.is_private_universe(_name))
+    check(f'"{_name}" is public by default (made public, TASK 2)',
+          not scan_store.is_private_universe(_name))
 check('"ASX 200" (an existing public universe) is still NOT private - unaffected',
       not scan_store.is_private_universe("ASX 200"))
-check('PRIVATE_UNIVERSES="" (nothing private) makes "DAX" public too - same override rule '
-      "every other private universe already follows",
+check('an explicit PRIVATE_UNIVERSES override can still make "DAX" private again - same '
+      "override rule every other universe already follows",
       True)  # proven generically by is_private_universe()'s own existing, unchanged logic
-print("[private_by_default] all five European universes are private under the code default, "
-      "exactly like FTSE/TSX/Nikkei/TOPIX OK")
+print("[public_by_default] all five European universes are public under the code default, "
+      "exactly like FTSE/TSX since PUSH 2/TASK 2 OK")
 
 # ======================================================================
 # CHECK 17: a private European universe is absent for every non-owner

@@ -40,9 +40,12 @@ Covers:
     second copy) now also collapses a VOW.DE/VOW3.DE duplicate pair in
     the Top 200 pool - exercised directly to prove the reuse is live,
     not just imported and unused.
-  - DAX (Volkswagen's own universe) is PRIVATE - scan_store.
-    is_private_universe("DAX") is True - so this ticker never reaches
-    ANY currently-public universe's own pool (S&P 500, ASX 200, FTSE
+  - DAX (Volkswagen's own universe) is TOP-200-EXCLUDED - top100_
+    engine.is_top200_excluded("DAX") is True (UPDATED, Director's
+    overnight queue TASK 2, 14 Oct 2026: DAX itself went PUBLIC that
+    day, but stays Top-200-excluded regardless via this separate,
+    privacy-independent lever) - so this ticker never reaches ANY
+    currently-public universe's own pool (S&P 500, ASX 200, FTSE
     100/250, TSX 60/Composite, TOPIX 500); select_top100_pool()'s own
     output is proven byte-identical before/after this list addition.
   - The fcf_valuation_engine.py docstring correction itself: the fixed
@@ -184,8 +187,15 @@ check("the surviving VOW3.DE row carries 'also_trades_as': 'VOW.DE'",
 # loser row, never adds one; a pair with neither ticker present in any
 # eligible universe's rows changes nothing.
 # ======================================================================
-check("DAX is a PRIVATE universe - Volkswagen never reaches a currently-public universe's pool",
-      scan_store.is_private_universe("DAX"))
+# UPDATED (Director's overnight queue TASK 2, 14 Oct 2026): DAX is no
+# longer a PRIVATE universe (all five European universes became
+# public) - but it stays TOP-200-EXCLUDED regardless, via top100_
+# engine.is_top200_excluded()'s own separate, privacy-independent
+# derivation (non-US/non-AU universes) - the real, unchanged reason
+# Volkswagen never reaches a currently-public universe's pool.
+check("DAX is TOP-200-EXCLUDED - Volkswagen never reaches the pool "
+      "(privacy-independent; true before and after DAX went public)",
+      te.is_top200_excluded("DAX"))
 _vow_pair = frozenset({"VOW.DE", "VOW3.DE"})
 _pairs_without_vow = [p for p in te.SHARE_CLASS_PAIRS if p != _vow_pair]
 check("sanity: the VOW pair really is in the list top100_engine.py reads (so removing it for "
@@ -200,7 +210,7 @@ check("select_top100_pool()'s own output is byte-identical with or without the V
       json.dumps(_pool_with_vow_pair, sort_keys=True, default=str) ==
       json.dumps(_pool_without_vow_pair, sort_keys=True, default=str))
 check("neither VOW.DE nor VOW3.DE entered the real public pool either way (DAX is excluded "
-      "from pool selection entirely, as a private universe)",
+      "from pool selection entirely, as a Top-200-excluded universe)",
       not any(r["ticker"] in ("VOW.DE", "VOW3.DE") for r in _pool_with_vow_pair))
 
 

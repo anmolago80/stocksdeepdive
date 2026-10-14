@@ -8,17 +8,26 @@ code default; Japan (Nikkei 225, TOPIX 500) and the five European
 universes (DAX, CAC 40, AEX, SMI, OMX Stockholm 30) stay private,
 unchanged.
 
-Covers the Director's own six numbered proof requirements:
+UPDATED (Director's overnight queue TASK 2, 14 Oct 2026): DAX, CAC 40,
+AEX, SMI and OMX Stockholm 30 themselves went public that day too,
+same single lever - CHECK 2 and CHECK 4 below are updated for that
+(Japan is now the only still-private band); CHECK 3's Top 200
+exclusion requirement is untouched (it was always privacy-independent)
+and still covers all 11 universes including the now-public five.
+
+Covers the Director's own six numbered proof requirements (as they
+stood at PUSH 2 - item 2's own five European names are now covered by
+the TASK 2 update note above instead):
   1. Non-owners can read FTSE 100, FTSE 250, TSX Composite and TSX 60.
-  2. Nikkei 225, TOPIX 500, DAX, CAC 40, AEX, SMI, OMX Stockholm 30
-     stay private.
+  2. Nikkei 225, TOPIX 500 stay private.
   3. The Top 200 exclusion is unchanged (every non-US/non-AU universe
      still excluded from the pool), and the scoring-request fingerprint
      (f00c69f5...) passes.
   4. With SCANNER_PRESENTATION_LIVE=1, a non-owner sees the United
      Kingdom band (FTSE 100, FTSE 250) and the Canada band (TSX 60,
-     TSX Composite), with no "(private)" labels and no Japan/Europe
-     bands.
+     TSX Composite), with no "(private)" labels and no Japan band
+     (Europe now also appears in full, since TASK 2 - see the updated
+     CHECK 4 below).
   5. Fund rows (Is Fund) show the "Fund — company valuation does not
      apply" reason to non-owners, never a bare N/A.
   6. S&P 500 / ASX 200 output is byte-identical.
@@ -76,7 +85,13 @@ def check(label, condition):
 # (scan_store.load_scan(universe) - allow_private=False, the exact
 # call every public reader uses) of a real saved scan.
 # ======================================================================
-for _u in ("FTSE 100", "FTSE 250", "TSX 60", "TSX Composite"):
+for _u in ("FTSE 100", "FTSE 250", "TSX 60", "TSX Composite",
+           # Director's overnight queue TASK 2 (14 Oct 2026): these five
+           # European universes went public the same single way - added
+           # to this loop rather than duplicating it, since CHECK 1's own
+           # proof (flag + a default-deny read of a real saved scan
+           # returning the row) is exactly the proof TASK 2 needs too.
+           "DAX", "CAC 40", "AEX", "SMI", "OMX Stockholm 30"):
     check(f"is_private_universe({_u!r}) is False", scan_store.is_private_universe(_u) is False)
     scan_store.save_scan(_u, [{"Ticker": f"{_u[:3].upper()}1"}], source_label="test fixture")
     check(f"load_scan({_u!r}) (default allow_private=False) returns the real scan - "
@@ -84,12 +99,14 @@ for _u in ("FTSE 100", "FTSE 250", "TSX 60", "TSX Composite"):
           scan_store.load_scan(_u) is not None)
 
 # ======================================================================
-# CHECK 2: Nikkei 225, TOPIX 500, DAX, CAC 40, AEX, SMI, OMX Stockholm
-# 30 stay private - both the flag AND a default-deny read of a real
-# saved scan correctly returning None (never leaking rows to a non-
-# owner caller).
+# CHECK 2: Nikkei 225, TOPIX 500 stay private - both the flag AND a
+# default-deny read of a real saved scan correctly returning None
+# (never leaking rows to a non-owner caller). UPDATED (Director's
+# overnight queue TASK 2, 14 Oct 2026): DAX/CAC 40/AEX/SMI/OMX
+# Stockholm 30 moved up into CHECK 1 above - they're public now too -
+# leaving Japan as the only still-private pair.
 # ======================================================================
-for _u in ("Nikkei 225", "TOPIX 500", "DAX", "CAC 40", "AEX", "SMI", "OMX Stockholm 30"):
+for _u in ("Nikkei 225", "TOPIX 500"):
     check(f"is_private_universe({_u!r}) is True", scan_store.is_private_universe(_u) is True)
     scan_store.save_scan(_u, [{"Ticker": f"{_u[:3].upper()}1"}], source_label="test fixture")
     check(f"load_scan({_u!r}) (default allow_private=False) returns None - "
@@ -164,12 +181,21 @@ check("TSX 60 pill appears, not marked (private)",
       "TSX 60" in _html and "TSX 60 (private)" not in _html)
 check("TSX Composite pill appears, not marked (private)",
       "TSX Composite" in _html and "TSX Composite (private)" not in _html)
-check("no (private) marker appears anywhere in this non-owner render",
-      "private" not in _html)
 check("no Japan band - Nikkei 225/TOPIX 500 are both still private",
       "JAPAN" not in _html)
-check("no Europe band - DAX/CAC 40/AEX/SMI/OMX Stockholm 30 are all still private",
-      "EUROPE" not in _html)
+# UPDATED (Director's overnight queue TASK 2, 14 Oct 2026): the five
+# European universes went public the same day - the Europe band now
+# appears for a non-owner too, in full, exactly like United Kingdom/
+# Canada above (no (private) marker on any of its five pills).
+check("Europe band NOW appears for a non-owner (made public, TASK 2)",
+      "EUROPE" in _html)
+check("no (private) marker appears anywhere in this non-owner render "
+      "(a non-owner's own visible-pill filter never lets a private universe's pill "
+      "reach the labeling step at all, regardless of which bands exist)",
+      "private" not in _html)
+for _eu_universe in ("DAX", "CAC 40", "AEX", "SMI", "OMX Stockholm 30"):
+    check(f"{_eu_universe} pill appears, not marked (private)",
+          _eu_universe in _html and f"{_eu_universe} (private)" not in _html)
 
 # ======================================================================
 # CHECK 5: fund rows (Is Fund) show the exact "Fund — company

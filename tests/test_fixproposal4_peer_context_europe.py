@@ -15,13 +15,19 @@ Covers:
     PRIORITY/_MARKET_ALL_UNIVERSES) - never lumped into one shared
     "Europe" bucket (a German company's own peers are DAX members,
     not a Swedish one).
-  - compute() end to end: since DAX/CAC 40/AEX/SMI/OMX Stockholm 30
-    are ALL still private today, the existing "every universe for
-    this market is private -> no peer context" check already covers
-    these five automatically - a German ticker gets {"available":
-    False, "reason": "private_market"}, never a bogus USA-peer
-    comparison and never a crash (proves the fix is safe even before
-    any European universe ever goes public).
+  - compute() end to end: at the time this fix landed, DAX/CAC 40/AEX/
+    SMI/OMX Stockholm 30 were ALL still private, so the existing
+    "every universe for this market is private -> no peer context"
+    check covered these five automatically. UPDATED (Director's
+    overnight queue TASK 2, 14 Oct 2026): all five European universes
+    are now public, so that short-circuit no longer fires for them -
+    compute() instead falls through to _locate(), finds no saved scan
+    for this fixture's own fresh TESTVOL, and returns {"available":
+    False, "reason": "not_scanned"} - still never a bogus USA-peer
+    comparison and never a crash, just a different (and correct) no-
+    data reason. This proves the fix is STILL safe now that every
+    European universe is public, not merely "before any ever went
+    public".
   - pre-existing markets (Australia/UK/Canada/Japan/USA) are
     byte-for-byte unaffected.
 
@@ -90,20 +96,25 @@ check("all 5 new peer pools are mutually exclusive (one country, one universe ea
            for u in pool}) == 5)
 
 # ======================================================================
-# CHECK 14-15: compute() end to end - still-private markets correctly
-# short-circuit to "private_market", never a bogus USA comparison,
-# never a crash (KeyError on _MARKET_PRIORITY/_MARKET_ALL_UNIVERSES
-# would be the failure mode if this fix were only half-wired).
+# CHECK 14-15: compute() end to end. UPDATED (Director's overnight
+# queue TASK 2, 14 Oct 2026): DAX/OMX Stockholm 30 are now public, so
+# the "every universe for this market is private" short-circuit no
+# longer fires for them - compute() falls through to _locate(), finds
+# no saved scan in this fixture's own fresh TESTVOL, and returns
+# "not_scanned" instead of "private_market". Still never a crash
+# (KeyError on _MARKET_PRIORITY/_MARKET_ALL_UNIVERSES would be the
+# failure mode if this fix were only half-wired) and never a bogus
+# comparison against S&P 500.
 # ======================================================================
 _result = peer_context.compute("SAP.DE")
-check('compute("SAP.DE") == {"available": False, "reason": "private_market"} - DAX is '
-      "still private today, so this is correctly withheld, never a crash and never a "
-      "bogus comparison against S&P 500",
-      _result == {"available": False, "reason": "private_market"})
+check('compute("SAP.DE") == {"available": False, "reason": "not_scanned"} - DAX is public '
+      "now (TASK 2) but has no saved scan in this fixture, so this is correctly withheld "
+      "for that reason, never a crash and never a bogus comparison against S&P 500",
+      _result == {"available": False, "reason": "not_scanned"})
 _result2 = peer_context.compute("VOLV-B.ST")
-check('compute("VOLV-B.ST") == {"available": False, "reason": "private_market"} too '
-      "(OMX Stockholm 30 is also still private)",
-      _result2 == {"available": False, "reason": "private_market"})
+check('compute("VOLV-B.ST") == {"available": False, "reason": "not_scanned"} too '
+      "(OMX Stockholm 30 is also public now, same reasoning)",
+      _result2 == {"available": False, "reason": "not_scanned"})
 
 # ======================================================================
 # CHECK 16: pre-existing markets are byte-for-byte unaffected.

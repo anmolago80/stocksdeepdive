@@ -78,10 +78,19 @@ check("preview_universes() is [] when unset", te.preview_universes() == [])
 # AND TSX Composite public (on top of TSX 60's own 9 Oct correction),
 # so none of the four UK/Canada universes fit this feature's own
 # purpose any more (previewing candidates from a market that's still
-# PRIVATE before making it public). Nikkei 225/DAX stay private,
-# unchanged - the next still-private pair, one per distinct country
-# (Japan/Germany) to keep exercising the "grouped by country" checks
-# below meaningfully.
+# PRIVATE before making it public). Nikkei 225/DAX were the next
+# still-private pair, one per distinct country (Japan/Germany), to
+# keep exercising the "grouped by country" checks below meaningfully.
+#
+# UPDATED (Director's overnight queue TASK 2, 14 Oct 2026): DAX itself
+# went PUBLIC that day. preview_candidates_by_country() reads ANY
+# named universe via load_scan_raw(allow_private=True) regardless of
+# privacy, so DAX stays a perfectly valid, distinct-country (Germany)
+# fixture for the grouping checks below - unaffected by this change.
+# Only _log_preview_universe_cost_estimate() cares about privacy (its
+# own "one line per PRIVATE universe" contract) - CHECK 3-5 below adds
+# a SECOND private universe (TOPIX 500) for that specific proof, since
+# DAX itself no longer qualifies.
 os.environ["TOP200_PREVIEW_UNIVERSES"] = "Nikkei 225, DAX"
 check('preview_universes() == ["Nikkei 225", "DAX"] when set',
       te.preview_universes() == ["Nikkei 225", "DAX"])
@@ -107,6 +116,19 @@ scan_store.save_scan("DAX", [
      "Intrinsic Value": 160.0, "MOS %": 12.5, "Long Score": 70.0, "Quality": 65.0,
      "Psychology": 5.0, "Discovery (lite)": 35.0, "Moat": 60.0,
      "Growth Used": 0.04, "FCF Source": "reported", "Dividend Yield %": 3.8},
+], source_label="test fixture")
+# Director's overnight queue TASK 2 (14 Oct 2026): DAX is public now,
+# so it no longer qualifies for _log_preview_universe_cost_estimate()'s
+# own "one line per PRIVATE universe" contract - a second still-
+# private universe (TOPIX 500) is saved here, same row shape as DAX's
+# own SIE.DE fixture (a stored Long Score already set, so $0.00 cost),
+# purely so CHECK 3-5 below still has two private universes to prove
+# the advisory line fires for each.
+scan_store.save_scan("TOPIX 500", [
+    {"Ticker": "6501.T", "Type": "STOCK", "Company Name": "Hitachi Ltd", "Price": 3200.0,
+     "Intrinsic Value": 3600.0, "MOS %": 11.1, "Long Score": 72.0, "Quality": 68.0,
+     "Psychology": 5.0, "Discovery (lite)": 30.0, "Moat": 55.0,
+     "Growth Used": 0.03, "FCF Source": "reported", "Dividend Yield %": 2.1},
 ], source_label="test fixture")
 
 _dims = {key: {"score": 4, "justification": "test fixture", "source_period": "RP2026-09-30"}
@@ -134,9 +156,13 @@ _joined = "\n".join(_log_lines)
 check("one advisory line for Nikkei 225 (2 candidates, 1 with no stored Long Score at all - "
       "6758.T's own scan row carries none)",
       "'Nikkei 225': 2 candidate(s), 1 with no stored score yet, est. one-time cost $0.02" in _joined)
-check("one advisory line for DAX (1 candidate, SIE.DE's own scan row already "
-      "has a Long Score, so nothing left to score - $0.00)",
-      "'DAX': 1 candidate(s), 0 with no stored score yet, est. one-time cost $0.00" in _joined)
+check("one advisory line for TOPIX 500 (1 candidate, 6501.T's own scan row already "
+      "has a Long Score, so nothing left to score - $0.00) - DAX itself is public now "
+      "(TASK 2) so it no longer gets one",
+      "'TOPIX 500': 1 candidate(s), 0 with no stored score yet, est. one-time cost $0.00" in _joined)
+check("no advisory line for DAX - it's public now (TASK 2), so it no longer qualifies "
+      "for this PRIVATE-universe-only advisory",
+      "'DAX':" not in _joined)
 check("fires with the switch UNSET too (purely advisory, not gated by TOP200_PREVIEW_UNIVERSES)",
       len(_log_lines) >= 2)
 
