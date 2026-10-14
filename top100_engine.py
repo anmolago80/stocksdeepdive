@@ -4739,16 +4739,39 @@ def preview_candidates_by_country():
     describe is CLOSED, not reopened here; no change needed in
     peer_context.py for this task.
 
+    Director's follow-up queue, TASK 2 (14 Oct 2026, "show who would
+    actually enter"): root cause the Director named - select_top100_
+    pool() keeps the top POOL_SIZE rows by RECOMPUTED Value Score
+    (_recompute_value_score()), while "composite"/"pool_rank_if_added"
+    above rank by Claude Research Score instead, so they can't show
+    which candidates would actually enter the real pool. Each eligible
+    row now also carries "recomputed_value_score" (_recompute_value_
+    score(r) off the SAME raw row _build_best_by_ticker() would score -
+    not a second formula) and "enters_pool" (True/False once a pool
+    exists, else None - never a fabricated verdict against a pool that
+    doesn't exist yet). The return value also carries three new keys:
+    "pool_cutoff" (pool_value_score_cutoff(): the current pool's own
+    200th member's Value Score, None if no pool yet), "would_enter_
+    counts" ({country: N} - how many of that country's eligible rows
+    have "enters_pool" True), and "would_displace" ({"canada": [...],
+    "all": [...]} - _pool_lowest_members() for the Canada-alone count
+    and the all-previewed-countries count, each entry {"ticker",
+    "country", "value_score"} for the CURRENT pool's own bottom N
+    members that those new entrants would push out).
+
     Row shape otherwise still matches market_readiness_engine.top20_
     by_value_score()'s own per-row dict (ticker/name/currency/price/
     intrinsic_value/mos_pct/growth_used/data_path/dividend_yield_pct/
-    value_score). Sorted within each country by value_score
-    descending, rows with no stored Long Score at all last (never
-    dropped - same "never show nothing" rule top20_by_value_score()
-    itself already follows). Returns {"by_country": {}, "excluded": []}
-    if preview_universes() is empty - the one and only condition under
-    which this returns nothing, matching every other switch's "unset =
-    nothing" contract in this module."""
+    value_score), plus the TASK 1c/TASK 2 additions above. Sorted
+    within each country by value_score descending, rows with no stored
+    Long Score at all last (never dropped - same "never show nothing"
+    rule top20_by_value_score() itself already follows). Returns
+    {"by_country": {}, "excluded": []} if preview_universes() is empty -
+    the one and only condition under which this returns nothing,
+    matching every other switch's "unset = nothing" contract in this
+    module (deliberately NOT given the three TASK 2 keys either - that
+    shape is unchanged from before TASK 2 so a caller gating purely on
+    "is this switch on" sees no difference)."""
     universes = preview_universes()
     if not universes:
         return {"by_country": {}, "excluded": []}
@@ -4791,10 +4814,12 @@ def preview_candidates_by_country():
 
     scores = top100_store.latest_scores_for_model(MODEL_TOP100, RUBRIC_VERSION)
     rated_composites = _current_pool_rated_composites()
+    cutoff = pool_value_score_cutoff()
     by_country = {}
     for ticker, (gen_dt, tie_break, r, universe, seen_universes) in best_by_ticker.items():
         market = peer_context.market_for(ticker)
         composite = composite_score(scores.get(ticker))
+        recomputed_value_score = _recompute_value_score(r)
         by_country.setdefault(market, []).append({
             "ticker": ticker, "name": r.get("Company Name"),
             "currency": fcf_valuation_engine.trading_currency_for(ticker, info=None),
@@ -4805,10 +4830,33 @@ def preview_candidates_by_country():
             "universes": sorted(seen_universes),
             "composite": composite,
             "pool_rank_if_added": _preview_rank_against_pool(composite, rated_composites),
+            "recomputed_value_score": recomputed_value_score,
+            "enters_pool": (recomputed_value_score > cutoff) if cutoff is not None else None,
         })
     for market, rows in by_country.items():
         rows.sort(key=lambda r: (r["value_score"] is None, -(r["value_score"] or 0)))
-    return {"by_country": by_country, "excluded": excluded}
+
+    # Director's follow-up queue, TASK 2b/2c (14 Oct 2026): "would
+    # enter" per country is a count of this SAME "enters_pool" flag
+    # (None never counts as entering - no live pool, nothing to
+    # compare against); "would displace" is the CURRENT pool's own
+    # bottom N members (_pool_lowest_members(), N's own count, never a
+    # second formula) for two scenarios - Canada alone, and every
+    # previewed country together.
+    would_enter_counts = {
+        market: sum(1 for row in rows if row["enters_pool"]) for market, rows in by_country.items()
+    }
+    canada_would_enter = would_enter_counts.get("Canada", 0)
+    all_would_enter = sum(would_enter_counts.values())
+    return {
+        "by_country": by_country, "excluded": excluded,
+        "pool_cutoff": cutoff,
+        "would_enter_counts": would_enter_counts,
+        "would_displace": {
+            "canada": _pool_lowest_members(canada_would_enter),
+            "all": _pool_lowest_members(all_would_enter),
+        },
+    }
 
 
 # -----------------------------------------------------------------
@@ -5031,6 +5079,46 @@ def _preview_rank_against_pool(composite, rated_composites):
     if composite is None:
         return None
     return 1 + sum(1 for c in rated_composites if c > composite)
+
+
+def pool_value_score_cutoff():
+    """Director's follow-up queue, TASK 2a (14 Oct 2026): the recomputed
+    Value Score of the CURRENT pool's own 200th (lowest-scoring) member -
+    the exact threshold select_top100_pool() cuts its merit-ordered list
+    at (pool = _merit_ordered[:POOL_SIZE] in the non-backfill path; the
+    backfill-adjusted pool when TOP200_BACKFILL_LIVE is on). Not
+    recomputed here - top100_store.current_pool()'s own stored
+    "value_score" column IS the recomputed Value Score _build_best_by_
+    ticker() already wrote for every row at selection time (see its own
+    "recomputed_value_score = _recompute_value_score(row)" line above),
+    so the saved pool's own lowest value is that same number, never a
+    second formula. current_pool() is already Value Score descending,
+    so the lowest is simply its own last row. None if no selection has
+    ever run (empty pool)."""
+    pool = top100_store.current_pool()
+    if not pool:
+        return None
+    return pool[-1]["value_score"]
+
+
+def _pool_lowest_members(n):
+    """Director's follow-up queue, TASK 2c ("would displace"): the
+    bottom `n` CURRENT pool members by their own already-stored
+    (recomputed) Value Score - ticker/country/value_score only.
+    top100_store.current_pool() is already Value Score descending, so
+    this is simply its own last `n` rows, read back - no second sort,
+    no second formula. [] for n <= 0 or a pool with fewer than `n`
+    members (nothing meaningful to show rather than a partial list)."""
+    if n <= 0:
+        return []
+    pool = top100_store.current_pool()
+    if n > len(pool):
+        return []
+    return [
+        {"ticker": row["ticker"], "country": peer_context.market_for(row["ticker"]),
+         "value_score": row["value_score"]}
+        for row in pool[-n:]
+    ]
 
 
 def _prescore_candidates(model, log=print):

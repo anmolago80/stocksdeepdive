@@ -33138,6 +33138,21 @@ def _render_top200_preview_panel():
     used to describe (TASK 1d) is already closed as of commit 6ffa7de;
     nothing to fix here.
 
+    Director's follow-up queue, TASK 2 (14 Oct 2026, "show who would
+    actually enter"): "research score"/"rank vs pool" above rank by
+    Claude Research Score, but select_top100_pool() actually cuts its
+    200 by RECOMPUTED VALUE SCORE - a different number - so those two
+    columns alone can't say which candidates would really enter. This
+    panel now also shows, from top100_engine.preview_candidates_by_
+    country()'s new "pool_cutoff"/"would_enter_counts"/"would_displace"
+    keys: the current pool's own cutoff (its 200th member's Value
+    Score) once at the top; a "would enter: N" count and an "enters
+    pool: yes/no"/"WAITING" column per country; and a "Would displace"
+    expander showing the pool's own lowest members that adding Canada
+    alone, or every previewed country, would push out. All three are
+    read-only reads of already-selected data - no second formula, no
+    write.
+
     No gate of its own beyond the TOP200_PREVIEW_UNIVERSES check above
     - called only from inside page_admin_dashboard(), after that
     function's own owner check, same as every other panel here."""
@@ -33163,6 +33178,18 @@ def _render_top200_preview_panel():
     if not _by_country and not _excluded:
         st.info("None of the named universes has a saved scan yet.")
         return
+
+    _pool_cutoff = _preview.get("pool_cutoff")
+    _would_enter_counts = _preview.get("would_enter_counts") or {}
+    if _pool_cutoff is not None:
+        st.caption(
+            f"Current pool cutoff (the 200th member's recomputed Value Score): {_pool_cutoff:.1f}. "
+            "A candidate's own 'enters pool' column below uses this same number, recomputed the "
+            "same way select_top100_pool() itself recomputes it - never a second formula."
+        )
+    else:
+        st.caption("No Top 200 selection has run yet, so there's no pool cutoff to compare against "
+                   "- 'enters pool' shows WAITING for every candidate below.")
 
     _all_preview_rows = [r for rows in _by_country.values() for r in rows]
     try:
@@ -33198,14 +33225,18 @@ def _render_top200_preview_panel():
                 )
 
     for _country, _rows in sorted(_by_country.items()):
-        with st.expander(f"Top 20 {_country} (preview, {len(_rows)} candidate(s))",
+        _would_enter_n = _would_enter_counts.get(_country, 0)
+        with st.expander(f"Top 20 {_country} (preview, {len(_rows)} candidate(s), would enter: "
+                          f"{_would_enter_n})",
                           key=f"admin_top200_preview_expander_{_country}"):
             st.caption(
                 "Unsliced - no guaranteed count has been set for this market yet (the Director's "
                 "own call, same as TOP20_AU_TARGET was for Australia); every stored candidate is "
                 "shown, ranked by its own stored Long Score. 'Research score'/'Rank vs pool' "
                 "come from this ticker's own stored Claude score, if any - WAITING means not yet "
-                "scored, never a guess."
+                "scored, never a guess. 'Enters pool' compares this row's own recomputed Value "
+                "Score (the same recompute select_top100_pool() itself uses) against the current "
+                "pool's cutoff shown above - WAITING if no pool has run yet."
             )
             _display_rows = []
             for _r in _rows[:20]:
@@ -33217,6 +33248,9 @@ def _render_top200_preview_panel():
                     ),
                     "rank vs pool": (
                         f"#{_r['pool_rank_if_added']}" if _r["pool_rank_if_added"] is not None else "WAITING"
+                    ),
+                    "enters pool": (
+                        "WAITING" if _r["enters_pool"] is None else ("yes" if _r["enters_pool"] else "no")
                     ),
                 })
             st.dataframe(pd.DataFrame(_display_rows), hide_index=True, width="stretch")
@@ -33233,6 +33267,29 @@ def _render_top200_preview_panel():
                 "excluded from."
             )
             st.dataframe(pd.DataFrame(_excluded), hide_index=True, width="stretch")
+
+    _would_displace = _preview.get("would_displace") or {}
+    _displace_canada = _would_displace.get("canada") or []
+    _displace_all = _would_displace.get("all") or []
+    if _displace_canada or _displace_all:
+        with st.expander("Would displace (current pool's own lowest members)",
+                          key="admin_top200_preview_would_displace_expander"):
+            st.caption(
+                "The current pool's own lowest-scoring members (by their already-stored, "
+                "recomputed Value Score) that would be pushed out if the 'would enter' "
+                "candidates above were actually added - read back from the pool exactly as "
+                "selected, never resimulated."
+            )
+            st.markdown(f"**If Canada alone were added** ({len(_displace_canada)} displaced)")
+            if _displace_canada:
+                st.dataframe(pd.DataFrame(_displace_canada), hide_index=True, width="stretch")
+            else:
+                st.caption("No Canadian candidate here clears the current pool cutoff.")
+            st.markdown(f"**If every previewed country were added** ({len(_displace_all)} displaced)")
+            if _displace_all:
+                st.dataframe(pd.DataFrame(_displace_all), hide_index=True, width="stretch")
+            else:
+                st.caption("No previewed candidate here clears the current pool cutoff.")
 
 
 def _render_portfolio_health_news_v2_comparison_panel():
