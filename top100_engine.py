@@ -444,7 +444,16 @@ def _dedupe_cross_listings(best_by_ticker, log=print):
                     f"value unavailable for at least one side, not in SHARE_CLASS_PAIRS")
             del best_by_ticker[loser]
         if not best_by_ticker[winner].get("also_trades_as"):
-            best_by_ticker[winner]["also_trades_as"] = losers[0]
+            # Director PART 2 review (3-ticker News Corp group,
+            # NWS.AX/NWSA/NWSLV.AX): a group of more than 2 tickers has
+            # more than one loser - record ALL of them (comma-joined
+            # into the same single TEXT field/i18n "{ticker}" slot
+            # top100_store.py's also_trades_as column and top100_
+            # render.py's chip already use), never just losers[0],
+            # which silently dropped the third ticker's identity from
+            # the display badge while still correctly excluding it from
+            # scoring/the pool either way.
+            best_by_ticker[winner]["also_trades_as"] = ", ".join(losers)
 
 
 def _report_undocumented_same_name_duplicates(best_by_ticker, log=print):

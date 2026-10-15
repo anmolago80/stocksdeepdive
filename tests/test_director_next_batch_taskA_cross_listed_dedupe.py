@@ -204,7 +204,48 @@ check("with no cross-country same-name collision present, _dedupe_cross_listings
 
 
 # ======================================================================
-# CHECK 12: the scoring-request fingerprint is unchanged - this task
+# CHECK 12: Director PART 2 review - a REAL 3-way group from production
+# (NWS.AX / NWSA / NWSLV.AX, all company_name="news corporation", 2
+# Australia + 1 USA). _dedupe_cross_listings() groups by name first
+# (by_name.setdefault(name, []).append(ticker)), so a group of any size
+# falls out of the SAME code path as a pair - "winner, *losers =
+# ranked" already generalizes to N-1 losers for any N. Confirms: EXACTLY
+# ONE ticker survives, the OTHER TWO are both dropped, two log lines
+# (one per loser), and the survivor's also_trades_as now lists BOTH
+# dropped tickers (comma-joined) - a real gap this review caught: before
+# this fix it silently kept only losers[0], dropping the third ticker's
+# identity from the display badge while it was still correctly excluded
+# from scoring either way.
+# ======================================================================
+_best_by_ticker8 = {
+    "NWS.AX": {"ticker": "NWS.AX", "company_name": "News Corporation",
+               "avg_volume": 500_000, "price": 30.0, "value_score": 50.0},
+    "NWSA": {"ticker": "NWSA", "company_name": "News Corporation",
+             "avg_volume": 3_000_000, "price": 28.0, "value_score": 55.0},
+    "NWSLV.AX": {"ticker": "NWSLV.AX", "company_name": "News Corporation",
+                 "avg_volume": 100_000, "price": 30.0, "value_score": 45.0},
+}
+_logs8 = []
+with mock.patch("fcf_valuation_engine.fx_rate", return_value=(0.66, "live")):
+    te._dedupe_cross_listings(_best_by_ticker8, log=_logs8.append)
+check("3-way News Corp group: exactly ONE ticker survives (NWSA, "
+      "highest traded value - its USD-converted 3,000,000 x 28.0 beats "
+      "both AUD-converted AU listings)",
+      list(_best_by_ticker8.keys()) == ["NWSA"])
+check("3-way News Corp group: BOTH other tickers (NWS.AX, NWSLV.AX) "
+      "are dropped, not just one",
+      "NWS.AX" not in _best_by_ticker8 and "NWSLV.AX" not in _best_by_ticker8)
+check("3-way News Corp group: one log line per dropped ticker (two "
+      "total), not one line for the whole group",
+      len(_logs8) == 2
+      and any("NWS.AX" in l for l in _logs8) and any("NWSLV.AX" in l for l in _logs8))
+check("3-way News Corp group: the survivor's also_trades_as now names "
+      "BOTH dropped tickers, not just the first one",
+      set(_best_by_ticker8["NWSA"]["also_trades_as"].split(", ")) == {"NWS.AX", "NWSLV.AX"})
+
+
+# ======================================================================
+# CHECK 13: the scoring-request fingerprint is unchanged - this task
 # never touches _request_params()/the batch-submission entrant path.
 # Same fixture/fingerprint tests/test_nextround_item3_top200_exclusion.py
 # already carries.
