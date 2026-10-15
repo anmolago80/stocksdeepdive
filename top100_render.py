@@ -1273,7 +1273,8 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
         if failure and top100_engine._failure_exhausted(failure):
             caption = _t("shelf_caption_scoring_failed", lang)
         else:
-            caption = _t("shelf_caption_awaiting", lang)
+            caption = _t("shelf_caption_awaiting", lang,
+                         n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS)
     else:
         chip = _shelf_chip_html(_t("shelf_chip_not_rated", lang), *_SHELF_CHIP_NOT_RATED)
         if score_row.get("degenerate_accepted"):
@@ -1548,7 +1549,8 @@ def _changes_strip(enriched, lang):
         )
         rows.append((_t("changes_strip_dropped_label", lang, n=len(dropped)), "drop", chips))
     if would_rank:
-        tooltip = _t("changes_strip_awaiting_tooltip", lang)
+        tooltip = _t("changes_strip_awaiting_tooltip", lang,
+                     n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS)
         chips = "".join(_changes_chip_html(t, "wait", tooltip=tooltip) for t in would_rank)
         rows.append((_t("changes_strip_awaiting_label", lang, n=len(would_rank)), "wait", chips))
 
@@ -1561,7 +1563,8 @@ def _changes_strip(enriched, lang):
         "padding:16px 20px;margin-bottom:8px;'>"
         + rows_html
         + "<div style='color:#5b7290;font-size:11px;margin-top:9px;line-height:1.55;'>"
-        + html.escape(_t("changes_strip_caption", lang)) + "</div>"
+        + html.escape(_t("changes_strip_caption", lang,
+                         n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS)) + "</div>"
         "</div>",
         unsafe_allow_html=True,
     )

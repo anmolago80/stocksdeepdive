@@ -4071,12 +4071,13 @@ EN = {
     ),
     "top100.changes_strip_reason_delisted": "no longer appears in any scanned universe",
     "top100.changes_strip_awaiting_tooltip": (
-        "would rank in the top 20 by Value Score — scored automatically "
-        "at the next nightly run"
+        "would rank in the top 20 by Value Score — scored once it has "
+        "held a pool slot for {n} consecutive nights"
     ),
     "top100.changes_strip_caption": (
-        "hover for reasons · newcomers scored at the next nightly run "
-        "· dropped companies keep their cached scores until their next results."
+        "hover for reasons · newcomers are scored once they've held a "
+        "pool slot for {n} consecutive nights · dropped companies keep "
+        "their cached scores until their next results."
     ),
     "top100.tab_mixed": "Top 20 · Mixed",
     "top100.tab_au": "Top 20 · Australia",
@@ -4231,7 +4232,7 @@ EN = {
     "top100.changes_strip_rule_changed": "selection rule changed — comparison resumes tomorrow",
     "top100.shelf_heading": "Awaiting score / not rated",
     "top100.shelf_chip_awaiting": "⏳ AWAITING",
-    "top100.shelf_caption_awaiting": "scored automatically at the next nightly run",
+    "top100.shelf_caption_awaiting": "scored once it has held a pool slot for {n} consecutive nights",
     # Audit fixes, Commit 1 (30 Sep 2026, owner-directed): a ticker that
     # has hit TOP100_FAILURE_MAX_ATTEMPTS scoring failures under the
     # current rubric stops being resubmitted - this caption replaces
@@ -7848,13 +7849,14 @@ ES = {
     ),
     "top100.changes_strip_reason_delisted": "ya no aparece en ningún universo escaneado",
     "top100.changes_strip_awaiting_tooltip": (
-        "estaría en el top 20 por Value Score — se puntúa automáticamente "
-        "en la próxima ejecución nocturna"
+        "estaría en el top 20 por Value Score — se puntúa en cuanto lleva "
+        "{n} noches consecutivas con un puesto en el pool"
     ),
     "top100.changes_strip_caption": (
-        "pase el cursor para ver los motivos · las nuevas se puntúan en la "
-        "próxima ejecución nocturna · las empresas que salieron conservan "
-        "su puntuación guardada hasta sus próximos resultados."
+        "pase el cursor para ver los motivos · las nuevas se puntúan en "
+        "cuanto llevan {n} noches consecutivas con un puesto en el pool "
+        "· las empresas que salieron conservan su puntuación guardada "
+        "hasta sus próximos resultados."
     ),
     "top100.tab_mixed": "Top 20 · Mixto",
     "top100.tab_au": "Top 20 · Australia",
@@ -7948,7 +7950,7 @@ ES = {
     "top100.changes_strip_rule_changed": "cambió la regla de selección — la comparación se reanuda mañana",
     "top100.shelf_heading": "Esperando puntuación / no evaluadas",
     "top100.shelf_chip_awaiting": "⏳ EN ESPERA",
-    "top100.shelf_caption_awaiting": "se puntúa automáticamente en la próxima ejecución nocturna",
+    "top100.shelf_caption_awaiting": "se puntúa en cuanto lleva {n} noches consecutivas con un puesto en el pool",
     "top100.shelf_caption_scoring_failed": "la puntuación falló — se reintentará tras el próximo cambio de rúbrica",
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
     "top100.shelf_caption_not_rated": "No hay suficiente información pública para una puntuación analítica.",

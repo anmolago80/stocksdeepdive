@@ -235,7 +235,11 @@ print("[c1_shelf_caption_es] ...and in Spanish OK")
 row_normal = {"ticker": "GGGG", "score_row": None, "score_failure": None,
               "mos_pct": None, "value_score": 50.0, "generated_at": None, "stale_valuation": 0}
 normal_html = tr._shelf_row_html(row_normal, "en")
-assert "scored automatically" in normal_html
+# TASK C (Director PART 2, wording fix): "scored automatically at the
+# next nightly run" was wrong - NEWCOMER_PERSISTENCE_NIGHTS holds a
+# newcomer back until it's held a pool slot for that many nights
+# running. Updated to match the new wording instead of the old one.
+assert "held a pool slot for" in normal_html, normal_html
 assert "scoring failed" not in normal_html
 print("[c1_shelf_caption_normal] a ticker with no failure (or <3 attempts) still "
       "shows the generic AWAITING caption OK")
