@@ -677,6 +677,16 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # next to the Intrinsic Value figure. See resolver_engine.
         # dcf_looks_unreliable()'s own comment for why 3x is the bar.
         "dcf_unreliable": dcf_looks_unreliable(intrinsic_value, current_price),
+        # Symmetric variant (TASK B, MOS% display rule) of the same
+        # flag above - also catches the low-side artifact case, same
+        # as nightly_scan.py's "DCF Unreliable (Symmetric)" and
+        # snapshot_store.py's public "dcf_unreliable_symmetric" field.
+        # Display-only, like the flag above: never feeds quality/
+        # scoring, only tells display_mos_pct() to show "Model
+        # unreliable" instead of a margin-of-safety percentage.
+        "dcf_unreliable_symmetric": dcf_looks_unreliable(
+            intrinsic_value, current_price, symmetric=True
+        ),
         # Commit 4 of instruction_financials_income_store_and_top200_
         # guard.md (4 Oct 2026, Director-directed): DISPLAY-ONLY, never
         # feeds quality/scoring - tells the page to show "fallback:

@@ -4210,6 +4210,12 @@ EN = {
         "Model value more than 3× the price — treated as a data "
         "artefact, not a discount."
     ),
+    # TASK B (MOS% display rule): shown by display_mos_pct() (snapshot_
+    # store.py) in place of a margin-of-safety percentage, at every
+    # human-facing site, whenever the row's dcf_unreliable_symmetric
+    # (or dcf_unreliable) flag is True. Not namespaced to top100 - this
+    # is the one shared string every MOS% site uses.
+    "mos.model_unreliable": "Model unreliable",
     "top100.previous_rubric_chip": "previous rubric",
     # Top 100 selection freshness fix (30 Sep 2026, owner-directed): a
     # small muted chip next to Value Score when the row's chosen scan
@@ -7936,6 +7942,7 @@ ES = {
         "Valor del modelo superior a 3× el precio — se trata como un "
         "artefacto de datos, no un descuento."
     ),
+    "mos.model_unreliable": "Modelo no confiable",
     "top100.previous_rubric_chip": "rúbrica anterior",
     "top100.stale_valuation_chip": "valoración de hace {n} días",
     "top100.changes_strip_rule_changed": "cambió la regla de selección — la comparación se reanuda mañana",

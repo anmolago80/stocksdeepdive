@@ -25,6 +25,7 @@ from resolver_engine import (
     resolve_quality_score,
     resolve_intrinsic_value,
     resolve_stock_type,
+    dcf_looks_unreliable,
 )
 from market_cap_engine import get_market_cap_bucket
 from holding_engine import get_holding_period
@@ -11627,9 +11628,12 @@ def page_deep_dive():
                     )
                     _obs = []
                     if _dd.get("intrinsic_value") and _dd.get("mos") is not None:
+                        _mos_obs = snapshot_store.display_mos_pct(
+                            _dd["mos"], bool(_dd.get("dcf_unreliable_symmetric"))
+                        )
                         _obs.append(
                             f"The intrinsic value ({_dd['intrinsic_value']:,.2f} "
-                            f"{_dd['currency']}) is {_dd['mos']:+.1f}% relative to the "
+                            f"{_dd['currency']}) is {_mos_obs} relative to the "
                             "current price (MOS), using the stated inputs shown on "
                             "this page."
                         )
@@ -12010,7 +12014,10 @@ def page_deep_dive():
             st.divider()
             if _dd["intrinsic_value"]:
                 _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
-                st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
+                _mos_headline = snapshot_store.display_mos_pct(
+                    _mos_val, bool(_dd.get("dcf_unreliable_symmetric"))
+                )
+                st.subheader(f"Margin of Safety: {_mos_headline} - {_dd['valuation']}")
                 st.caption(_section_why("Margin of Safety"))
                 st.caption(i18n.t("dd.plain.mos", st.session_state.get("lang", "en")))
                 _render_explain_popover(_dd, "margin_of_safety")
@@ -13446,8 +13453,12 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
                     if _orow.get("DCF Unreliable") else ""
                 )
               )
-            + _td(_bar_cell(_orow.get("MOS %"), 0, 25, "%",
-                            flag=bool(_orow.get("Intrinsic Default"))), minw=90)
+            + _td(
+                (f"<div style='color:#8aa0b8;'>{html.escape(i18n.t('mos.model_unreliable'))}</div>"
+                 if _orow.get("DCF Unreliable (Symmetric)") else
+                 _bar_cell(_orow.get("MOS %"), 0, 25, "%",
+                           flag=bool(_orow.get("Intrinsic Default")))),
+                minw=90)
             + _td(_bar_cell(_orow.get("Long Score"),
                             SIGNAL_THRESHOLDS["WATCHLIST"],
                             SIGNAL_THRESHOLDS["LONG"]), minw=90)
@@ -15451,6 +15462,11 @@ def _comparison_row_from_saved_scan(ticker):
         "_flag_type": False,
         "_flag_quality": bool(row.get("Quality Default")),
         "_flag_intrinsic": bool(row.get("Intrinsic Default")),
+        # TASK B (MOS% display rule): the saved scan row already
+        # carries this (nightly_scan.analyze_ticker_lite()'s own
+        # symmetric variant), so re-use it directly rather than
+        # recomputing a second time.
+        "_mos_unreliable": bool(row.get("DCF Unreliable (Symmetric)")),
         "_flag_growth": False,
         "_flag_discovery": False,
 
@@ -16407,6 +16423,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     # statement cache, same as FCF Base Source).
                     "EPS Base Source": (_scan_eps_meta.get("source") if _scan_eps_meta else None) or "-",
                     "MOS": round(margin_of_safety, 2) if intrinsic_value > 0 else "N/A",
+                    # TASK B (MOS% display rule): same key name/
+                    # convention as _comparison_row_from_saved_scan()'s
+                    # own "_mos_unreliable" above, computed fresh here
+                    # since this loop re-derives everything live.
+                    "_mos_unreliable": dcf_looks_unreliable(intrinsic_value, current_price, symmetric=True),
                     "IV/Price Multiple": (
                         round(intrinsic_value / current_price, 2)
                         if intrinsic_value > 0 and current_price > 0 else "N/A"
@@ -16861,8 +16882,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     + _td(_money_cell(r["Intrinsic Value"], ref=r["Price"],
                                       flag=bool(r.get("_flag_intrinsic")),
                                       currency_code=_cmp_ccy))
-                    + _td(_bar_cell(r["MOS"], 0, 25, "%",
-                                    flag=bool(r.get("_flag_intrinsic"))), minw=90)
+                    + _td(
+                        (f"<div style='color:#8aa0b8;'>{html.escape(i18n.t('mos.model_unreliable'))}</div>"
+                         if r.get("_mos_unreliable") else
+                         _bar_cell(r["MOS"], 0, 25, "%", flag=bool(r.get("_flag_intrinsic")))),
+                        minw=90)
                     + _td(_bar_cell(r["Long Score"], SIGNAL_THRESHOLDS["WATCHLIST"],
                                     SIGNAL_THRESHOLDS["LONG"]), minw=90)
                     + _td(_bar_cell(r["Quality"], 40, 80,
@@ -17682,7 +17706,8 @@ def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
         # Same MOS% the Health tab's Valuation component uses - already
         # override-aware (compute_health_components folds a manual IV
         # override in here before this function ever sees it).
-        _mos = ((_a.get("components") or {}).get("Valuation") or {}).get("current")
+        _val_comp = (_a.get("components") or {}).get("Valuation") or {}
+        _mos = _val_comp.get("current")
         if _mos is None and _health_val is None:
             _left_out.append(f"{r['label']} (no valuation or Health Score yet)")
             continue
@@ -17693,7 +17718,13 @@ def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
             _left_out.append(f"{r['label']} (no Health Score yet)")
             continue
         _company_pts.append({
-            "label": r["label"], "mos": _mos, "health": _health_val,
+            "label": r["label"], "mos": _mos,
+            # TASK B (MOS% display rule): display-only - the point's
+            # actual plotted x-position (and the Valuation score/band
+            # behind it) is unchanged either way, only the hover text
+            # swaps to "Model unreliable" below.
+            "mos_unreliable": bool(_val_comp.get("unreliable")),
+            "health": _health_val,
             "weight": _weight_pct, "color": _cmap.get(r["label"], "#2dd4bf"),
         })
 
@@ -17714,13 +17745,24 @@ def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
     if _company_pts:
         _sizes = [max(14.0, min(60.0, 14 + p["weight"] * 1.6)) for p in _company_pts]
         _xs = [p["mos"] for p in _company_pts]
+        # TASK B (MOS% display rule): Plotly formats %{x} client-side,
+        # so a flagged point's hover text is built here instead and
+        # passed through customdata - the point's x-position itself is
+        # untouched (still the real, possibly-misleading MOS value;
+        # changing WHERE it plots was never asked for, only what its
+        # hover text says).
+        _mos_hover = [
+            snapshot_store.display_mos_pct(p["mos"], p.get("mos_unreliable", False), fmt="{:.1f}%")
+            for p in _company_pts
+        ]
         _scatter_kwargs = dict(row=1, col=1) if _has_funds else {}
         fig.add_trace(go.Scatter(
             x=_xs, y=[p["health"] for p in _company_pts],
             mode="markers+text", text=[p["label"] for p in _company_pts], textposition="top center",
             textfont=dict(size=11, color="#c7d2e0"),
             marker=dict(size=_sizes, color=[p["color"] for p in _company_pts], line=dict(width=1, color="#0b1220")),
-            hovertemplate="%{text}<br>MOS %{x:.1f}%<br>Health %{y:.0f}<extra></extra>",
+            customdata=_mos_hover,
+            hovertemplate="%{text}<br>MOS %{customdata}<br>Health %{y:.0f}<extra></extra>",
             showlegend=False,
         ), **_scatter_kwargs)
         fig.add_vline(x=0, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1), **_scatter_kwargs)

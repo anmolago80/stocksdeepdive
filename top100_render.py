@@ -20,6 +20,7 @@ import i18n
 import peer_context
 import quote_snapshot_store
 import resolver_engine
+import snapshot_store
 import top100_engine
 import top100_store
 import trading_cost_engine
@@ -174,13 +175,26 @@ def _sort_and_gate_rated(rows, sort_mode):
     return sorted(rated, key=_key_research)
 
 
+def _mos_unreliable(row):
+    """TASK B (MOS% display rule): same symmetric re-derivation
+    _dcf_unreliable_chip_html() above already uses for the plain/high-
+    side-only variant - `row` here never carries a stored unreliable
+    flag at all (see that function's own docstring), so this is
+    re-derived fresh from the row's own intrinsic_value/price, just
+    with symmetric=True instead of that chip's symmetric=False."""
+    return resolver_engine.dcf_looks_unreliable(
+        row.get("intrinsic_value"), row.get("price"), symmetric=True
+    )
+
+
 def _leading_metric(row, sort_mode, lang):
     """(label, value_text) for the row header's leading, sort-defining
     number - the mock's own "the leading number on each row is the one
     doing the sorting" rule."""
     if sort_mode == SORT_VALUE_TODAY:
         mos = row.get("mos_pct")
-        return _t("col_mos", lang), (f"{mos:.1f}%" if mos is not None else "—")
+        mos_display = snapshot_store.display_mos_pct(mos, _mos_unreliable(row), fmt="{:.1f}%", lang=lang)
+        return _t("col_mos", lang), (mos_display if mos_display is not None else "—")
     if sort_mode == SORT_VALUE_SCORE:
         return _t("col_value_score", lang), f"{row['value_score']:.1f}"
     if sort_mode == SORT_SEVERITY:
@@ -228,7 +242,8 @@ def _secondary_metrics_html(row, sort_mode, lang):
     if sort_mode != SORT_VALUE_SCORE:
         parts.append(f"{html.escape(_t('col_value_score', lang))}: <b style='color:#e6edf5;'>{row['value_score']:.1f}</b>")
     if sort_mode != SORT_VALUE_TODAY and row.get("mos_pct") is not None:
-        parts.append(f"{html.escape(_t('col_mos', lang))}: <b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b>")
+        _mos_text = snapshot_store.display_mos_pct(row["mos_pct"], _mos_unreliable(row), fmt="{:.1f}%", lang=lang)
+        parts.append(f"{html.escape(_t('col_mos', lang))}: <b style='color:#e6edf5;'>{html.escape(_mos_text)}</b>")
     if sort_mode != SORT_RESEARCH:
         parts.append(f"{html.escape(_t('col_research_score', lang))}: <b style='color:#e6edf5;'>{row['composite']:.1f}</b>")
     parts.append(_dividend_yield_html(row.get("dividend_yield_pct"), lang))
@@ -1275,9 +1290,10 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
     badge_html = origin_badge_html or ""
     mos_html = ""
     if row.get("mos_pct") is not None:
+        _mos_text = snapshot_store.display_mos_pct(row["mos_pct"], _mos_unreliable(row), fmt="{:.1f}%", lang=lang)
         mos_html = (
             f" · {html.escape(_t('col_mos', lang))}: "
-            f"<b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b>"
+            f"<b style='color:#e6edf5;'>{html.escape(_mos_text)}</b>"
         )
     stale_chip = _stale_valuation_chip_html(row, lang)
     dcf_unreliable_chip = _dcf_unreliable_chip_html(row, lang)

@@ -72,7 +72,10 @@ def _valuation_note(pub, lang="en"):
     val = pub.get("valuation_label")
     mos = pub.get("mos_pct")
     if val and val != "N/A" and mos is not None:
-        return f"{val} (MOS {mos:+.1f}%)"
+        mos_display = snapshot_store.display_mos_pct(
+            mos, bool(pub.get("dcf_unreliable_symmetric")), lang=lang
+        )
+        return f"{val} (MOS {mos_display})"
     return val or "-"
 
 
@@ -178,7 +181,9 @@ def _stat_cells(pub, moat, lang="en"):
             ("Valor intrínseco", _fmt(pub.get("intrinsic_value")),
              _intrinsic_value_hint(pub, lang="es")),
             ("Margen de seguridad",
-             f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
+             snapshot_store.display_mos_pct(
+                 pub.get("mos_pct"), bool(pub.get("dcf_unreliable_symmetric")), lang="es"
+             ) or "-", None),
             ("Crecimiento implícito (DCF inverso)",
              f"{pub['implied_growth_pct']:+.1f}%" if pub.get("implied_growth_pct") is not None else "-",
              (f"el modelo asume {pub['model_growth_pct']:+.1f}%"
@@ -204,7 +209,9 @@ def _stat_cells(pub, moat, lang="en"):
         ("Intrinsic value", _fmt(pub.get("intrinsic_value")),
          _intrinsic_value_hint(pub, lang="en")),
         ("Margin of safety",
-         f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
+         snapshot_store.display_mos_pct(
+             pub.get("mos_pct"), bool(pub.get("dcf_unreliable_symmetric")), lang="en"
+         ) or "-", None),
         ("Implied growth (reverse DCF)",
          f"{pub['implied_growth_pct']:+.1f}%" if pub.get("implied_growth_pct") is not None else "-",
          (f"model assumes {pub['model_growth_pct']:+.1f}%"
@@ -519,7 +526,10 @@ def _snapshot_copy_text(ticker, pub, moat, generated, universe, lede, base_url,
     if pub.get("intrinsic_value") is not None:
         lines.append(f"Intrinsic value: {_fmt(pub.get('intrinsic_value'))} {currency}")
     if pub.get("mos_pct") is not None:
-        lines.append(f"Margin of safety: {pub['mos_pct']:+.1f}%")
+        lines.append(
+            f"Margin of safety: "
+            f"{snapshot_store.display_mos_pct(pub.get('mos_pct'), bool(pub.get('dcf_unreliable_symmetric')))}"
+        )
     if pub.get("implied_growth_pct") is not None:
         _igl = f"Implied growth (reverse DCF): {pub['implied_growth_pct']:+.1f}%"
         if pub.get("model_growth_pct") is not None:
@@ -759,7 +769,8 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
         if pub.get("intrinsic_value") is not None and pub.get("price") is not None:
             facts.append(
                 f"valor intrínseco {_fmt(pub['intrinsic_value'])} vs precio {_fmt(pub['price'])}"
-                + (f" (MOS {pub['mos_pct']:+.1f}%)" if pub.get("mos_pct") is not None else "")
+                + (f" (MOS {snapshot_store.display_mos_pct(pub.get('mos_pct'), bool(pub.get('dcf_unreliable_symmetric')), lang='es')})"
+                   if pub.get("mos_pct") is not None else "")
             )
         if pub.get("value_score") is not None:
             facts.append(f"Puntaje Value {_fmt(pub['value_score'])}")
@@ -783,7 +794,8 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
         if pub.get("intrinsic_value") is not None and pub.get("price") is not None:
             facts.append(
                 f"intrinsic value {_fmt(pub['intrinsic_value'])} vs price {_fmt(pub['price'])}"
-                + (f" (MOS {pub['mos_pct']:+.1f}%)" if pub.get("mos_pct") is not None else "")
+                + (f" (MOS {snapshot_store.display_mos_pct(pub.get('mos_pct'), bool(pub.get('dcf_unreliable_symmetric')), lang='en')})"
+                   if pub.get("mos_pct") is not None else "")
             )
         if pub.get("value_score") is not None:
             facts.append(f"Value Score {_fmt(pub['value_score'])}")

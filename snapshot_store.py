@@ -29,6 +29,8 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
+import i18n
+
 
 def _data_dir():
     return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
@@ -425,6 +427,35 @@ def public_view(row):
         if isinstance(value, float) and not math.isfinite(value):
             out[key] = None
     return out
+
+
+def display_mos_pct(mos_pct, unreliable, fmt="{:+.1f}%", lang="en"):
+    """TASK B (MOS% display rule): the ONE shared decision every human-
+    facing margin-of-safety display uses - snapshot page (stat grid,
+    copy-text, meta description), OG card, Scanner, Deep Dive, Top 200/
+    public shelf cards, blog stat card, portfolio "Cheap vs healthy"
+    chart. Display only - never touches valuation, score, or selection.
+
+    `unreliable` is the caller's already-resolved dcf_unreliable_
+    symmetric (or, where that flag isn't threaded through yet,
+    dcf_unreliable) flag for this row - this function never re-derives
+    it itself, so it stays agnostic to where a given row's flag comes
+    from.
+
+    When `unreliable` is True, returns the localized "Model unreliable"
+    string (i18n "mos.model_unreliable") instead of a percentage,
+    whatever `mos_pct` is. Otherwise returns `mos_pct` formatted with
+    the caller's own `fmt` (every existing call site had its own small
+    formatting difference - signed vs unsigned, 0dp vs 1dp - so this
+    preserves each site's exact prior format rather than unifying them,
+    which was never asked for), or None if `mos_pct` itself is None -
+    callers keep using their own existing "-"/"—"/"n/a" placeholder for
+    that case, exactly as before this function existed."""
+    if unreliable:
+        return i18n.t("mos.model_unreliable", lang)
+    if mos_pct is None:
+        return None
+    return fmt.format(mos_pct)
 
 
 def build_snapshots_from_scan(universe, rows, log=print):

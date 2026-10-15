@@ -511,7 +511,9 @@ def _ticker_snapshot_strip_html(ticker, base_url):
     cells = [
         ("Price", _fmt(pub.get("price"))),
         ("IV", _fmt(pub.get("intrinsic_value"))),
-        ("MOS", f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-"),
+        ("MOS", snapshot_store.display_mos_pct(
+            pub.get("mos_pct"), bool(pub.get("dcf_unreliable_symmetric"))
+        ) or "-"),
         ("Value Score", _fmt(pub.get("value_score"))),
         ("Moat", _fmt(moat.get("score")) if moat.get("score") is not None else "n/a"),
     ]

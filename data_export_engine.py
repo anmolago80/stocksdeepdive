@@ -168,6 +168,10 @@ def _valuation_rows(dd, reverse_dcf=None):
         ("Valuation", _fmt_value(dd.get("valuation"))),
         ("Intrinsic Value (DCF)", _fmt_value(dd.get("intrinsic_value"))),
         ("Margin of Safety %", _fmt_value(dd.get("mos"))),
+        # TASK B (MOS% display rule): export keeps the raw MOS% number
+        # above unchanged and gains this boolean alongside it, same
+        # convention as api_v1.py's "mos_unreliable" field.
+        ("Margin of Safety Unreliable", bool(dd.get("dcf_unreliable_symmetric"))),
         ("Intrinsic value rests on a default/estimate", bool(dd.get("value_default"))),
         ("DCF growth rate used %", _fmt_value(dd.get("dcf_growth"))),
         ("DCF discount rate used %", _fmt_value(dd.get("dcf_discount"))),

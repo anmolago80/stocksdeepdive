@@ -145,11 +145,17 @@ def _snapshot_payload(snap, base_url=""):
     # renames the internal row's fields - see snapshot_store.py's own
     # docstring. Signal/Trade Setup/Trend are dropped here (they read as
     # recommendations on a public API response); moat is untouched.
+    pub = snapshot_store.public_view(snap.get("data") or {})
     return {
         "ticker": snap["ticker"],
         "universe": snap.get("universe"),
         "generated_at": snap.get("generated_at"),
-        **snapshot_store.public_view(snap.get("data") or {}),
+        **pub,
+        # TASK B (MOS% display rule): the API keeps the raw mos_pct
+        # number (display_mos_pct()'s "Model unreliable" swap is a
+        # human-page concern only) but gains this explicit boolean so
+        # an API/export consumer can apply the same rule itself.
+        "mos_unreliable": bool(pub.get("dcf_unreliable_symmetric")),
         "moat": snap.get("moat"),
     }
 
@@ -161,7 +167,12 @@ def _public_scan_row(row):
     save/get round trip, so they need the same treatment applied
     directly here). Preserves rank order - callers already sorted
     `rows` by the (now-dropped) internal Long Score before this runs."""
-    return {"ticker": row.get("Ticker"), **snapshot_store.public_view(row)}
+    pub = snapshot_store.public_view(row)
+    return {
+        "ticker": row.get("Ticker"),
+        **pub,
+        "mos_unreliable": bool(pub.get("dcf_unreliable_symmetric")),
+    }
 
 
 # -----------------------------------

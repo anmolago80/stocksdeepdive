@@ -61,6 +61,7 @@ import auto_compounder_engine
 import fundamentals_data
 import nightly_scan
 import portfolio_news_engine as pne
+import resolver_engine
 
 # ---------------------------------------------------------------------
 # Scoring tables - transcribed from the desktop Portfolio Health Monitor's
@@ -747,6 +748,12 @@ def compute_health_components(snapshot, kind, baseline=None, buy_date=None, news
         _set("Valuation", _interp(VAL_BAND, _mos_override), current=_mos_override, note=_note)
     else:
         _set("Valuation", _interp(VAL_BAND, snapshot.get("mos_pct")), current=snapshot.get("mos_pct"))
+        # TASK B (MOS% display rule): display-only, never feeds the
+        # Valuation score/band above - tells display_mos_pct() to show
+        # "Model unreliable" instead of this component's "current" MOS%.
+        comps["Valuation"]["unreliable"] = resolver_engine.dcf_looks_unreliable(
+            snapshot.get("intrinsic_value"), snapshot.get("price"), symmetric=True
+        )
 
     drawdown = _post_purchase_drawdown(snapshot.get("history"), buy_date, snapshot.get("price"))
     range52 = snapshot.get("range52")
@@ -958,6 +965,9 @@ def compute_health_components_v2(snapshot, kind, baseline=None, buy_date=None, n
         _set("Valuation", _interp(VAL_BAND, _mos_override), current=_mos_override, note=_note)
     else:
         _set("Valuation", _interp(VAL_BAND, snapshot.get("mos_pct")), current=snapshot.get("mos_pct"))
+        comps["Valuation"]["unreliable"] = resolver_engine.dcf_looks_unreliable(
+            snapshot.get("intrinsic_value"), snapshot.get("price"), symmetric=True
+        )
 
     drawdown = _post_purchase_drawdown(snapshot.get("history"), buy_date, snapshot.get("price"))
     range52 = snapshot.get("range52")

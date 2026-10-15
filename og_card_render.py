@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
 
 import currency_format
+import i18n
 
 CARD_W, CARD_H = 1200, 630
 
@@ -210,7 +211,15 @@ def render_ticker_card(ticker, public, generated_at, moat=None):
         f"{quality:.0f}" if isinstance(quality, (int, float)) else "–", _TEXT)
 
     mos_pct = public.get("mos_pct")
-    if isinstance(mos_pct, (int, float)):
+    mos_unreliable = bool(public.get("dcf_unreliable_symmetric"))
+    if mos_unreliable:
+        # TASK B (MOS% display rule): the bar-fill math below assumes a
+        # real percentage (0-100 clamp) - meaningless for a flagged
+        # value, so this skips the bar/fill entirely and shows the
+        # localized "Model unreliable" label in its place.
+        d.text((56, 492), "Margin of safety", font=_font(24), fill=_MUTED)
+        d.text((56, 522 + 6), i18n.t("mos.model_unreliable", lang="en"), font=_font(24), fill=_MUTED)
+    elif isinstance(mos_pct, (int, float)):
         d.text((56, 492), "Margin of safety", font=_font(24), fill=_MUTED)
         track_x0, track_x1 = 56, CARD_W - 56
         track_y0, track_y1 = 522, 522 + 32
