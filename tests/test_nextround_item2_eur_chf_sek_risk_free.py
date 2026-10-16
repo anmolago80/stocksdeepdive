@@ -69,12 +69,12 @@ _GOOD_CSV = (
 # date (never a position-based pick).
 # ======================================================================
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, _GOOD_CSV)):
-    rate, date_str, reason, transient = ce._fetch_ecb_eur_once()
+    rate, date_str, reason, transient, response_text = ce._fetch_ecb_eur_once()
     check("clean success: rate=0.0275 (the LATEST row, 2026-09, not the first)",
           abs(rate - 0.0275) < 1e-9 and date_str == "2026-09")
 
 with mock.patch.object(ce.requests, "get", side_effect=ConnectionError("boom")):
-    rate, date_str, reason, transient = ce._fetch_ecb_eur_once()
+    rate, date_str, reason, transient, response_text = ce._fetch_ecb_eur_once()
     check("connection error -> transient=True (worth retrying)", rate is None and transient is True)
 
 # ======================================================================
@@ -94,10 +94,15 @@ with mock.patch.object(ce, "time"), \
      mock.patch.object(ce.requests, "get", side_effect=ConnectionError("x")) as _get:
     ce.get_eu_risk_free_rate_live.clear()
     rate, source = ce.get_eu_risk_free_rate_live()
-    check(f"every attempt fails -> falls back after exactly {ce._ECB_RETRY_ATTEMPTS} "
-          "attempts, dated fallback",
+    # Director's round 2 fix: now tries each of _ECB_SDW_URLS (I9 then
+    # I8) in turn, each with its own full _ECB_RETRY_ATTEMPTS pass - so
+    # exhausting every attempt on every candidate URL is len(_ECB_SDW_
+    # URLS) * _ECB_RETRY_ATTEMPTS calls, not just _ECB_RETRY_ATTEMPTS.
+    _expected_calls = len(ce._ECB_SDW_URLS) * ce._ECB_RETRY_ATTEMPTS
+    check(f"every attempt on every candidate URL fails -> falls back after exactly "
+          f"{_expected_calls} total calls, dated fallback",
           source == "default" and rate == ce.EUR_RISK_FREE_FALLBACK["EUR"]
-          and _get.call_count == ce._ECB_RETRY_ATTEMPTS)
+          and _get.call_count == _expected_calls)
 
 # ======================================================================
 # CHECK 6-7: get_eu_risk_free_rate_for_run() - one fetch per run,
@@ -135,12 +140,12 @@ _GOOD_SNB_CSV = (
     "\"2026-09-20\";\"0.45\"\n"
 )
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, _GOOD_SNB_CSV)):
-    rate, date_str, reason, transient = ce._fetch_snb_chf_once()
+    rate, date_str, reason, transient, response_text = ce._fetch_snb_chf_once()
     check("SNB clean success: rate=0.0045 (the LATEST row, 2026-09-20, not the first)",
           abs(rate - 0.0045) < 1e-9 and date_str == "2026-09-20")
 
 with mock.patch.object(ce.requests, "get", side_effect=ConnectionError("boom")):
-    rate, date_str, reason, transient = ce._fetch_snb_chf_once()
+    rate, date_str, reason, transient, response_text = ce._fetch_snb_chf_once()
     check("SNB connection error -> transient=True (worth retrying)",
           rate is None and transient is True)
 
@@ -191,12 +196,12 @@ _GOOD_RIKSBANK_JSON = [
 ]
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, "")) as _get:
     _get.return_value.json = mock.Mock(return_value=_GOOD_RIKSBANK_JSON)
-    rate, date_str, reason, transient = ce._fetch_riksbank_sek_once()
+    rate, date_str, reason, transient, response_text = ce._fetch_riksbank_sek_once()
     check("Riksbank clean success: rate=0.02 (the LATEST row, 2026-09-25, not the first)",
           abs(rate - 0.02) < 1e-9 and date_str == "2026-09-25")
 
 with mock.patch.object(ce.requests, "get", side_effect=ConnectionError("boom")):
-    rate, date_str, reason, transient = ce._fetch_riksbank_sek_once()
+    rate, date_str, reason, transient, response_text = ce._fetch_riksbank_sek_once()
     check("Riksbank connection error -> transient=True (worth retrying)",
           rate is None and transient is True)
 

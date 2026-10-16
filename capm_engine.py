@@ -46,7 +46,7 @@ import csv
 import logging
 import math
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import requests
 import streamlit as st
@@ -519,6 +519,74 @@ def _size_band_label(market_cap_usd):
             return label
     return _SIZE_BAND_LABELS[-1][1]
 
+
+# =====================================================================
+# Director's round 2 fix (16 Oct 2026, "staleness guard + log the real
+# cause on failure"), shared by every live risk-free fetch below (AUD/
+# EUR/CHF/SEK) - never a per-currency copy.
+#
+# Staleness guard: a live fetch can succeed at the HTTP level and parse
+# a real, in-band number, yet still be WRONG if the series behind it
+# has stopped updating (exactly what happened to CHF - see that
+# section's own comment on the frozen "rendoblid" cube) - a "live"
+# result that's actually a many-month-old number is worse than no
+# result at all, since it looks current. Rejected (treated as a
+# failure, same as "no in-band value") if its own reported date is
+# unparseable OR more than _RISK_FREE_MAX_STALENESS_DAYS days before
+# `as_of` (default: now, UTC) - an unparseable date can never be
+# proven fresh, so it's rejected too, same "when in doubt, don't trust
+# it" stance every other guard in this module already takes.
+# =====================================================================
+_RISK_FREE_MAX_STALENESS_DAYS = 45
+
+
+def _parse_risk_free_date_loosely(date_str):
+    """Best-effort date parse for the formats this module's own
+    risk-free fetchers see in practice (ISO YYYY-MM-DD; ISO YYYY-MM
+    for the ECB's monthly EUR series; Swiss/European dd.mm.yyyy;
+    RBA's own dd-Mon-yyyy, e.g. "15-Oct-2026") - returns a date
+    object, or None if it can't be parsed at all (never raises)."""
+    if not date_str:
+        return None
+    s = date_str.strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m", "%d.%m.%Y", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _risk_free_value_is_stale(date_str, as_of=None):
+    """True (reject this value) if date_str is unparseable or older
+    than _RISK_FREE_MAX_STALENESS_DAYS days versus `as_of` (default
+    now, UTC) - see this section's own module comment above."""
+    parsed = _parse_risk_free_date_loosely(date_str)
+    if parsed is None:
+        return True
+    now = (as_of or datetime.now(timezone.utc)).date()
+    return (now - parsed).days > _RISK_FREE_MAX_STALENESS_DAYS
+
+
+def _log_risk_free_fetch_failure(currency, url, reason, response_text=None):
+    """Director's round 2 fix: "on any failure, log the exact URL
+    requested and the first 300 characters of the response body" - so
+    production logs show the REAL cause (a 404, a changed response
+    shape, a different host's error page) instead of just a bare
+    reason string. Called from inside each currency's own _fetch_*_
+    once() at every one of its failure points, in ADDITION to (never
+    instead of) that function's own existing (rate, date, reason,
+    transient) return contract - the retry wrapper's own "attempt N/M"
+    logging above this is unchanged."""
+    snippet = ""
+    if response_text:
+        snippet = f" - response body (first 300 chars): {response_text[:300]!r}"
+    _growth_logger.warning(
+        "[capm] %s risk-free fetch failed - url=%s - %s%s",
+        currency, url, reason, snippet,
+    )
+
+
 # A6 addition (27 Sep 2026, owner-directed): with beta removed, the
 # risk-free rate becomes the main driver of every discount rate, so the
 # AU 10-year can no longer stay a hand-set constant the way it can
@@ -547,7 +615,21 @@ def _size_band_label(market_cap_usd):
 # check of this URL/parsing (Railway logs will show "live" vs "default"
 # in meta["rf_source"] for the first AUD ticker resolved after this
 # deploy) matters more now than before, not less.
-_RBA_F2_CSV_URL = "https://www.rba.gov.au/statistics/tables/csv/f02d-data.csv"
+# Director's URL fix (16 Oct 2026, verified in production logs 16 Oct
+# 03:39-03:45 UTC rescan): the old "f02d-data.csv" table returns HTTP
+# 404 on every scan - RBA statistical tables now follow the "<table>-
+# data.csv" naming pattern. Tried in order: "f2.1-data.csv" (F2.1,
+# daily government bond yields - the table this fetch actually wants)
+# first, then "f2-data.csv" (F2, the monthly table, same column
+# layout/10-year hints) as a second candidate if the first 404s or
+# otherwise fails. Not independently confirmed with a live call from
+# this sandbox (network policy blocks www.rba.gov.au, same as every
+# other host this round's own live-verification step tried) - built
+# from the Director's own named table/naming-pattern fix.
+_RBA_F2_CSV_URLS = (
+    "https://www.rba.gov.au/statistics/tables/csv/f2.1-data.csv",
+    "https://www.rba.gov.au/statistics/tables/csv/f2-data.csv",
+)
 _RBA_TIMEOUT_SECONDS = 6
 _RBA_10Y_COLUMN_HINTS = ("10-year", "10 year", "10yr")
 
@@ -612,74 +694,97 @@ def get_au_risk_free_rate_live():
     X.XX% (RBA F2, as at <date>)` on success, or `[capm] AU 10y risk-
     free: FALLBACK 5.30% - <reason>` on failure, with `<reason>` one of
     "HTTP <status>", the exception's own type+message, "10-year column
-    not found", or "no in-band value" - see this section's own module
-    comment for why this visibility matters now more than when this was
-    an admin-only diagnostic."""
+    not found", "no in-band value", or "stale value" - see this
+    section's own module comment for why this visibility matters now
+    more than when this was an admin-only diagnostic.
+
+    Director's round 2 fix (16 Oct 2026): tries each URL in _RBA_F2_
+    CSV_URLS in order (f2.1-data.csv first, then f2-data.csv), same
+    10-year-column matching and 5.30% last-resort fallback as before -
+    the URL list is the only thing that changed. A value whose own
+    reported date fails the shared staleness guard (_risk_free_value_
+    is_stale()) is treated exactly like "no in-band value" - rejected,
+    tries the next URL, falls back if none work. Every failure (per
+    URL, not just the final one) is also logged via _log_risk_free_
+    fetch_failure() with the exact URL and the first 300 characters of
+    the response body."""
     fallback_rate = RISK_FREE_FALLBACK.get("AUD", DEFAULT_RISK_FREE_FALLBACK)
-    reason = None
-    try:
-        resp = requests.get(_RBA_F2_CSV_URL, timeout=_RBA_TIMEOUT_SECONDS)
-        if resp.status_code != 200:
-            reason = f"HTTP {resp.status_code}"
-        else:
-            rows = list(csv.reader(resp.text.splitlines()))
-            # RBA statistical-table CSVs are WIDE: one column per bond
-            # series (2-year, 3-year, 5-year, 10-year, ...), several
-            # metadata rows (title, series ID, units, description) at
-            # the top carrying each column's description, then one row
-            # per date below. Find the 10-year column by a tolerant
-            # substring match on ANY metadata-row cell (mirrors auto_
-            # compounder_engine._find_row()'s own substring-match
-            # tolerance for exactly this "don't know the exact label in
-            # advance" situation) rather than assuming a label and its
-            # value share one row - they don't, in this layout.
-            target_col = None
-            for row in rows:
-                for i, cell in enumerate(row):
-                    if any(hint in (cell or "").lower() for hint in _RBA_10Y_COLUMN_HINTS):
-                        target_col = i
-                        break
-                if target_col is not None:
-                    break
-            if target_col is None:
-                _log_au_risk_free_metadata_rows_once(rows)
-                reason = "10-year column not found"
+    last_reason = None
+    for url in _RBA_F2_CSV_URLS:
+        reason = None
+        response_text = None
+        try:
+            resp = requests.get(url, timeout=_RBA_TIMEOUT_SECONDS)
+            response_text = resp.text
+            if resp.status_code != 200:
+                reason = f"HTTP {resp.status_code}"
             else:
-                # Scan from the LAST row upward (most recent date first -
-                # RBA's date rows run oldest-to-newest, top-to-bottom)
-                # for the first row with a usable numeric value in that
-                # column. A blank cell (public holiday / no quote that
-                # day) is skipped, not treated as a failure; a real-but-
-                # out-of-band value stops the scan rather than reaching
-                # further back into older, unrelated figures - same
-                # "reject garbage in either direction" stance get_risk_
-                # free_rate() already takes.
-                found_value = False
-                for row in reversed(rows):
-                    if len(row) <= target_col:
-                        continue
-                    cell = row[target_col]
-                    try:
-                        raw = float(cell)
-                    except (TypeError, ValueError):
-                        continue
-                    found_value = True
-                    rate = raw / 100.0
-                    if RISK_FREE_MIN < rate < RISK_FREE_MAX:   # same sanity band as get_risk_free_rate
-                        as_of = row[0] if row else "unknown date"
+                rows = list(csv.reader(resp.text.splitlines()))
+                # RBA statistical-table CSVs are WIDE: one column per bond
+                # series (2-year, 3-year, 5-year, 10-year, ...), several
+                # metadata rows (title, series ID, units, description) at
+                # the top carrying each column's description, then one row
+                # per date below. Find the 10-year column by a tolerant
+                # substring match on ANY metadata-row cell (mirrors auto_
+                # compounder_engine._find_row()'s own substring-match
+                # tolerance for exactly this "don't know the exact label in
+                # advance" situation) rather than assuming a label and its
+                # value share one row - they don't, in this layout.
+                target_col = None
+                for row in rows:
+                    for i, cell in enumerate(row):
+                        if any(hint in (cell or "").lower() for hint in _RBA_10Y_COLUMN_HINTS):
+                            target_col = i
+                            break
+                    if target_col is not None:
+                        break
+                if target_col is None:
+                    _log_au_risk_free_metadata_rows_once(rows)
+                    reason = "10-year column not found"
+                else:
+                    # Scan from the LAST row upward (most recent date first -
+                    # RBA's date rows run oldest-to-newest, top-to-bottom)
+                    # for the first row with a usable numeric value in that
+                    # column. A blank cell (public holiday / no quote that
+                    # day) is skipped, not treated as a failure; a real-but-
+                    # out-of-band value stops the scan rather than reaching
+                    # further back into older, unrelated figures - same
+                    # "reject garbage in either direction" stance get_risk_
+                    # free_rate() already takes.
+                    found_value = False
+                    for row in reversed(rows):
+                        if len(row) <= target_col:
+                            continue
+                        cell = row[target_col]
+                        try:
+                            raw = float(cell)
+                        except (TypeError, ValueError):
+                            continue
+                        found_value = True
+                        rate = raw / 100.0
+                        if not (RISK_FREE_MIN < rate < RISK_FREE_MAX):  # same sanity band as get_risk_free_rate
+                            reason = "no in-band value"
+                            break
+                        as_of = row[0] if row else None
+                        if _risk_free_value_is_stale(as_of):
+                            reason = f"stale value (as at {as_of!r})"
+                            break
                         _growth_logger.warning(
                             "[capm] AU 10y risk-free: live %.2f%% (RBA F2, as at %s)",
                             rate * 100, as_of,
                         )
                         return rate, "live"
-                    break
-                reason = "no in-band value" if found_value else "10-year column not found"
-    except Exception as e:
-        reason = f"{type(e).__name__}: {e}"
+                    if reason is None:
+                        reason = "no in-band value" if found_value else "10-year column not found"
+        except Exception as e:
+            reason = f"{type(e).__name__}: {e}"
+
+        _log_risk_free_fetch_failure("AUD", url, reason, response_text)
+        last_reason = reason
 
     _growth_logger.warning(
         "[capm] AU 10y risk-free: FALLBACK %.2f%% - %s",
-        fallback_rate * 100, reason or "unknown error",
+        fallback_rate * 100, last_reason or "unknown error",
     )
     return fallback_rate, "default"
 
@@ -1141,10 +1246,22 @@ def get_jp_risk_free_rate_live():
 # including example.com - so no outbound call to ANY internet host
 # succeeds here; this is a sandbox network-policy block, not a code
 # problem). The CSV-parsing logic below is unchanged either way.
+#
+# Director's round 2 fix (16 Oct 2026, verified in production logs 16
+# Oct 03:39-03:45 UTC rescan): the host now resolves, but the I8 series
+# key 404s - "I8" is the pre-Croatia euro area (19 members); Croatia
+# joined 1 Jan 2023, so the ECB now publishes the aggregate under "I9"
+# (the 20-member euro area). Tried in order: I9 first, then I8 as a
+# fallback for any mirror/cache still serving the old aggregate. Same
+# "not independently confirmed from this sandbox" caveat as the host
+# fix above - this is well-documented ECB dataflow convention, not a
+# live-verified response.
 # =====================================================================
-_ECB_SDW_URL = (
+_ECB_SDW_URLS = (
     "https://data-api.ecb.europa.eu/service/data/IRS/"
-    "M.I8.L.L40.CI.0000.EUR.N.Z?lastNObservations=6&format=csvdata"
+    "M.I9.L.L40.CI.0000.EUR.N.Z?lastNObservations=6&format=csvdata",
+    "https://data-api.ecb.europa.eu/service/data/IRS/"
+    "M.I8.L.L40.CI.0000.EUR.N.Z?lastNObservations=6&format=csvdata",
 )
 _ECB_TIMEOUT_SECONDS = 6
 _ECB_RETRY_ATTEMPTS = 3
@@ -1164,32 +1281,39 @@ EUR_RISK_FREE_FALLBACK = {"EUR": 0.028}
 EUR_RISK_FREE_FALLBACK_AS_OF = "2026-10-08"
 
 
-def _fetch_ecb_eur_once():
+def _fetch_ecb_eur_once(url=None):
     """One single attempt at the ECB SDW fetch - no retry, no caching,
-    no logging (the caller does both). Returns (rate, date, reason,
-    transient) in the exact same shape as capm_engine's own _fetch_
-    boc_valet_once() (Proposal 5 of the PART 3 round) - see that
-    function's own docstring for what each field means and why a
-    network-level failure (worth retrying) is distinguished from a
-    clean-but-unusable response (a data problem a retry can't fix)."""
+    no logging (the caller does both). `url` defaults to the first
+    candidate in _ECB_SDW_URLS (I9); the caller loops over every
+    candidate itself, passing each one explicitly. Returns (rate,
+    date, reason, transient, response_text) - response_text is the
+    raw body (or None if no response was ever received), included so
+    a failure can be logged with the real cause (Director's round 2
+    "log the exact URL and the first 300 characters of the response
+    body" requirement) rather than just a bare reason string. A value
+    whose own date fails the shared staleness guard (_risk_free_value_
+    is_stale()) is rejected here too, same as "no in-band value"."""
+    if url is None:
+        url = _ECB_SDW_URLS[0]
     try:
-        resp = requests.get(_ECB_SDW_URL, timeout=_ECB_TIMEOUT_SECONDS)
+        resp = requests.get(url, timeout=_ECB_TIMEOUT_SECONDS)
     except Exception as e:
-        return None, None, f"{type(e).__name__}: {e}", True
+        return None, None, f"{type(e).__name__}: {e}", True, None
+    response_text = resp.text
     if resp.status_code != 200:
-        return None, None, f"HTTP {resp.status_code}", True
+        return None, None, f"HTTP {resp.status_code}", True, response_text
     try:
         lines = [ln for ln in resp.text.splitlines() if ln.strip()]
     except Exception as e:
-        return None, None, f"unparseable response ({type(e).__name__}: {e})", True
+        return None, None, f"unparseable response ({type(e).__name__}: {e})", True, response_text
     if len(lines) < 2:
-        return None, None, "no usable row found", False
+        return None, None, "no usable row found", False, response_text
     header = [h.strip().upper() for h in lines[0].split(",")]
     try:
         time_col = header.index("TIME_PERIOD")
         value_col = header.index("OBS_VALUE")
     except ValueError:
-        return None, None, f"unexpected CSV header shape: {header}", True
+        return None, None, f"unexpected CSV header shape: {header}", True, response_text
     best_date, best_rate = None, None
     for line in lines[1:]:
         cells = line.split(",")
@@ -1205,10 +1329,12 @@ def _fetch_ecb_eur_once():
         if best_date is None or date_str > best_date:
             best_date, best_rate = date_str, raw / 100.0
     if best_rate is None:
-        return None, None, "no usable observation found", False
+        return None, None, "no usable observation found", False, response_text
     if not (UK_CA_RISK_FREE_MIN < best_rate < UK_CA_RISK_FREE_MAX):
-        return None, None, "no in-band value", False
-    return best_rate, best_date, None, False
+        return None, None, "no in-band value", False, response_text
+    if _risk_free_value_is_stale(best_date):
+        return None, None, f"stale value (as at {best_date!r})", False, response_text
+    return best_rate, best_date, None, False, response_text
 
 
 _EU_RISK_FREE_RUN_CACHE = {"value": None}
@@ -1230,35 +1356,46 @@ def get_eu_risk_free_rate_live():
     day. Returns (rate, source) - "live" or "default" (EUR_RISK_FREE_
     FALLBACK["EUR"], dated EUR_RISK_FREE_FALLBACK_AS_OF).
 
-    Retries _fetch_ecb_eur_once() up to _ECB_RETRY_ATTEMPTS times with
-    exponential backoff, but ONLY on a transient (network-level)
-    failure - same shape as get_ca_risk_free_rate_live() (PART 3
-    Proposal 5) - a clean response with no usable/in-band data stops
-    immediately, since a retry can't fix a data problem."""
-    reason = None
-    for attempt in range(_ECB_RETRY_ATTEMPTS):
-        rate, date_str, reason, transient = _fetch_ecb_eur_once()
-        if rate is not None:
-            _growth_logger.warning(
-                "[capm] EUR risk-free %.2f%% (ECB SDW, as at %s%s)",
-                rate * 100, date_str,
-                f", attempt {attempt + 1}/{_ECB_RETRY_ATTEMPTS}" if attempt else "",
-            )
-            return rate, "live"
-        if not transient:
-            break
-        if attempt < _ECB_RETRY_ATTEMPTS - 1:
-            delay = _ECB_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
-            _growth_logger.warning(
-                "[capm] EUR risk-free fetch failed (attempt %d/%d) - %s - retrying in %ds",
-                attempt + 1, _ECB_RETRY_ATTEMPTS, reason, delay,
-            )
-            time.sleep(delay)
+    Director's round 2 fix (16 Oct 2026): tries each dataflow key in
+    _ECB_SDW_URLS in turn (I9 - the post-Croatia euro area - first,
+    then I8 as a fallback), each with its own full _ECB_RETRY_ATTEMPTS
+    retry/backoff pass against _fetch_ecb_eur_once(url), exactly like
+    get_au_risk_free_rate_live()'s own URL-candidate loop. ONLY a
+    transient (network-level) failure is retried within one URL's own
+    attempts - a clean response with no usable/in-band/fresh data
+    moves straight to the next URL candidate. Every per-URL failure
+    (not just the final one) is logged via _log_risk_free_fetch_
+    failure() with the exact URL and the first 300 characters of the
+    response body."""
+    last_reason = None
+    for url in _ECB_SDW_URLS:
+        reason = None
+        response_text = None
+        for attempt in range(_ECB_RETRY_ATTEMPTS):
+            rate, date_str, reason, transient, response_text = _fetch_ecb_eur_once(url)
+            if rate is not None:
+                _growth_logger.warning(
+                    "[capm] EUR risk-free %.2f%% (ECB SDW, as at %s%s)",
+                    rate * 100, date_str,
+                    f", attempt {attempt + 1}/{_ECB_RETRY_ATTEMPTS}" if attempt else "",
+                )
+                return rate, "live"
+            if not transient:
+                break
+            if attempt < _ECB_RETRY_ATTEMPTS - 1:
+                delay = _ECB_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+                _growth_logger.warning(
+                    "[capm] EUR risk-free fetch failed (attempt %d/%d) - %s - retrying in %ds",
+                    attempt + 1, _ECB_RETRY_ATTEMPTS, reason, delay,
+                )
+                time.sleep(delay)
+        _log_risk_free_fetch_failure("EUR", url, reason, response_text)
+        last_reason = reason
 
     _growth_logger.warning(
         "[capm] EUR risk-free %.2f%% (fallback as of %s - %s)",
         EUR_RISK_FREE_FALLBACK["EUR"] * 100, EUR_RISK_FREE_FALLBACK_AS_OF,
-        reason or "unknown error",
+        last_reason or "unknown error",
     )
     return EUR_RISK_FREE_FALLBACK["EUR"], "default"
 
@@ -1326,8 +1463,44 @@ def get_chf_sek_risk_free_rate(ccy):
 # one whose own (quote-stripped) cells contain both "Date" and "Value"
 # by name - that row becomes the header, exactly like every other
 # fetch in this module's own "never a fixed index/position" rule.
+#
+# Director's round 2 fix (16 Oct 2026, verified in production logs 16
+# Oct 03:39-03:45 UTC rescan): the "rendoblid" cube above is FROZEN -
+# live fetches were returning a real, in-band, correctly-parsed value
+# that was nonetheless -0.10% "as at 2025-07-31", a 14-month-old
+# number (this round's own shared staleness guard, _risk_free_value_
+# is_stale(), now catches exactly this case - see that section's
+# module comment). Researched replacement (not independently
+# confirmed with a live call from this sandbox, same network-policy
+# block as every other host this task tried): the SNB discontinued
+# "rendoblid" and now publishes the same Swiss Confederation bond
+# yield series under cube "rendeiduebd". That cube covers several
+# maturities at once (confirmed dimension/query-parameter convention:
+# D0=currency selector e.g. "CHF", D1=maturity tenor e.g. "2J" for
+# 2-year - "J" for the German "Jahre"/years) - but the EXACT D1 code
+# for the 10-year tenor was NOT found in any source searched; "10J" is
+# a plausible extrapolation of the confirmed 2-year convention, never
+# independently verified, so it is deliberately NOT hard-coded into
+# the request. Instead: request the cube for CHF only (the confirmed
+# D0 dimension), with no maturity filter, and let _parse_snb_chf_csv()
+# below filter client-side by tolerant substring match against
+# whichever maturity/tenor column the real response actually carries -
+# same "tolerant, never a fixed/guessed code" rule as every other
+# parser in this module (e.g. get_au_risk_free_rate_live()'s own
+# column-hint matching). If the response has no such column at all,
+# the whole response is treated as already being the desired series
+# (the pre-migration cube's own shape). If a maturity column IS found
+# but nothing matches a 10-year hint, the failure reason reports every
+# maturity value actually seen, via _log_risk_free_fetch_failure() - so
+# production logs give the Director (not a guess) the real 10-year
+# code to hard-code once confirmed, per this task's own "if the
+# 10-year series isn't in this cube, report which SNB cube has it"
+# instruction (answered: it is in rendeiduebd; the maturity code
+# within it is the still-open question).
 # ---------------------------------------------------------------------
-_SNB_CHF_URL = "https://data.snb.ch/api/cube/rendoblid/data/csv/en"
+_SNB_CHF_URL = "https://data.snb.ch/api/cube/rendeiduebd/data/csv/en?D0=CHF"
+_SNB_CHF_MATURITY_COLUMN_HINTS = ("d1", "maturity", "tenor", "laufzeit")
+_SNB_CHF_10Y_MATURITY_HINTS = ("10j", "10 jahre", "10-year", "10 year", "10y")
 _SNB_TIMEOUT_SECONDS = 6
 _SNB_RETRY_ATTEMPTS = 3
 _SNB_RETRY_BASE_DELAY_SECONDS = 2
@@ -1365,11 +1538,30 @@ def _parse_snb_chf_csv(text):
     date_col = header.index("DATE")
     value_col = header.index("VALUE")
 
+    # rendeiduebd cube (round 2 fix): the response may carry several
+    # maturities at once - if the header has a column matching one of
+    # _SNB_CHF_MATURITY_COLUMN_HINTS, filter rows to the 10-year tenor
+    # by tolerant substring match (never a hard-coded dimension code -
+    # see this section's own module comment). No such column at all
+    # means the response is already maturity-specific (the pre-
+    # migration cube's own shape) - nothing to filter.
+    maturity_col = None
+    for i, h in enumerate(header):
+        if any(hint in h.lower() for hint in _SNB_CHF_MATURITY_COLUMN_HINTS):
+            maturity_col = i
+            break
+
     best_date, best_rate = None, None
+    seen_maturities = set()
     for line in lines[header_idx + 1:]:
         cells = _cells(line)
         if len(cells) <= max(date_col, value_col):
             continue
+        if maturity_col is not None and len(cells) > maturity_col:
+            maturity_val = cells[maturity_col].strip()
+            seen_maturities.add(maturity_val)
+            if not any(hint in maturity_val.lower() for hint in _SNB_CHF_10Y_MATURITY_HINTS):
+                continue
         date_str = cells[date_col].strip()
         try:
             raw = float(cells[value_col])
@@ -1380,6 +1572,11 @@ def _parse_snb_chf_csv(text):
         if best_date is None or date_str > best_date:
             best_date, best_rate = date_str, raw / 100.0
     if best_rate is None:
+        if maturity_col is not None and seen_maturities:
+            return None, None, (
+                "no 10-year maturity row found in rendeiduebd cube - "
+                f"saw maturity values: {sorted(seen_maturities)}"
+            )
         return None, None, "no usable observation found"
     return best_date, best_rate, None
 
@@ -1387,28 +1584,37 @@ def _parse_snb_chf_csv(text):
 def _fetch_snb_chf_once():
     """One single attempt at the SNB data-portal fetch - no retry, no
     caching, no logging (the caller does both). Returns (rate, date,
-    reason, transient) in the exact same shape as _fetch_ecb_eur_
-    once() above - see that function's own docstring for what each
-    field means."""
+    reason, transient, response_text) - response_text is the raw body
+    (or None if no response was ever received), so a failure can be
+    logged with the real cause (Director's round 2 "log the exact URL
+    and the first 300 characters of the response body" requirement).
+    A value whose own date fails the shared staleness guard (_risk_
+    free_value_is_stale()) is rejected here too - exactly the frozen-
+    cube symptom this round's fix is for (see this section's own
+    module comment)."""
     try:
         resp = requests.get(_SNB_CHF_URL, timeout=_SNB_TIMEOUT_SECONDS)
     except Exception as e:
-        return None, None, f"{type(e).__name__}: {e}", True
+        return None, None, f"{type(e).__name__}: {e}", True, None
+    response_text = resp.text
     if resp.status_code != 200:
-        return None, None, f"HTTP {resp.status_code}", True
+        return None, None, f"HTTP {resp.status_code}", True, response_text
     try:
         best_date, best_rate, reason = _parse_snb_chf_csv(resp.text)
     except Exception as e:
-        return None, None, f"unparseable response ({type(e).__name__}: {e})", True
+        return None, None, f"unparseable response ({type(e).__name__}: {e})", True, response_text
     if best_rate is None:
         # A missing/unrecognized header row (never seen a Date+Value
         # row at all) is treated as transient (worth retrying), same as
         # every other "unexpected shape" case in this module - a
-        # genuinely empty/no-observation response is not.
-        return None, None, reason, bool(reason and "header row" in reason)
+        # genuinely empty/no-observation response (including "no 10-
+        # year maturity row found") is not.
+        return None, None, reason, bool(reason and "header row" in reason), response_text
     if not (CHF_RISK_FREE_MIN < best_rate < CHF_RISK_FREE_MAX):
-        return None, None, "no in-band value", False
-    return best_rate, best_date, None, False
+        return None, None, "no in-band value", False, response_text
+    if _risk_free_value_is_stale(best_date):
+        return None, None, f"stale value (as at {best_date!r})", False, response_text
+    return best_rate, best_date, None, False, response_text
 
 
 _CHF_RISK_FREE_RUN_CACHE = {"value": None}
@@ -1434,10 +1640,15 @@ def get_chf_risk_free_rate_live():
     Retries _fetch_snb_chf_once() up to _SNB_RETRY_ATTEMPTS times with
     exponential backoff, but ONLY on a transient (network-level)
     failure - same shape as get_eu_risk_free_rate_live() above - a
-    clean response with no usable/in-band data stops immediately."""
+    clean response with no usable/in-band/fresh data stops immediately.
+    Director's round 2 fix (16 Oct 2026): the failure (including a
+    stale-value rejection) is also logged via _log_risk_free_fetch_
+    failure() with the exact URL and the first 300 characters of the
+    response body."""
     reason = None
+    response_text = None
     for attempt in range(_SNB_RETRY_ATTEMPTS):
-        rate, date_str, reason, transient = _fetch_snb_chf_once()
+        rate, date_str, reason, transient, response_text = _fetch_snb_chf_once()
         if rate is not None:
             _growth_logger.warning(
                 "[capm] CHF risk-free %.2f%% (SNB data portal, as at %s%s)",
@@ -1455,6 +1666,7 @@ def get_chf_risk_free_rate_live():
             )
             time.sleep(delay)
 
+    _log_risk_free_fetch_failure("CHF", _SNB_CHF_URL, reason, response_text)
     _growth_logger.warning(
         "[capm] CHF risk-free live fetch failed - %s - falling back",
         reason or "unknown error",
@@ -1498,10 +1710,24 @@ def get_chf_risk_free_rate_for_run():
 # live-verification step tried), so this is the best available
 # researched evidence, not a live-confirmed response; the Director's
 # own next nightly SEK scan is the first real confirmation.
+#
+# Director's round 2 fix (16 Oct 2026, verified in production logs 16
+# Oct 03:39-03:45 UTC rescan): the from/to Observations endpoint 404s
+# on this series id. Switched to the SWEA API's "latest value" form,
+# GET /swea/v1/Observations/Latest/{seriesId} - no date range needed.
+# Not independently confirmed with a live call from this sandbox (same
+# network-policy block as above), so the exact response SHAPE of the
+# Latest endpoint is also unconfirmed - it may return a single
+# observation object rather than a list of them. _fetch_riksbank_sek_
+# once() below accepts either shape tolerantly (never assumes one),
+# same "don't guess the shape, parse what's there" rule as every other
+# fetch in this module. If the series id itself is still the problem,
+# the failure is logged with the exact URL (which embeds the id) and
+# the real response body, per this round's own "log the real cause"
+# requirement.
 # ---------------------------------------------------------------------
 _RIKSBANK_SEK_SERIES_ID = "SEGVB10YC"
-_RIKSBANK_SEK_URL = f"https://api.riksbank.se/swea/v1/Observations/{_RIKSBANK_SEK_SERIES_ID}"
-_RIKSBANK_LOOKBACK_DAYS = 30
+_RIKSBANK_SEK_URL = f"https://api.riksbank.se/swea/v1/Observations/Latest/{_RIKSBANK_SEK_SERIES_ID}"
 _RIKSBANK_TIMEOUT_SECONDS = 6
 _RIKSBANK_RETRY_ATTEMPTS = 3
 _RIKSBANK_RETRY_BASE_DELAY_SECONDS = 2
@@ -1510,30 +1736,38 @@ SEK_RISK_FREE_MAX = 0.12
 
 
 def _fetch_riksbank_sek_once():
-    """One single attempt at the Riksbank SWEA fetch - no retry, no
-    caching, no logging (the caller does both). Returns (rate, date,
-    reason, transient) in the exact same shape as _fetch_ecb_eur_
-    once()/_fetch_snb_chf_once() above."""
+    """One single attempt at the Riksbank SWEA "latest value" fetch -
+    no retry, no caching, no logging (the caller does both). Returns
+    (rate, date, reason, transient, response_text) - response_text is
+    the raw body (or None if no response was ever received), so a
+    failure can be logged with the real cause (Director's round 2
+    requirement). The Latest endpoint's own response shape is not
+    independently confirmed from this sandbox - accepts either a
+    single observation object or a list of them, never assumes one
+    (see this section's own module comment). A value whose own date
+    fails the shared staleness guard (_risk_free_value_is_stale()) is
+    rejected here too, same as "no in-band value"."""
     try:
-        _to = datetime.now(timezone.utc).date()
-        _from = _to - timedelta(days=_RIKSBANK_LOOKBACK_DAYS)
-        resp = requests.get(
-            _RIKSBANK_SEK_URL,
-            params={"from": _from.isoformat(), "to": _to.isoformat()},
-            timeout=_RIKSBANK_TIMEOUT_SECONDS,
-        )
+        resp = requests.get(_RIKSBANK_SEK_URL, timeout=_RIKSBANK_TIMEOUT_SECONDS)
     except Exception as e:
-        return None, None, f"{type(e).__name__}: {e}", True
+        return None, None, f"{type(e).__name__}: {e}", True, None
+    response_text = resp.text
     if resp.status_code != 200:
-        return None, None, f"HTTP {resp.status_code}", True
+        return None, None, f"HTTP {resp.status_code}", True, response_text
     try:
         payload = resp.json()
     except Exception as e:
-        return None, None, f"unparseable response ({type(e).__name__}: {e})", True
-    if not isinstance(payload, list) or not payload:
-        return None, None, "no usable row found", False
+        return None, None, f"unparseable response ({type(e).__name__}: {e})", True, response_text
+    if isinstance(payload, list):
+        observations = payload
+    elif isinstance(payload, dict):
+        observations = [payload]
+    else:
+        observations = None
+    if not observations:
+        return None, None, "no usable row found", False, response_text
     best_date, best_rate = None, None
-    for obs in payload:
+    for obs in observations:
         if not isinstance(obs, dict):
             continue
         date_str = str(obs.get("date") or "").strip()
@@ -1546,10 +1780,12 @@ def _fetch_riksbank_sek_once():
         if best_date is None or date_str > best_date:
             best_date, best_rate = date_str, raw / 100.0
     if best_rate is None:
-        return None, None, "no usable observation found", False
+        return None, None, "no usable observation found", False, response_text
     if not (SEK_RISK_FREE_MIN < best_rate < SEK_RISK_FREE_MAX):
-        return None, None, "no in-band value", False
-    return best_rate, best_date, None, False
+        return None, None, "no in-band value", False, response_text
+    if _risk_free_value_is_stale(best_date):
+        return None, None, f"stale value (as at {best_date!r})", False, response_text
+    return best_rate, best_date, None, False, response_text
 
 
 _SEK_RISK_FREE_RUN_CACHE = {"value": None}
@@ -1574,10 +1810,15 @@ def get_sek_risk_free_rate_live():
 
     Retries _fetch_riksbank_sek_once() up to _RIKSBANK_RETRY_ATTEMPTS
     times with exponential backoff, but ONLY on a transient (network-
-    level) failure - same shape as every other live fetch above."""
+    level) failure - same shape as every other live fetch above.
+    Director's round 2 fix (16 Oct 2026): the failure (including a
+    stale-value rejection) is also logged via _log_risk_free_fetch_
+    failure() with the exact URL and the first 300 characters of the
+    response body."""
     reason = None
+    response_text = None
     for attempt in range(_RIKSBANK_RETRY_ATTEMPTS):
-        rate, date_str, reason, transient = _fetch_riksbank_sek_once()
+        rate, date_str, reason, transient, response_text = _fetch_riksbank_sek_once()
         if rate is not None:
             _growth_logger.warning(
                 "[capm] SEK risk-free %.2f%% (Riksbank SWEA, as at %s%s)",
@@ -1595,6 +1836,7 @@ def get_sek_risk_free_rate_live():
             )
             time.sleep(delay)
 
+    _log_risk_free_fetch_failure("SEK", _RIKSBANK_SEK_URL, reason, response_text)
     _growth_logger.warning(
         "[capm] SEK risk-free live fetch failed - %s - falling back",
         reason or "unknown error",
