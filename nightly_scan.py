@@ -249,6 +249,34 @@ _FUND_SECTOR_NAMES = frozenset({
 # regardless of what its stored Sector says now or in the future.
 _FUND_SECTOR_OVERRIDE_NOT_A_FUND = frozenset({"EMG.L"})
 
+# TASK 7 (Director, 16 Oct 2026, "VEIL.L fund flag - blocks UK go-
+# live"): the MIRROR-IMAGE override of _FUND_SECTOR_OVERRIDE_NOT_A_FUND
+# just above - a ticker whose stored Sector text does NOT identify it
+# as a fund, even though it genuinely is one. VEIL.L (Vietnam
+# Enterprise Investments) is a closed-ended equity fund (Yahoo's own
+# business summary describes it as a "closed ended equity mutual
+# fund"), but its stored Sector is "General Financial" (from the
+# Wikipedia FTSE 250 sector column) - a label real operating companies
+# also legitimately carry, so it can't be added to _FUND_SECTOR_NAMES
+# without mis-flagging those companies too. Hand-maintained and
+# checked FIRST, unconditionally (never gated by universe/Sector) -
+# see the Is Fund assignment in run_universe_scan() below.
+_FUND_TICKER_OVERRIDE_IS_FUND = frozenset({"VEIL.L"})
+
+# TASK 7 part 2 (Director, 16 Oct 2026): REVIEW LOGGING ONLY - never
+# auto-flagging. A non-fund row (Is Fund already False, via the rule/
+# overrides above) whose Yahoo business summary mentions one of these
+# phrases (case-insensitive substring, never exact-match) gets one log
+# line so a human can review it - nothing about the row itself changes.
+# Deliberately broader/looser than _FUND_SECTOR_NAMES's exact-match
+# rule above, since a summary mention is a hint worth a human look, not
+# proof on its own (an operating company's summary can mention
+# "investment trust" in passing, e.g. describing a subsidiary or a
+# shareholder).
+_FUND_SUMMARY_REVIEW_PHRASES = (
+    "closed-end fund", "closed ended", "closed-ended", "investment trust",
+)
+
 # TASK 7 of the Director's overnight queue (12 Oct 2026): exactly these
 # five private universes - see run_universe_scan()'s own per-ticker
 # Sector-assignment comment below for the precedence rule this set
@@ -1093,6 +1121,17 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # production too, nothing regresses: the row's Sector stays
         # None exactly as it already does today.
         "_fallback_sector": (info.get("sector") or "").strip() or None,
+        # TASK 7 (Director, 16 Oct 2026, "VEIL.L fund flag" review-
+        # logging step): same free-ride as "_fallback_sector" just
+        # above - `info` (and therefore info.get("longBusinessSummary"))
+        # is already fetched for every other field on this row, so
+        # exposing it here is zero extra network call, never a new
+        # fetch. A scratch key the caller (run_universe_scan()) pops
+        # and uses ONLY to log a "[funds] review: ..." line for a
+        # non-fund row whose summary text suggests it might actually be
+        # one (see that call site's own comment) - never persisted to
+        # scan_store/the saved JSON, and never itself sets Is Fund.
+        "_business_summary": info.get("longBusinessSummary") or None,
         # Fix 6, AI fixes round 2 (2026-08-31): same source/fallback as
         # deep_dive_engine.analyze()'s own "name" field - `info` is
         # already fetched above for quality/intrinsic resolution, so
@@ -1612,6 +1651,11 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                     # None. Popped unconditionally so this scratch key
                     # never reaches scan_store/the saved JSON either way.
                     _yahoo_sector_fallback = row.pop("_fallback_sector", None)
+                    # TASK 7 part 2 (Director, 16 Oct 2026): popped here,
+                    # same "never reaches scan_store/the saved JSON"
+                    # treatment as _fallback_sector just above - used
+                    # ONLY by the review-logging check below.
+                    _business_summary = row.pop("_business_summary", None)
                     # TASK 7 of the Director's overnight queue (12 Oct
                     # 2026): a DIFFERENT precedence rule from TASK 3's
                     # above, not a reuse of it - for exactly these five
@@ -1643,10 +1687,23 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                     # valuation-specific fields are touched, Quality/
                     # Psychology/Discovery/long_score are left exactly
                     # as analyze_ticker_lite() computed them.
+                    # TASK 7 (Director, 16 Oct 2026, "VEIL.L fund flag -
+                    # blocks UK go-live"): the hand-maintained ticker
+                    # override is checked FIRST and unconditionally -
+                    # never gated by universe/Sector, same as the
+                    # existing not-a-fund override (EMG.L) is unconditional
+                    # within _is_sector_fund(). See _FUND_TICKER_OVERRIDE_
+                    # IS_FUND's own module comment for why VEIL.L needs
+                    # this (its stored Sector, "General Financial", can't
+                    # be added to _FUND_SECTOR_NAMES without also mis-
+                    # flagging real operating companies that share it).
                     row["Is Fund"] = (
-                        universe not in scanner_engine.AUSTRALIA_UNIVERSES
-                        and universe not in scanner_engine.USA_UNIVERSES
-                        and _is_sector_fund(t, row["Sector"])
+                        t in _FUND_TICKER_OVERRIDE_IS_FUND
+                        or (
+                            universe not in scanner_engine.AUSTRALIA_UNIVERSES
+                            and universe not in scanner_engine.USA_UNIVERSES
+                            and _is_sector_fund(t, row["Sector"])
+                        )
                     )
                     if row["Is Fund"]:
                         row["Intrinsic Value"] = None
@@ -1659,6 +1716,27 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                         # next to "N/A").
                         if row.get("Signal") in ("STRONG LONG", "LONG"):
                             row["Signal"] = "WATCHLIST"
+                    elif (
+                        _business_summary
+                        and universe not in scanner_engine.AUSTRALIA_UNIVERSES
+                        and universe not in scanner_engine.USA_UNIVERSES
+                    ):
+                        # TASK 7 part 2 (Director, 16 Oct 2026): REVIEW
+                        # LOGGING ONLY - a non-fund row whose summary
+                        # mentions one of _FUND_SUMMARY_REVIEW_PHRASES is
+                        # logged for a human to look at, never auto-
+                        # flagged (a summary mention alone isn't proof -
+                        # see that constant's own module comment). Stops
+                        # at the first matching phrase, same "one line
+                        # per row" intent as every other per-ticker log
+                        # line in this loop.
+                        _summary_lower = _business_summary.lower()
+                        for _review_phrase in _FUND_SUMMARY_REVIEW_PHRASES:
+                            if _review_phrase in _summary_lower:
+                                log(f"[funds] review: {t} (Sector "
+                                    f"{row['Sector']!r}) summary mentions "
+                                    f"{_review_phrase!r} - not flagged")
+                                break
                     rows.append(row)
             else:
                 _consecutive_rate_limited = (
