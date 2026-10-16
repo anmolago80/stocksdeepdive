@@ -53,7 +53,7 @@ def check(label, condition):
 
 _POOL = [{"ticker": f"B1T{i}", "company_name": f"B1 Test {i} Co",
           "most_recent_quarter": None} for i in range(3)]
-ts.seed_pool_presence({row["ticker"]: 3 for row in _POOL}, "2026-10-09")
+ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in _POOL}, "2026-10-09")
 
 
 # ======================================================================
@@ -93,7 +93,7 @@ ts.clear_batch_state()
 # ======================================================================
 if os.path.exists(ts.DB_PATH):
     os.remove(ts.DB_PATH)
-ts.seed_pool_presence({row["ticker"]: 3 for row in _POOL}, "2026-10-09")
+ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in _POOL}, "2026-10-09")
 
 with mock.patch("anthropic.Anthropic") as MockClient2, \
      mock.patch("anthropic.types.message_create_params.MessageCreateParamsNonStreaming",
@@ -153,7 +153,7 @@ ts.clear_batch_state()
 # ======================================================================
 if os.path.exists(ts.DB_PATH):
     os.remove(ts.DB_PATH)
-ts.seed_pool_presence({row["ticker"]: 3 for row in _POOL}, "2026-10-09")
+ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in _POOL}, "2026-10-09")
 ts.save_submitting_marker("2026-10-09", te.MODEL_TOP100, {"t100-0": {"entrants": {"B1T0": {}}}})
 
 with mock.patch("anthropic.Anthropic") as MockClient4, \
@@ -186,7 +186,7 @@ check("the old marker is gone and replaced by the new batch's own in-flight stat
 # ======================================================================
 if os.path.exists(ts.DB_PATH):
     os.remove(ts.DB_PATH)
-ts.seed_pool_presence({row["ticker"]: 3 for row in _POOL}, "2026-10-09")
+ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in _POOL}, "2026-10-09")
 ts.save_submitting_marker("2026-10-09", te.MODEL_TOP100, {"t100-0": {"entrants": {"B1T0": {}}}})
 # expected_count = len({"t100-0": ...}) = 1
 
@@ -222,7 +222,7 @@ ts.clear_batch_state()
 # submit fresh (never adopts a wrong-count batch as a last resort).
 if os.path.exists(ts.DB_PATH):
     os.remove(ts.DB_PATH)
-ts.seed_pool_presence({row["ticker"]: 3 for row in _POOL}, "2026-10-09")
+ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in _POOL}, "2026-10-09")
 ts.save_submitting_marker("2026-10-09", te.MODEL_TOP100, {"t100-0": {"entrants": {"B1T0": {}}}})
 
 with mock.patch("anthropic.Anthropic") as MockClient6, \

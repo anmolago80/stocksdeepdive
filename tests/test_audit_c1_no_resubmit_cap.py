@@ -181,7 +181,8 @@ pool = [{"ticker": "CCCC", "company_name": "CCCC Co", "most_recent_quarter": Non
 # orthogonal feature this file predates - seed these three tickers past
 # NEWCOMER_PERSISTENCE_NIGHTS so this check's own retry-window assertions
 # aren't ALSO gated as brand-new newcomers with no pool_presence row.
-ts.seed_pool_presence({"CCCC": 3, "DDDD": 3, "EEEE": 3}, "2026-09-29")
+ts.seed_pool_presence({"CCCC": te.NEWCOMER_PERSISTENCE_NIGHTS, "DDDD": te.NEWCOMER_PERSISTENCE_NIGHTS,
+                        "EEEE": te.NEWCOMER_PERSISTENCE_NIGHTS}, "2026-09-29")
 unscored = te._unscored_tickers(pool, te.MODEL_TOP100)
 unscored_tickers = {row["ticker"] for row, _ in unscored}
 assert "DDDD" not in unscored_tickers, "DDDD just failed - must be excluded within the retry window"
@@ -258,7 +259,7 @@ fake_pool = [{"ticker": f"CAP{i}", "company_name": f"Cap {i} Co", "most_recent_q
              for i in range(10)]
 # Same orthogonal-feature seeding as CHECK 2 above - this check is about
 # the daily submission cap, not the newcomer persistence filter.
-ts.seed_pool_presence({f"CAP{i}": 3 for i in range(10)}, "2026-09-29")
+ts.seed_pool_presence({f"CAP{i}": te.NEWCOMER_PERSISTENCE_NIGHTS for i in range(10)}, "2026-09-29")
 cap_logs = []
 result_capped = te.submit_nightly_batch(pool=fake_pool, log=cap_logs.append)
 assert result_capped is None, "submission must be refused once the batch-count cap is hit"

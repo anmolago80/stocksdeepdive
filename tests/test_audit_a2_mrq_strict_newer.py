@@ -74,7 +74,8 @@ def _save_score(ticker, most_recent_quarter):
 # Each ticker is seeded past NEWCOMER_PERSISTENCE_NIGHTS so persistence
 # gating never interferes with these assertions.
 # ======================================================================
-ts.seed_pool_presence({"OLDMRQ": 3, "NEWMRQ": 3}, "2026-09-29")
+ts.seed_pool_presence({"OLDMRQ": te.NEWCOMER_PERSISTENCE_NIGHTS,
+                        "NEWMRQ": te.NEWCOMER_PERSISTENCE_NIGHTS}, "2026-09-29")
 
 _save_score("OLDMRQ", most_recent_quarter="2026-06-30")
 _pool_older = [_pool_row("OLDMRQ", most_recent_quarter="2026-03-31")]
@@ -91,7 +92,7 @@ check("score 2026-06-30, pool row 2026-09-30 (NEWER) -> re-scored as 'new_result
 
 # Equal values must never trigger either way (sanity check, both old
 # and new logic agree here).
-ts.seed_pool_presence({"SAMEMRQ": 3}, "2026-09-29")
+ts.seed_pool_presence({"SAMEMRQ": te.NEWCOMER_PERSISTENCE_NIGHTS}, "2026-09-29")
 _save_score("SAMEMRQ", most_recent_quarter="2026-06-30")
 _pool_same = [_pool_row("SAMEMRQ", most_recent_quarter="2026-06-30")]
 _reasons_same = {row["ticker"]: reason for row, reason in te._unscored_tickers(_pool_same, te.MODEL_TOP100)}
@@ -105,7 +106,7 @@ check("score 2026-06-30, pool row 2026-06-30 (SAME) -> no re-score",
 for _ in range(te.TOP100_FAILURE_MAX_ATTEMPTS):
     ts.record_score_failure("OLDMRQFAIL", te.MODEL_TOP100, te.RUBRIC_VERSION, "weird_error",
                              most_recent_quarter="2026-06-30")
-ts.seed_pool_presence({"OLDMRQFAIL": 3}, "2026-09-29")
+ts.seed_pool_presence({"OLDMRQFAIL": te.NEWCOMER_PERSISTENCE_NIGHTS}, "2026-09-29")
 _pool_fail_older = [_pool_row("OLDMRQFAIL", most_recent_quarter="2026-03-31")]
 _reasons_fail_older = {row["ticker"]: reason for row, reason in te._unscored_tickers(_pool_fail_older, te.MODEL_TOP100)}
 check("exhausted failure's own most_recent_quarter 2026-06-30, pool row 2026-03-31 "
@@ -115,7 +116,7 @@ check("exhausted failure's own most_recent_quarter 2026-06-30, pool row 2026-03-
 for _ in range(te.TOP100_FAILURE_MAX_ATTEMPTS):
     ts.record_score_failure("NEWMRQFAIL", te.MODEL_TOP100, te.RUBRIC_VERSION, "weird_error",
                              most_recent_quarter="2026-06-30")
-ts.seed_pool_presence({"NEWMRQFAIL": 3}, "2026-09-29")
+ts.seed_pool_presence({"NEWMRQFAIL": te.NEWCOMER_PERSISTENCE_NIGHTS}, "2026-09-29")
 _pool_fail_newer = [_pool_row("NEWMRQFAIL", most_recent_quarter="2026-09-30")]
 _reasons_fail_newer = {row["ticker"]: reason for row, reason in te._unscored_tickers(_pool_fail_newer, te.MODEL_TOP100)}
 check("exhausted failure's own most_recent_quarter 2026-06-30, pool row 2026-09-30 "

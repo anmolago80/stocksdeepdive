@@ -171,7 +171,7 @@ with ts._conn() as _conn:
 pool = [{"ticker": "RETRY1", "company_name": "Retry One Co", "most_recent_quarter": None}]
 for i in range(4):
     pool.append({"ticker": f"FRESH{i}", "company_name": f"Fresh {i} Co", "most_recent_quarter": None})
-ts.seed_pool_presence({row["ticker"]: 3 for row in pool}, "2026-10-04")
+ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in pool}, "2026-10-04")
 
 _captured_requests = []
 

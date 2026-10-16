@@ -5,23 +5,27 @@ instruction_top100_cost_v6.md's own Push 2 point 8).
 A ticker entering the Top 100 pool for the first time (no score under
 ANY rubric version, and not in the pool the previous night) is not
 submitted for AI scoring until it has appeared in the pool on
-NEWCOMER_PERSISTENCE_NIGHTS (3) CONSECUTIVE nightly selections. Applies
-ONLY to never-scored newcomers - results-driven re-scores, the
-RESCORE_MAX_AGE_DAYS safety net, rubric-version re-scores (including
-this v6 bump's own full re-score) and the previous-rubric fallback are
-all unaffected, since a ticker that already carries a score under any
-rubric is exempt from the gate entirely (top100_store.
-latest_score_previous_rubric() returning non-None).
+NEWCOMER_PERSISTENCE_NIGHTS CONSECUTIVE nightly selections (read from
+that constant below, never hard-coded here - Director's "wait 3 -> 5
+nights" task, 16 Oct 2026). Applies ONLY to never-scored newcomers -
+results-driven re-scores, the RESCORE_MAX_AGE_DAYS safety net,
+rubric-version re-scores (including this v6 bump's own full re-score)
+and the previous-rubric fallback are all unaffected, since a ticker
+that already carries a score under any rubric is exempt from the gate
+entirely (top100_store.latest_score_previous_rubric() returning
+non-None).
 
 This file covers (instruction's own Push 2 point 8 test list):
-  - newcomer night 1 and night 2 -> deferred (not in _unscored_
-    tickers()'s own result)
-  - night 3 -> submitted (reason "new_or_rubric")
+  - newcomer deferred on every night before the last one, then
+    submitted on the Nth night (N = NEWCOMER_PERSISTENCE_NIGHTS)
   - drop-out on night 2, reappearing later -> counter resets to 1
   - a SCORED ticker with a quarter rollover (results-driven re-score)
     is submitted on night 1 regardless of its own presence streak
   - seeding (seed_pool_presence_for_v6_once()) sets a ticker with
-    prior-rubric history to 3, a true newcomer to 1
+    prior-rubric history to 3 (this function's OWN one-off, marker-
+    guarded v5->v6 migration value - fixed at 3 by its own design,
+    independent of NEWCOMER_PERSISTENCE_NIGHTS's current value; see
+    that function's own docstring), a true newcomer to 1
   - the nightly log line's new 3-bucket format and the admin-panel
     deferred count (_count_persistence_deferred())
 
@@ -51,31 +55,33 @@ def _pool_row(ticker, most_recent_quarter=None):
 
 # ======================================================================
 # CHECK 1: a brand-new ticker (no pool_presence row, no score under any
-# rubric) is deferred on night 1 and night 2, then submitted on night 3.
+# rubric) is deferred on every night before the last one, then
+# submitted on night N (N = NEWCOMER_PERSISTENCE_NIGHTS - read live,
+# never hard-coded, so this check keeps working whatever that constant
+# is set to).
 # ======================================================================
 pool1 = [_pool_row("NEWCO")]
+_n_nights = te.NEWCOMER_PERSISTENCE_NIGHTS
 
-ts.update_pool_presence(["NEWCO"], "2026-10-01")
-assert ts.pool_presence_map(["NEWCO"]) == {"NEWCO": 1}
-unscored_n1 = te._unscored_tickers(pool1, te.MODEL_TOP100)
-assert unscored_n1 == [], f"night 1 (consecutive=1): NEWCO must be deferred, got {unscored_n1}"
-print("[night1_deferred] a brand-new ticker on night 1 (consecutive_nights=1) is deferred OK")
-
-ts.update_pool_presence(["NEWCO"], "2026-10-02")
-assert ts.pool_presence_map(["NEWCO"]) == {"NEWCO": 2}
-unscored_n2 = te._unscored_tickers(pool1, te.MODEL_TOP100)
-assert unscored_n2 == [], f"night 2 (consecutive=2): NEWCO must still be deferred, got {unscored_n2}"
-print("[night2_deferred] the same ticker on night 2 (consecutive_nights=2) is still deferred OK")
-
-ts.update_pool_presence(["NEWCO"], "2026-10-03")
-assert ts.pool_presence_map(["NEWCO"]) == {"NEWCO": 3}
-unscored_n3 = te._unscored_tickers(pool1, te.MODEL_TOP100)
-unscored_n3_tickers = {row["ticker"]: reason for row, reason in unscored_n3}
-assert unscored_n3_tickers.get("NEWCO") == "new_or_rubric", (
-    f"night 3 (consecutive=3): NEWCO must now be submitted as 'new_or_rubric', got {unscored_n3}"
-)
-print("[night3_submitted] on night 3 (consecutive_nights=3) the ticker is finally "
-      "submitted, reason='new_or_rubric' OK")
+for _night in range(1, _n_nights + 1):
+    ts.update_pool_presence(["NEWCO"], f"2026-10-{_night:02d}")
+    assert ts.pool_presence_map(["NEWCO"]) == {"NEWCO": _night}
+    unscored = te._unscored_tickers(pool1, te.MODEL_TOP100)
+    if _night < _n_nights:
+        assert unscored == [], (
+            f"night {_night} (consecutive={_night}, < {_n_nights}): NEWCO must be deferred, got {unscored}"
+        )
+        print(f"[night{_night}_deferred] a brand-new ticker on night {_night} "
+              f"(consecutive_nights={_night}) is deferred OK")
+    else:
+        unscored_tickers = {row["ticker"]: reason for row, reason in unscored}
+        assert unscored_tickers.get("NEWCO") == "new_or_rubric", (
+            f"night {_night} (consecutive={_night} == {_n_nights}): NEWCO must now be "
+            f"submitted as 'new_or_rubric', got {unscored}"
+        )
+        print(f"[night{_night}_submitted] on night {_night} (consecutive_nights={_night} "
+              f"== NEWCOMER_PERSISTENCE_NIGHTS) the ticker is finally submitted, "
+              f"reason='new_or_rubric' OK")
 
 
 # ======================================================================
@@ -179,7 +185,7 @@ print("[seeding_once_only] the marker-guarded seeding never re-runs once its own
 # ======================================================================
 log_pool = [
     _pool_row("LOGRESCORE", most_recent_quarter="2026-09-30"),  # will be a re-score (new_results)
-    _pool_row("LOGNEWCOMER"),  # true newcomer, consecutive_nights=3 -> submitted
+    _pool_row("LOGNEWCOMER"),  # true newcomer, consecutive_nights == NEWCOMER_PERSISTENCE_NIGHTS -> submitted
     _pool_row("LOGDEFERRED"),  # true newcomer, consecutive_nights=1 -> deferred
 ]
 ts.save_score(
@@ -188,7 +194,7 @@ ts.save_score(
     not_rated=False, inversion_scenario=None, inversion_severity=None, prompt="{}", raw_response="{}",
     most_recent_quarter="2026-06-30",
 )
-ts.seed_pool_presence({"LOGNEWCOMER": 3}, "2026-10-06")
+ts.seed_pool_presence({"LOGNEWCOMER": te.NEWCOMER_PERSISTENCE_NIGHTS}, "2026-10-06")
 ts.seed_pool_presence({"LOGDEFERRED": 1}, "2026-10-06")
 
 logs = []

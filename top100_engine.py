@@ -1056,14 +1056,15 @@ def select_top100_pool(log=print, scan_day=None):
         # decision, Commit 5): every ticker in TONIGHT's selection that
         # wasn't in the baseline captured above (last night's saved 100/
         # ASX-20 pool) is a brand-new entrant purely because the pool
-        # grew 100->200 - seeded straight to consecutive_nights=3 so the
-        # newcomer-persistence-filter gate (NEWCOMER_PERSISTENCE_NIGHTS,
-        # three nights) doesn't defer scoring the whole expansion by
-        # three nights, same marker-guarded one-off pattern as seed_pool_
-        # presence_for_v6_once() above. Called BEFORE update_pool_
-        # presence() below (not after): top100_store.seed_pool_presence()
-        # is an INSERT OR IGNORE, so once it writes last_seen_utc_date=
-        # as_of/consecutive_nights=3 for an expansion ticker, update_pool_
+        # grew 100->200 - seeded straight to consecutive_nights=
+        # NEWCOMER_PERSISTENCE_NIGHTS (read live below, not hard-coded
+        # here) so the newcomer-persistence-filter gate doesn't defer
+        # scoring the whole expansion by that many nights, same marker-
+        # guarded one-off pattern as seed_pool_presence_for_v6_once()
+        # above. Called BEFORE update_pool_presence() below (not after):
+        # top100_store.seed_pool_presence() is an INSERT OR IGNORE, so
+        # once it writes last_seen_utc_date=as_of/consecutive_nights=
+        # NEWCOMER_PERSISTENCE_NIGHTS for an expansion ticker, update_pool_
         # presence()'s own "last_seen_utc_date IS utc_date already -> left
         # unchanged" rule leaves that 3 untouched a moment later - doing
         # it the other way around would let update_pool_presence() write
@@ -1430,7 +1431,7 @@ RESCORE_MAX_AGE_DAYS = 200
 # results-driven re-scores, the RESCORE_MAX_AGE_DAYS safety net,
 # rubric-version re-scores (including this v6 bump's own full re-
 # score) and the previous-rubric fallback are all unaffected.
-NEWCOMER_PERSISTENCE_NIGHTS = 3
+NEWCOMER_PERSISTENCE_NIGHTS = 5
 
 # Audit fixes, Commit 1 (30 Sep 2026, owner-directed, "close the no-
 # resubmit-loop door"): scheduler_engine._run_top100_poll used to

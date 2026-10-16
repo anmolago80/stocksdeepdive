@@ -193,7 +193,7 @@ def _submit_and_capture(pool, env_overrides=None):
         os.environ.pop(k, None)
     for k, v in _env.items():
         os.environ[k] = v
-    ts.seed_pool_presence({row["ticker"]: 3 for row in pool}, "2026-10-09")
+    ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in pool}, "2026-10-09")
     with mock.patch("anthropic.Anthropic") as MockClient, \
          mock.patch("anthropic.types.message_create_params.MessageCreateParamsNonStreaming",
                     side_effect=lambda **kw: kw), \

@@ -54,19 +54,19 @@ for _key in _KEYS:
     check(f"{_key} (ES): uses a {{n}} placeholder",
           "{n}" in i18n.ES[_key])
 
-check("NEWCOMER_PERSISTENCE_NIGHTS is still 3 (this fix is wording "
-      "only, never a behavior change)",
-      top100_engine.NEWCOMER_PERSISTENCE_NIGHTS == 3)
+# This test never asserts a specific value for NEWCOMER_PERSISTENCE_
+# NIGHTS itself (it changed from 3 to 5 on 16 Oct 2026, Director's
+# "wait 3 -> 5 nights" task) - only that the wording is read from
+# whatever the live constant is, not hard-coded to either number.
+_live_n = top100_engine.NEWCOMER_PERSISTENCE_NIGHTS
 
-check("i18n.t() renders the real NEWCOMER_PERSISTENCE_NIGHTS value "
-      "(EN): '... held a pool slot for 3 consecutive nights'",
-      "held a pool slot for 3 consecutive nights"
-      in i18n.t("top100.shelf_caption_awaiting", "en",
-                 n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS))
-check("i18n.t() renders the real value (ES): '... 3 noches consecutivas'",
-      "3 noches consecutivas"
-      in i18n.t("top100.shelf_caption_awaiting", "es",
-                 n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS))
+check(f"i18n.t() renders the real NEWCOMER_PERSISTENCE_NIGHTS value "
+      f"(EN): '... held a pool slot for {_live_n} consecutive nights'",
+      f"held a pool slot for {_live_n} consecutive nights"
+      in i18n.t("top100.shelf_caption_awaiting", "en", n=_live_n))
+check(f"i18n.t() renders the real value (ES): '... {_live_n} noches consecutivas'",
+      f"{_live_n} noches consecutivas"
+      in i18n.t("top100.shelf_caption_awaiting", "es", n=_live_n))
 
 # Prove it's genuinely READ from the constant, not hard-coded anywhere -
 # monkeypatch the constant to a different value and confirm the

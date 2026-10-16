@@ -171,15 +171,16 @@ assert os.path.exists(te._pool_expansion_v200_marker_path())
 
 presence_after_night1 = ts.pool_presence_map(_old_tickers + _new_tickers)
 for t in _new_tickers:
-    assert presence_after_night1[t] == 3, (t, presence_after_night1[t])
+    assert presence_after_night1[t] == te.NEWCOMER_PERSISTENCE_NIGHTS, (t, presence_after_night1[t])
 _expansion_log = next(l for l in _logs2 if "pool expansion" in l)
 assert f"seeded {len(_new_tickers)} expansion tickers" in _expansion_log, _expansion_log
 print(f"[expansion_seed_marks_new_entrants] {len(_new_tickers)} tickers that only entered "
-      f"because of the pool expansion are seeded straight to consecutive_nights=3; log line: "
-      f"{_expansion_log!r} OK")
+      f"because of the pool expansion are seeded straight to "
+      f"consecutive_nights=NEWCOMER_PERSISTENCE_NIGHTS; log line: {_expansion_log!r} OK")
 
 # A LATER run (marker already exists) adds one more ticker - it must
-# NOT be force-seeded to 3; it gets the plain newcomer value of 1.
+# NOT be force-seeded to NEWCOMER_PERSISTENCE_NIGHTS; it gets the plain
+# newcomer value of 1.
 _later_tickers = _old_tickers + _new_tickers + ["LATER_NEWCOMER"]
 _night2_rows = [_row(t, mos=float(i)) for i, t in enumerate(_later_tickers)]
 _save_universe("S&P 500", _night2_rows)
@@ -189,8 +190,8 @@ with mock.patch.object(te.scheduler_engine, "nightly_universe_cadence",
 presence_after_night2 = ts.pool_presence_map(["LATER_NEWCOMER"])
 assert presence_after_night2["LATER_NEWCOMER"] == 1, presence_after_night2
 print("[expansion_seed_is_one_off] a ticker that enters the pool on a LATER night (after the "
-      "one-off marker already exists) is never force-seeded to 3 - it gets the ordinary "
-      "consecutive_nights=1 every true newcomer gets OK")
+      "one-off marker already exists) is never force-seeded past the gate - it gets the "
+      "ordinary consecutive_nights=1 every true newcomer gets OK")
 
 _clear("S&P 500")
 

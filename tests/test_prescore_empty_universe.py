@@ -169,7 +169,7 @@ if os.path.exists(ts.DB_PATH):
     os.remove(ts.DB_PATH)
 scan_store.save_scan("DAX", [_row("DAXGOOD3", quality=82.0)], source_label="test fixture")
 _pool3 = _mk_pool(3)
-ts.seed_pool_presence({row["ticker"]: 3 for row in _pool3}, "2026-10-09")
+ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in _pool3}, "2026-10-09")
 os.environ["TOP200_PRESCORE_UNIVERSES"] = "Nikkei 225, DAX"
 os.environ["TOP200_PRESCORE_BUDGET_USD"] = "60"
 os.environ["TOP200_PRESCORE_UNTIL"] = "2099-12-31"

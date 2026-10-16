@@ -324,7 +324,7 @@ def _submit_and_capture(pool, env_overrides=None):
     # ticker not yet seen 3 consecutive nights in pool_presence - seed
     # it here exactly like test_audit_b1_submit_max_retries_marker.py
     # does, so these synthetic pool rows submit on the first call.
-    ts.seed_pool_presence({row["ticker"]: 3 for row in pool}, "2026-10-09")
+    ts.seed_pool_presence({row["ticker"]: te.NEWCOMER_PERSISTENCE_NIGHTS for row in pool}, "2026-10-09")
     with mock.patch("anthropic.Anthropic") as MockClient, \
          mock.patch("anthropic.types.message_create_params.MessageCreateParamsNonStreaming",
                     side_effect=lambda **kw: kw), \
