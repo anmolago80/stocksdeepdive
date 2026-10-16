@@ -643,6 +643,18 @@ def _build_best_by_ticker(log=print):
     dcf_unreliable_excluded_tickers = []
     dcf_unreliable_by_stored_flag = 0
     dcf_unreliable_by_current_price = 0
+    # TASK 4 (Director, 16 Oct 2026, "keep funds/investment trusts out
+    # of the Top 200"): nightly_scan.py already sets row["Is Fund"] for
+    # a non-US/non-AU row whose Sector matches _FUND_SECTOR_NAMES (its
+    # own "no company valuation for a fund" guard - Intrinsic Value/
+    # MOS % are already None for these rows), and the pre-score step
+    # already honours it - but this selection loop never checked it,
+    # so a fund row with a surviving Long Score (from before its
+    # valuation fields were nulled, or from a stale/legacy scan) could
+    # still win a pool slot. Checked here, same per-row "continue"
+    # pattern as the DCF-unreliable/stale checks above/below.
+    fund_excluded_count = 0
+    fund_excluded_tickers = []
     # Commit 4 of instruction_financials_income_store_and_top200_
     # guard.md: read ONCE per call, not per row - is_financials_store_
     # live() is a cheap env lookup but there's no reason to repeat it
@@ -688,6 +700,11 @@ def _build_best_by_ticker(log=print):
                     if ticker not in dcf_unreliable_excluded_tickers:
                         dcf_unreliable_excluded_tickers.append(ticker)
                     continue
+                if row.get("Is Fund"):
+                    fund_excluded_count += 1
+                    if ticker not in fund_excluded_tickers:
+                        fund_excluded_tickers.append(ticker)
+                    continue
                 if _financials_store_live and _financials_pool_ineligible(row):
                     fallback_financials_excluded_count += 1
                     if ticker not in fallback_financials_excluded_tickers:
@@ -708,6 +725,13 @@ def _build_best_by_ticker(log=print):
         log(f"[top100] selection: excluded {dcf_unreliable_excluded_count} "
             f"DCF-unreliable row(s) ({dcf_unreliable_by_stored_flag} by stored flag, "
             f"{dcf_unreliable_by_current_price} by current price): {', '.join(_shown)}{_more}")
+
+    if fund_excluded_count:
+        _fund_shown = fund_excluded_tickers[:20]
+        _fund_more = (f" (+{len(fund_excluded_tickers) - 20} more)"
+                      if len(fund_excluded_tickers) > 20 else "")
+        log(f"[top100] selection: excluded {fund_excluded_count} "
+            f"fund row(s): {', '.join(_fund_shown)}{_fund_more}")
 
     if fallback_financials_excluded_count:
         _fshown = fallback_financials_excluded_tickers[:20]
