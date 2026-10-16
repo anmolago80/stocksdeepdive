@@ -120,10 +120,19 @@ check("after reset, the next run fetches fresh",
 # CHECK 8-9: _fetch_snb_chf_once() - clean success, latest-date pick;
 # transient failure classification. Same shape as the ECB checks above.
 # ======================================================================
+# Director's parser fix (16 Oct 2026): the real response is a BOM +
+# semicolon-delimited, quoted-cell CSV with cube metadata lines before
+# the real header - not plain comma-CSV. First line is the EXACT
+# fragment seen in production logs ('﻿"CUBEID";"RENDOBLID"'); the
+# rest is this test's own representative shape of the metadata lines
+# that follow it before the real "Date"/"Value" header row.
 _GOOD_SNB_CSV = (
-    "DATE,VALUE\n"
-    "2026-08-15,0.30\n"
-    "2026-09-20,0.45\n"
+    "﻿\"CUBEID\";\"RENDOBLID\"\n"
+    "\"CHARTTITLE\";\"Rendite der eidgenoessischen Obligationen, 10 Jahre\"\n"
+    "\"D0\";\"D1\"\n"
+    "\"Date\";\"Value\"\n"
+    "\"2026-08-15\";\"0.30\"\n"
+    "\"2026-09-20\";\"0.45\"\n"
 )
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, _GOOD_SNB_CSV)):
     rate, date_str, reason, transient = ce._fetch_snb_chf_once()

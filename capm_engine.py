@@ -1124,18 +1124,26 @@ def get_jp_risk_free_rate_live():
 #
 # ECB SDW ("Long-term interest rate for convergence purposes", the
 # standard Maastricht-criterion euro-area 10-year government bond
-# yield proxy every EU institution already uses) - UNVERIFIED from
-# this sandbox, same disclosure the UK/Canada/Japan fetches above
-# already carry: the exact dataflow/series key below is this session's
-# own best understanding of the ECB SDW REST API's well-documented
-# shape, not a live-confirmed response. Written defensively for
-# exactly that reason - tolerant CSV column-header scan (never a fixed
-# index), date-based pick of the most recent observation (never
-# position-based - the same BoC Stage 1a-fix F5 lesson this module's
-# own Canada section above already learned the hard way).
+# yield proxy every EU institution already uses) - tolerant CSV
+# column-header scan (never a fixed index), date-based pick of the
+# most recent observation (never position-based - the same BoC Stage
+# 1a-fix F5 lesson this module's own Canada section above already
+# learned the hard way).
+#
+# Director's host fix (16 Oct 2026, verified in production logs 13-15
+# Oct): sdw-wsrest.ecb.europa.eu no longer resolves (NameResolutionError
+# on every attempt) - the ECB retired its old "Statistical Data
+# Warehouse" web-service host and moved the same SDMX REST API to the
+# ECB Data Portal at data-api.ecb.europa.eu, same dataflow/series key
+# and query string, just a new host. Not independently confirmed with
+# a live call from this sandbox (this session's own network policy
+# blocks data-api.ecb.europa.eu - and every other external host tried,
+# including example.com - so no outbound call to ANY internet host
+# succeeds here; this is a sandbox network-policy block, not a code
+# problem). The CSV-parsing logic below is unchanged either way.
 # =====================================================================
 _ECB_SDW_URL = (
-    "https://sdw-wsrest.ecb.europa.eu/service/data/IRS/"
+    "https://data-api.ecb.europa.eu/service/data/IRS/"
     "M.I8.L.L40.CI.0000.EUR.N.Z?lastNObservations=6&format=csvdata"
 )
 _ECB_TIMEOUT_SECONDS = 6
@@ -1299,15 +1307,25 @@ def get_chf_sek_risk_free_rate(ccy):
 # SNB (CHF) - correction 2 (9 Oct 2026). data.snb.ch's documented cube
 # REST API (GET /api/cube/{cubeId}/data/csv/{lang}) - cube "rendoblid"
 # ("Renditen eidgenössischer Obligationen" / yields on Swiss
-# Confederation bonds), 10-year maturity. UNVERIFIED from this sandbox
-# (no outbound network access to confirm the cube id/column names
-# against a live response) - written defensively for exactly that
-# reason, same as every other fetch in this module: tolerant CSV
-# column-header scan by name (never a fixed index), date-based pick of
-# the most recent observation. Swiss 10-year yields have gone negative
-# in real history (a genuinely different regime from every other
-# currency here), so this band is wider than UK/Canada/EUR's, and
-# allows a negative reading rather than rejecting it as out-of-band.
+# Confederation bonds), 10-year maturity. Tolerant column-header scan
+# by name (never a fixed index), date-based pick of the most recent
+# observation. Swiss 10-year yields have gone negative in real history
+# (a genuinely different regime from every other currency here), so
+# this band is wider than UK/Canada/EUR's, and allows a negative
+# reading rather than rejecting it as out-of-band.
+#
+# Director's parser fix (16 Oct 2026, verified in production logs 13-
+# 15 Oct): the real response is NOT plain comma-CSV with "Date"/"Value"
+# as its own first row, as originally assumed - it starts with a UTF-8
+# BOM, several metadata lines (the real header seen in production:
+# '﻿"CUBEID";"RENDOBLID"'), and is semicolon-delimited with every
+# cell double-quoted. _parse_snb_chf_csv() below (split out of the
+# fetch itself, so this test-only sample-data proof doesn't need a
+# live call) strips the BOM, splits each line on ";", strips the
+# surrounding quotes from every cell, and skips every line until the
+# one whose own (quote-stripped) cells contain both "Date" and "Value"
+# by name - that row becomes the header, exactly like every other
+# fetch in this module's own "never a fixed index/position" rule.
 # ---------------------------------------------------------------------
 _SNB_CHF_URL = "https://data.snb.ch/api/cube/rendoblid/data/csv/en"
 _SNB_TIMEOUT_SECONDS = 6
@@ -1315,6 +1333,55 @@ _SNB_RETRY_ATTEMPTS = 3
 _SNB_RETRY_BASE_DELAY_SECONDS = 2
 CHF_RISK_FREE_MIN = -0.02
 CHF_RISK_FREE_MAX = 0.12
+
+
+def _parse_snb_chf_csv(text):
+    """Parses the SNB cube CSV's actual shape (BOM + semicolon-
+    delimited, quoted cells, metadata lines before the real header) -
+    split out of _fetch_snb_chf_once() so a test can exercise it
+    directly against a recorded sample response, with no network call.
+    Returns (best_date, best_rate_as_fraction, error_reason) - error_
+    reason is None on success. Never raises on malformed input - every
+    row that doesn't parse as a date+float pair is skipped, same
+    "tolerant, skip what doesn't fit" rule as every other fetch here."""
+    text = text.lstrip("﻿")  # strip the UTF-8 BOM if present
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None, None, "no usable row found"
+
+    def _cells(line):
+        return [c.strip().strip('"') for c in line.split(";")]
+
+    header = None
+    header_idx = None
+    for i, line in enumerate(lines):
+        candidate = [c.strip().upper() for c in _cells(line)]
+        if "DATE" in candidate and "VALUE" in candidate:
+            header = candidate
+            header_idx = i
+            break
+    if header is None:
+        return None, None, f"no header row with Date+Value found (saw {len(lines)} line(s))"
+    date_col = header.index("DATE")
+    value_col = header.index("VALUE")
+
+    best_date, best_rate = None, None
+    for line in lines[header_idx + 1:]:
+        cells = _cells(line)
+        if len(cells) <= max(date_col, value_col):
+            continue
+        date_str = cells[date_col].strip()
+        try:
+            raw = float(cells[value_col])
+        except (TypeError, ValueError):
+            continue
+        if not date_str:
+            continue
+        if best_date is None or date_str > best_date:
+            best_date, best_rate = date_str, raw / 100.0
+    if best_rate is None:
+        return None, None, "no usable observation found"
+    return best_date, best_rate, None
 
 
 def _fetch_snb_chf_once():
@@ -1330,33 +1397,15 @@ def _fetch_snb_chf_once():
     if resp.status_code != 200:
         return None, None, f"HTTP {resp.status_code}", True
     try:
-        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        best_date, best_rate, reason = _parse_snb_chf_csv(resp.text)
     except Exception as e:
         return None, None, f"unparseable response ({type(e).__name__}: {e})", True
-    if len(lines) < 2:
-        return None, None, "no usable row found", False
-    header = [h.strip().upper() for h in lines[0].split(",")]
-    try:
-        date_col = header.index("DATE")
-        value_col = header.index("VALUE")
-    except ValueError:
-        return None, None, f"unexpected CSV header shape: {header}", True
-    best_date, best_rate = None, None
-    for line in lines[1:]:
-        cells = line.split(",")
-        if len(cells) <= max(date_col, value_col):
-            continue
-        date_str = cells[date_col].strip()
-        try:
-            raw = float(cells[value_col])
-        except (TypeError, ValueError):
-            continue
-        if not date_str:
-            continue
-        if best_date is None or date_str > best_date:
-            best_date, best_rate = date_str, raw / 100.0
     if best_rate is None:
-        return None, None, "no usable observation found", False
+        # A missing/unrecognized header row (never seen a Date+Value
+        # row at all) is treated as transient (worth retrying), same as
+        # every other "unexpected shape" case in this module - a
+        # genuinely empty/no-observation response is not.
+        return None, None, reason, bool(reason and "header row" in reason)
     if not (CHF_RISK_FREE_MIN < best_rate < CHF_RISK_FREE_MAX):
         return None, None, "no in-band value", False
     return best_rate, best_date, None, False
@@ -1426,17 +1475,31 @@ def get_chf_risk_free_rate_for_run():
 # ---------------------------------------------------------------------
 # Riksbank (SEK) - correction 2 (9 Oct 2026). api.riksbank.se's "SWEA"
 # REST API (GET /swea/v1/Observations/{seriesId}?from=...&to=...),
-# JSON observations. Series id below is this session's own best
-# understanding of the 10-year Swedish government bond benchmark
-# series on that API - UNVERIFIED from this sandbox, same disclosure
-# as every other fetch in this module (no outbound network access
-# here to confirm it against a live response). Written defensively
-# for exactly that reason: key lookup by name (never a fixed
-# position), date-based pick of the most recent observation in a
-# rolling 30-day request window (the API takes an explicit from/to
-# range, not a "last N" shortcut).
+# JSON observations. Key lookup by name (never a fixed position),
+# date-based pick of the most recent observation in a rolling 30-day
+# request window (the API takes an explicit from/to range, not a
+# "last N" shortcut).
+#
+# Director's series-id fix (16 Oct 2026, verified in production logs
+# 13-15 Oct): the old value, "SE0001030583", is a bond ISIN (a specific
+# bond instrument identifier), not a SWEA series id - the SWEA
+# Observations endpoint has no such series and returns HTTP 404 for
+# it. Corrected to "SEGVB10YC" ("Swedish Government Bond, maturity 10
+# years"), the Riksbank's own SWEA series id for this exact series -
+# sourced from the Riksbank's own published series catalogue ("Series
+# for the API", riksbank.se/en-gb/statistics/interest-rates-and-
+# exchange-rates/retrieving-interest-rates-and-exchange-rates-via-api/
+# series-for-the-api/, which lists it under GroupId 7 with data from 2
+# Jan 1987, alongside its SEGVB2YC/5YC/7YC siblings), independently
+# corroborated by a second, third-party source describing the same id
+# for the same series. NOT independently confirmed with a live call
+# from this sandbox - this session's own network policy blocks
+# api.riksbank.se entirely (same as every other host this task's own
+# live-verification step tried), so this is the best available
+# researched evidence, not a live-confirmed response; the Director's
+# own next nightly SEK scan is the first real confirmation.
 # ---------------------------------------------------------------------
-_RIKSBANK_SEK_SERIES_ID = "SE0001030583"
+_RIKSBANK_SEK_SERIES_ID = "SEGVB10YC"
 _RIKSBANK_SEK_URL = f"https://api.riksbank.se/swea/v1/Observations/{_RIKSBANK_SEK_SERIES_ID}"
 _RIKSBANK_LOOKBACK_DAYS = 30
 _RIKSBANK_TIMEOUT_SECONDS = 6
