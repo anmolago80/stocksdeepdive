@@ -3161,6 +3161,17 @@ async def _proxy(request: Request):
     Streaming both ways matters: Streamlit's own /_stcore endpoints and
     static assets can be large, and buffering them in memory would make
     the proxy the slowest part of the app."""
+    # Director task (verified in production logs, 13 Oct and 15 Oct
+    # 15:58 UTC): a bot request whose path starts with "//" (e.g.
+    # "//wp-login.php") made httpx.URL(path=...) below raise "InvalidURL:
+    # Relative URLs cannot have a path starting with '//'" - unhandled,
+    # a 500 for every such request. These paths never correspond to a
+    # real route (Streamlit nor anything server.py serves itself), so a
+    # plain 404 here is correct, not a workaround - and it's checked
+    # before touching httpx/_client at all, so nothing else in this
+    # function changes.
+    if request.url.path.startswith("//"):
+        return Response("Not Found", status_code=404)
     assert _client is not None
     url = httpx.URL(path=request.url.path, query=request.url.query.encode())
 
