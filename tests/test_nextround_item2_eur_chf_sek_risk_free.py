@@ -31,6 +31,7 @@ Run: python3 tests/test_nextround_item2_eur_chf_sek_risk_free.py
 import logging
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -58,10 +59,26 @@ def _resp(status=200, body=""):
     return m
 
 
+# Director's round 2 fix (16 Oct 2026) added a shared 45-day staleness
+# guard to every one of these fetchers (_risk_free_value_is_stale()) -
+# so every "clean success" fixture below needs a date that stays
+# fresh no matter which real day this file runs on, never a fixed
+# calendar string (a fixed "2026-09" already went stale with nothing
+# but the passage of time: 1 Sep 2026 -> 17 Oct 2026 is 46 days, past
+# the 45-day cutoff, with no code change at all). Computed relative to
+# "now" instead, same technique tests/test_director_task5_aud_risk_
+# free_round2.py and tests/test_director_task6_eur_chf_sek_risk_free_
+# round2.py already use.
+_TODAY = datetime.now(timezone.utc).date()
+_THIS_MONTH = _TODAY.strftime("%Y-%m")
+_LAST_MONTH = (_TODAY.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+_RECENT_DATE = (_TODAY - timedelta(days=5)).isoformat()
+_OLDER_RECENT_DATE = (_TODAY - timedelta(days=10)).isoformat()
+
 _GOOD_CSV = (
     "KEY,TIME_PERIOD,OBS_VALUE\n"
-    "IRS.M.I8.L.L40.CI.0000.EUR.N.Z,2026-08,2.60\n"
-    "IRS.M.I8.L.L40.CI.0000.EUR.N.Z,2026-09,2.75\n"
+    f"IRS.M.I8.L.L40.CI.0000.EUR.N.Z,{_LAST_MONTH},2.60\n"
+    f"IRS.M.I8.L.L40.CI.0000.EUR.N.Z,{_THIS_MONTH},2.75\n"
 )
 
 # ======================================================================
@@ -70,8 +87,8 @@ _GOOD_CSV = (
 # ======================================================================
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, _GOOD_CSV)):
     rate, date_str, reason, transient, response_text = ce._fetch_ecb_eur_once()
-    check("clean success: rate=0.0275 (the LATEST row, 2026-09, not the first)",
-          abs(rate - 0.0275) < 1e-9 and date_str == "2026-09")
+    check(f"clean success: rate=0.0275 (the LATEST row, {_THIS_MONTH}, not the first)",
+          abs(rate - 0.0275) < 1e-9 and date_str == _THIS_MONTH)
 
 with mock.patch.object(ce.requests, "get", side_effect=ConnectionError("boom")):
     rate, date_str, reason, transient, response_text = ce._fetch_ecb_eur_once()
@@ -136,13 +153,13 @@ _GOOD_SNB_CSV = (
     "\"CHARTTITLE\";\"Rendite der eidgenoessischen Obligationen, 10 Jahre\"\n"
     "\"D0\";\"D1\"\n"
     "\"Date\";\"Value\"\n"
-    "\"2026-08-15\";\"0.30\"\n"
-    "\"2026-09-20\";\"0.45\"\n"
+    f"\"{_OLDER_RECENT_DATE}\";\"0.30\"\n"
+    f"\"{_RECENT_DATE}\";\"0.45\"\n"
 )
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, _GOOD_SNB_CSV)):
     rate, date_str, reason, transient, response_text = ce._fetch_snb_chf_once()
-    check("SNB clean success: rate=0.0045 (the LATEST row, 2026-09-20, not the first)",
-          abs(rate - 0.0045) < 1e-9 and date_str == "2026-09-20")
+    check(f"SNB clean success: rate=0.0045 (the LATEST row, {_RECENT_DATE}, not the first)",
+          abs(rate - 0.0045) < 1e-9 and date_str == _RECENT_DATE)
 
 with mock.patch.object(ce.requests, "get", side_effect=ConnectionError("boom")):
     rate, date_str, reason, transient, response_text = ce._fetch_snb_chf_once()
@@ -191,14 +208,14 @@ check("after reset, the next CHF run fetches fresh", _live_chf2.call_count == 1)
 # pick (JSON observations, not CSV); transient failure classification.
 # ======================================================================
 _GOOD_RIKSBANK_JSON = [
-    {"date": "2026-08-20", "value": 1.90},
-    {"date": "2026-09-25", "value": 2.00},
+    {"date": _OLDER_RECENT_DATE, "value": 1.90},
+    {"date": _RECENT_DATE, "value": 2.00},
 ]
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, "")) as _get:
     _get.return_value.json = mock.Mock(return_value=_GOOD_RIKSBANK_JSON)
     rate, date_str, reason, transient, response_text = ce._fetch_riksbank_sek_once()
-    check("Riksbank clean success: rate=0.02 (the LATEST row, 2026-09-25, not the first)",
-          abs(rate - 0.02) < 1e-9 and date_str == "2026-09-25")
+    check(f"Riksbank clean success: rate=0.02 (the LATEST row, {_RECENT_DATE}, not the first)",
+          abs(rate - 0.02) < 1e-9 and date_str == _RECENT_DATE)
 
 with mock.patch.object(ce.requests, "get", side_effect=ConnectionError("boom")):
     rate, date_str, reason, transient, response_text = ce._fetch_riksbank_sek_once()

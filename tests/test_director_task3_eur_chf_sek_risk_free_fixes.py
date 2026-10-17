@@ -24,6 +24,7 @@ Run: python3 tests/test_director_task3_eur_chf_sek_risk_free_fixes.py
 """
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,6 +52,21 @@ def _resp(status=200, body=""):
     return m
 
 
+# Director's round 2 fix (16 Oct 2026) added a shared 45-day staleness
+# guard to every one of these fetchers - a fixed calendar date in a
+# "clean success" fixture silently goes stale with nothing but the
+# passage of real time (tests/test_nextround_item2_eur_chf_sek_risk_
+# free.py's own "2026-09" fixture did exactly this: fresh on 16 Oct,
+# stale - and failing - on 17 Oct, 46 days later, with no code change
+# at all). Computed relative to "now" instead, so this file's own
+# fixtures never go stale no matter which real day it runs on.
+_TODAY = datetime.now(timezone.utc).date()
+_THIS_MONTH = _TODAY.strftime("%Y-%m")
+_LAST_MONTH = (_TODAY.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+_RECENT_DATE = (_TODAY - timedelta(days=5)).isoformat()
+_OLDER_RECENT_DATE = (_TODAY - timedelta(days=10)).isoformat()
+
+
 # ======================================================================
 # 1. EUR - host swap only. The URL now points at the ECB Data Portal,
 # never the retired sdw-wsrest host; the path/query/parsing logic is
@@ -72,14 +88,14 @@ check("EUR tries I9 (post-Croatia euro area) first, then I8 as a fallback",
 
 _EUR_SAMPLE_CSV = (
     "KEY,TIME_PERIOD,OBS_VALUE\n"
-    "IRS.M.I9.L.L40.CI.0000.EUR.N.Z,2026-09,2.60\n"
-    "IRS.M.I9.L.L40.CI.0000.EUR.N.Z,2026-10,2.75\n"
+    f"IRS.M.I9.L.L40.CI.0000.EUR.N.Z,{_LAST_MONTH},2.60\n"
+    f"IRS.M.I9.L.L40.CI.0000.EUR.N.Z,{_THIS_MONTH},2.75\n"
 )
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, _EUR_SAMPLE_CSV)) as _get_eur:
     rate, date_str, reason, transient, response_text = ce._fetch_ecb_eur_once()
     check("EUR parser still works unchanged against a recorded sample response "
           "(picks the latest row by date, not position)",
-          abs(rate - 0.0275) < 1e-9 and date_str == "2026-10")
+          abs(rate - 0.0275) < 1e-9 and date_str == _THIS_MONTH)
     _called_url = _get_eur.call_args[0][0]
     check("the actual requests.get() call (no explicit url given) defaults to "
           "the first candidate (I9), the new host",
@@ -99,13 +115,13 @@ _CHF_SAMPLE_CSV = (
     "\"CHARTTITLE\";\"Rendite der eidgenoessischen Obligationen, 10 Jahre\"\n"
     "\"D0\";\"D1\"\n"
     "\"Date\";\"Value\"\n"
-    "\"2026-09-15\";\"0.30\"\n"
-    "\"2026-10-10\";\"0.45\"\n"
+    f"\"{_OLDER_RECENT_DATE}\";\"0.30\"\n"
+    f"\"{_RECENT_DATE}\";\"0.45\"\n"
 )
 best_date, best_rate, reason = ce._parse_snb_chf_csv(_CHF_SAMPLE_CSV)
 check("CHF parser handles the BOM + semicolon + quoted-cell + metadata-"
       "lines shape and picks the latest row by date (not position)",
-      abs(best_rate - 0.0045) < 1e-9 and best_date == "2026-10-10")
+      abs(best_rate - 0.0045) < 1e-9 and best_date == _RECENT_DATE)
 
 # The OLD parser (plain comma-split on the raw first line as header)
 # would have read '﻿"CUBEID";"RENDOBLID"' as ONE comma-less cell -
@@ -125,7 +141,7 @@ with mock.patch.object(ce.requests, "get", return_value=_resp(200, _CHF_SAMPLE_C
     rate, date_str, reason, transient, response_text = ce._fetch_snb_chf_once()
     check("_fetch_snb_chf_once() end-to-end: live rate/date extracted "
           "correctly from the recorded sample response",
-          abs(rate - 0.0045) < 1e-9 and date_str == "2026-10-10")
+          abs(rate - 0.0045) < 1e-9 and date_str == _RECENT_DATE)
 
 # A response with NO Date/Value header anywhere (e.g. a genuinely
 # malformed/unexpected cube) is treated as transient (worth retrying),
@@ -163,15 +179,15 @@ check("the actual Observations URL is built from the corrected id, via the "
 # purely the id string in the URL, not the response shape) - confirm
 # it still works against a recorded sample observation payload.
 _SEK_SAMPLE_JSON = [
-    {"date": "2026-09-20", "value": 1.95},
-    {"date": "2026-10-10", "value": 2.05},
+    {"date": _OLDER_RECENT_DATE, "value": 1.95},
+    {"date": _RECENT_DATE, "value": 2.05},
 ]
 with mock.patch.object(ce.requests, "get", return_value=_resp(200, "")) as _get_sek:
     _get_sek.return_value.json = mock.Mock(return_value=_SEK_SAMPLE_JSON)
     rate, date_str, reason, transient, response_text = ce._fetch_riksbank_sek_once()
     check("SEK parser (unchanged) still works against a recorded sample "
           "response, picking the latest observation by date",
-          abs(rate - 0.0205) < 1e-9 and date_str == "2026-10-10")
+          abs(rate - 0.0205) < 1e-9 and date_str == _RECENT_DATE)
     _called_sek_url = _get_sek.call_args[0][0]
     check("the actual requests.get() call used the corrected series id's URL",
           _called_sek_url == ce._RIKSBANK_SEK_URL)

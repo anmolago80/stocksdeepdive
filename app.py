@@ -28898,7 +28898,21 @@ def _render_property_vs_index_tool(email):
         # even though the two come from different engine calls.
         _cost_base_by_year = {pt["year"]: pt["cost_base"] for pt in _r["property_cost_base_series"]}
         _table_rows = [{
-            _sl("table_col_year"): row["year"],
+            # TASK 9 (Director, 17 Oct 2026): str() here - verified in
+            # production logs (17 Oct 01:44 UTC) that pyarrow's own
+            # ArrowInvalid ("Could not convert 'Total' with type str...
+            # Conversion failed for column Year") crashes this table,
+            # because this column held ints (row["year"]) for every
+            # per-year row but the totals row below appends the string
+            # label _sl("table_totals_row_label") ("Total") into the
+            # SAME column - pyarrow infers one dtype for the whole
+            # column and a str the LibreOffice-strict int dtype can't
+            # hold blows up the whole table, not just that cell.
+            # Display only: _style_pvi_table()'s own positional .iloc
+            # lookup (keyed off _first_pos_year, a row INDEX) never
+            # reads this column's value, so making every row's Year a
+            # string changes nothing about what the table calculates.
+            _sl("table_col_year"): str(row["year"]),
             _sl("table_col_rent"): _fmt_aud(row["rent"]),
             _sl("table_col_interest"): f"-{_fmt_aud(row['interest'])}",
             _sl("table_col_holding"): f"-{_fmt_aud(row['holding'])}",

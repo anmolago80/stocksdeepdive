@@ -24,11 +24,26 @@ Run: python3 test_capm_a6.py
 """
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import capm_engine as ce
+
+# Director's round 2 fix (16 Oct 2026) added a shared 45-day staleness
+# guard to get_au_risk_free_rate_live() - a fixed calendar date in the
+# "good csv, source == 'live'" fixture below would silently go stale
+# with nothing but the passage of real time (exactly the class of bug
+# tests/test_nextround_item2_eur_chf_sek_risk_free.py's own "2026-09"
+# fixture hit: fresh on 16 Oct, stale - and failing - on 17 Oct, 46
+# days later, no code change at all). Computed relative to "now"
+# instead, so this fixture never goes stale no matter which real day
+# this file runs on.
+_TODAY_A6 = datetime.now(timezone.utc).date()
+_A6_DATE_3D_AGO = (_TODAY_A6 - timedelta(days=3)).isoformat()
+_A6_DATE_2D_AGO = (_TODAY_A6 - timedelta(days=2)).isoformat()
+_A6_DATE_1D_AGO = (_TODAY_A6 - timedelta(days=1)).isoformat()
 
 
 # ---- tier boundaries + FX bucketing ----
@@ -160,9 +175,9 @@ _GOOD_CSV = (
     "Title,Yields on 2 year Treasury Bond,Yields on 10 year Treasury Bond\n"
     "Series ID,FCMYGBAG2,FCMYGBAG10\n"
     "Units,Per cent per annum,Per cent per annum\n"
-    "2026-09-24,5.10,5.35\n"
-    "2026-09-25,5.12,5.3850\n"
-    "2026-09-26,5.14,\n"  # most recent date has no 10-year quote yet (e.g. a public holiday)
+    f"{_A6_DATE_3D_AGO},5.10,5.35\n"
+    f"{_A6_DATE_2D_AGO},5.12,5.3850\n"
+    f"{_A6_DATE_1D_AGO},5.14,\n"  # most recent date has no 10-year quote yet (e.g. a public holiday)
 )
 
 ce.get_au_risk_free_rate_live.clear()  # bypass the 24h st.cache_data memo between fixtures
