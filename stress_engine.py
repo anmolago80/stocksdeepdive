@@ -189,7 +189,14 @@ GET_LONG_HISTORY_FLOOR = "2005-01-01"
 
 
 _LONG_HISTORY_TABLE = "stress_long_history_v4"
-_RESULT_CACHE_TABLE = "stress_result_cache_v9"
+# TASK 10 (17 Oct 2026): bumped v9 -> v10, same reasoning as every earlier
+# bump above - _stress_compute_full's result dict grew two new fields
+# (upside_series, runup_latest_pct) for the new Upside chart and the
+# Run-up chart's corrected caption; without the bump, an unchanged
+# portfolio's already-cached pre-TASK10 result would keep serving (for
+# up to RESULT_TTL_HOURS) with those fields missing, silently hiding the
+# new chart and caption rather than erroring.
+_RESULT_CACHE_TABLE = "stress_result_cache_v10"
 
 
 def _conn():
@@ -1136,6 +1143,19 @@ def max_drawdown(series):
     }
 
 
+def rolling_12m_series(series, window=252):
+    """Rolling ~252-trading-day (12-month) return at every point - the
+    chart-ready mirror of best_rolling_12m()'s single best figure, using
+    the exact same formula that function maximises over. NaN (blank) for
+    the series' first `window` points, since no trailing 12-month window
+    exists there yet. This series' own highest point is guaranteed to
+    equal best_rolling_12m(series)["pct"] because best_rolling_12m() now
+    derives its answer from this same series rather than recomputing it."""
+    if series is None or series.empty:
+        return None
+    return series / series.shift(window) - 1.0
+
+
 def best_rolling_12m(series):
     """Best rolling ~252-trading-day (12-month) return in `series` -
     {"pct", "start_date", "end_date"}, or None if `series` has under a
@@ -1143,8 +1163,7 @@ def best_rolling_12m(series):
     if series is None or len(series) < 253:
         return None
     window = 252
-    rolled = series / series.shift(window) - 1.0
-    rolled = rolled.dropna()
+    rolled = rolling_12m_series(series, window).dropna()
     if rolled.empty:
         return None
     end_date = rolled.idxmax()

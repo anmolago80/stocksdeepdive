@@ -19431,6 +19431,17 @@ def _stress_compute_full(weights, histories, index_histories, total_value_aud, f
     ret10 = stress_engine.replayed_return_pa(series, 10) if series is not None else None
     dd_series = stress_engine.drawdown_series(series) if series is not None else None
     runup_series = stress_engine.runup_from_trough_series(series) if series is not None else None
+    upside_series = stress_engine.rolling_12m_series(series) if series is not None else None
+    # TASK 10 (17 Oct 2026): the Run-up chart's own caption must show the
+    # Run-up chart's own value (not best_rolling_12m's, a different
+    # metric) - its last point is "how much the portfolio has grown from
+    # its worst point so far, as of today", i.e. exactly what the right-
+    # hand edge of the chart draws.
+    runup_latest_pct = None
+    if runup_series is not None and not runup_series.empty:
+        _last_valid = runup_series.dropna()
+        if not _last_valid.empty:
+            runup_latest_pct = float(_last_valid.iloc[-1]) * 100.0
 
     crises = [stress_engine.scenario_replay(weights, histories, index_histories, betas, w, total_value_aud)
               for w in stress_engine.CRISES]
@@ -19480,6 +19491,8 @@ def _stress_compute_full(weights, histories, index_histories, total_value_aud, f
         "replayed_10y_pct": ret10,
         "drawdown_series": _stress_series_to_pairs(dd_series),
         "runup_series": _stress_series_to_pairs(runup_series),
+        "upside_series": _stress_series_to_pairs(upside_series),
+        "runup_latest_pct": runup_latest_pct,
         "crises": crises, "rallies": rallies,
         "portfolio_beta": pbeta, "shock_grid": grid, "monte_carlo": mc,
         "per_holding": per_holding, "total_value_aud": total_value_aud,
@@ -21283,7 +21296,12 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
         if result.get("replayed_10y_pct") is not None:
             st.caption(_st_("replayed_return_line", years=10, pct=f"{result['replayed_10y_pct']:.1f}"))
 
-        # --- 2. Drawdown / run-up mini charts ------------------------------
+        # --- 2. Drawdown / Upside / Run-up mini charts ---------------------
+        # TASK 10 (17 Oct 2026): Drawdown and Upside side by side (both
+        # over the same up-to-15y combined series, so they share one date
+        # axis range); Run-up below at full width. Each chart's own
+        # caption now names the metric IT draws - the Run-up caption used
+        # to quote best_rolling_12m(), a different chart's number.
         st.caption(stress_etf_help_copy.stress_section_caption("drawdown_runup", _lang))
         _cc1, _cc2 = st.columns(2)
         with _cc1:
@@ -21292,14 +21310,20 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             if _fig is not None:
                 sdd_plotly_chart(_fig, key=f"stress_dd_{_active_portfolio or 'all'}")
             if dd:
-                st.caption(f"{dd['pct']:.1f}%")
+                st.caption(_st_("drawdown_chart_caption", pct=f"{dd['pct']:.1f}"))
         with _cc2:
-            _fig = _stress_area_chart(result["runup_series"], _st_("runup_chart_title"),
+            _fig = _stress_area_chart(result["upside_series"], _st_("upside_chart_title"),
                                         "#22c55e", "rgba(34,197,94,0.18)")
             if _fig is not None:
-                sdd_plotly_chart(_fig, key=f"stress_ru_{_active_portfolio or 'all'}")
+                sdd_plotly_chart(_fig, key=f"stress_up_{_active_portfolio or 'all'}")
             if best12:
-                st.caption(f"+{best12['pct']:.1f}%")
+                st.caption(_st_("upside_chart_caption", pct=f"{best12['pct']:.1f}"))
+        _fig = _stress_area_chart(result["runup_series"], _st_("runup_chart_title"),
+                                    "#22c55e", "rgba(34,197,94,0.18)")
+        if _fig is not None:
+            sdd_plotly_chart(_fig, key=f"stress_ru_{_active_portfolio or 'all'}")
+        if result.get("runup_latest_pct") is not None:
+            st.caption(_st_("runup_chart_caption", pct=f"{result['runup_latest_pct']:.1f}"))
 
     # --- 3. Crisis / rally replay tables --------------------------------
     _render_stress_scenario_table(result.get("crises", []), _st_, is_crisis=True, lang=_lang)
