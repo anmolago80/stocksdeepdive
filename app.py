@@ -26441,6 +26441,31 @@ def _tools_plan_key(active_name, base_key):
     return f"{base_key}__{active_name}"
 
 
+def _categories_for_user(email, lang):
+    """TASK 8 (Director, 17 Oct 2026, "custom budget categories"): the
+    ONE place that assembles "every category this user can currently
+    pick from" - budget_planner_engine.CATEGORIES's 10 presets (label
+    resolved via i18n, as every call site already did) FIRST, then
+    this email's own visible custom categories (tools_store.
+    list_custom_categories, already hidden-filtered), oldest-created
+    first. [{"id", "icon", "label"}] - every call site that used to
+    loop budget_planner_engine.CATEGORIES/CATEGORY_IDS directly (the
+    Plan tab inputs, the ledger category chart, the "is a bill"
+    expander, the ledger dropdown/is_bill map, the CSV import's
+    cat_id_to_label) loops this instead, so a custom category reaches
+    every one of those for free - never a second, parallel list to
+    keep in sync."""
+    _presets = [
+        {"id": c["id"], "icon": c["icon"], "label": i18n.t(f"tools.budget.cat.{c['id']}", lang)}
+        for c in budget_planner_engine.CATEGORIES
+    ]
+    _customs = [
+        {"id": c["id"], "icon": c["icon"], "label": c["label"]}
+        for c in tools_store.list_custom_categories(email)
+    ]
+    return _presets + _customs
+
+
 def _render_named_plan_switcher(email, kind, active_key, list_fn, create_fn, rename_fn, delete_fn):
     """Generic named-plan switcher (select + create/rename/delete),
     shared by the Budget Planner and Debt Recycling tools below - same
@@ -26587,6 +26612,81 @@ def _render_budget_planner_tool(email):
         _render_budget_plan_subtab(email, _active_plan, _bl)
 
 
+def _render_custom_categories_manager(email, _bl):
+    """TASK 8 (Director, 17 Oct 2026, "custom budget categories"): the
+    "Add a category" control + rename/hide list for this email's own
+    custom categories, below the preset+custom money-out inputs. A
+    custom category is account-wide (tools_store.custom_categories is
+    keyed on user_id alone, never on a plan name) - this manager is
+    therefore never scoped by _active_plan, same as the categories it
+    manages: one list, shared by every one of this email's named
+    plans, exactly like budget_planner_engine.CATEGORIES's own 10
+    presets already are.
+
+    Hide never deletes - see tools_store.hide_custom_category()'s own
+    docstring. There is no "unhide" affordance here, matching the
+    Director's own spec (list/create/rename/hide only)."""
+    _lang = st.session_state.get("lang", "en")
+    _preset_labels = [i18n.t(f"tools.budget.cat.{c['id']}", _lang) for c in budget_planner_engine.CATEGORIES]
+    _customs = tools_store.list_custom_categories(email)
+
+    with st.expander(_bl("manage_categories_expander")):
+        if _customs:
+            st.caption(_bl("manage_categories_heading"))
+            for _c in _customs:
+                _rc1, _rc2, _rc3 = st.columns([3, 1, 1])
+                with _rc1:
+                    _new_label = st.text_input(
+                        _bl("rename_category_label"), value=_c["label"],
+                        key=f"tools_budget_cat_rename__{_c['id']}__{email}",
+                        label_visibility="collapsed",
+                    )
+                with _rc2:
+                    if st.button(_bl("rename_category_button"),
+                                 key=f"tools_budget_cat_rename_btn__{_c['id']}__{email}"):
+                        _ok, _err = tools_store.rename_custom_category(
+                            email, _c["id"], _new_label, preset_labels=_preset_labels,
+                        )
+                        if _ok:
+                            st.toast(_bl("category_renamed_toast"), icon="✏️")
+                            st.rerun()
+                        else:
+                            st.error(_bl(f"add_category_error_{_err}"))
+                with _rc3:
+                    if st.button(_bl("hide_category_button"),
+                                 key=f"tools_budget_cat_hide_btn__{_c['id']}__{email}"):
+                        tools_store.hide_custom_category(email, _c["id"])
+                        st.toast(_bl("category_hidden_toast"), icon="🙈")
+                        st.rerun()
+
+        st.markdown(f"**{_bl('add_category_label')}**")
+        _name_key = f"tools_budget_add_cat_name__{email}"
+        _icon_key = f"tools_budget_add_cat_icon__{email}"
+        _ac1, _ac2, _ac3 = st.columns([3, 1, 1])
+        with _ac1:
+            _new_name = st.text_input(
+                _bl("add_category_name_label"), key=_name_key, label_visibility="collapsed",
+                placeholder=_bl("add_category_name_label"),
+            )
+        with _ac2:
+            _new_icon = st.text_input(
+                _bl("add_category_icon_label"), key=_icon_key, max_chars=4,
+                label_visibility="collapsed", placeholder=_bl("add_category_icon_label"),
+            )
+        with _ac3:
+            if st.button(_bl("add_category_button"), key=f"tools_budget_add_cat_btn__{email}"):
+                _new_id, _err = tools_store.create_custom_category(
+                    email, _new_name, icon=_new_icon, preset_labels=_preset_labels,
+                )
+                if _new_id:
+                    st.session_state.pop(_name_key, None)
+                    st.session_state.pop(_icon_key, None)
+                    st.toast(_bl("category_added_toast"), icon="➕")
+                    st.rerun()
+                else:
+                    st.error(_bl(f"add_category_error_{_err}"))
+
+
 def _render_budget_plan_subtab(email, _active_plan, _bl):
     """The Budget Planner's own original body (unchanged since Part 18/
     Part 30) - now the "Plan" sub-tab's content once LEDGER_LIVE/owner
@@ -26606,17 +26706,20 @@ def _render_budget_plan_subtab(email, _active_plan, _bl):
         key=_money_in_key,
     )
 
+    _lang = st.session_state.get("lang", "en")
+    _categories = _categories_for_user(email, _lang)
+
     st.markdown(f"**{_bl('categories_kicker')}**")
     _cat_cols = st.columns(2)
     category_values = {}
-    for _i, _cat in enumerate(budget_planner_engine.CATEGORIES):
+    for _i, _cat in enumerate(_categories):
         _cid = _cat["id"]
         _skey = _tools_plan_key(_active_plan, f"tools_budget_cat_{_cid}")
         if _skey not in st.session_state:
             st.session_state[_skey] = float(_saved_categories.get(_cid) or 0.0)
         with _cat_cols[_i % 2]:
             _val = st.number_input(
-                f"{_cat['icon']} {_bl(f'cat.{_cid}')}",
+                f"{_cat['icon']} {_cat['label']}",
                 min_value=0.0, step=25.0, format="%.0f", key=_skey,
             )
             category_values[_cid] = _val if _val > 0 else None
@@ -26631,6 +26734,8 @@ def _render_budget_plan_subtab(email, _active_plan, _bl):
                     amount=f"${_cat_fv:,.0f}",
                 ))
     st.caption(_bl("compounding_note"))
+
+    _render_custom_categories_manager(email, _bl)
 
     _summary = budget_planner_engine.savings_summary(money_in, category_values)
 
@@ -26815,16 +26920,22 @@ def _render_ledger_pace_chart(_bll, entries, plan, bills_plan, everyday_plan, da
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _render_ledger_category_chart(_bl, _bll, entries, category_plan_amounts, is_bill_map):
+def _render_ledger_category_chart(_bll, entries, category_plan_amounts, is_bill_map, categories):
     """STEP 3's category chart - non-bill categories only, a bar of
     spent/plan capped visually at 130% with a tick at 100%; bills are
-    listed underneath as plain text, never bars (the mock's own rule)."""
+    listed underneath as plain text, never bars (the mock's own rule).
+    TASK 8 (17 Oct 2026): `categories` is the caller's own _categories_
+    for_user() result (presets + this email's visible customs) -
+    replaces the direct budget_planner_engine.CATEGORIES loop/_bl(f"cat.
+    {c}") lookups this function used before, since a custom category's
+    label isn't an i18n key at all."""
+    _cat_id_to_label = {c["id"]: c["label"] for c in categories}
     _spent_by_cat = {}
     for e in entries:
         _spent_by_cat[e["category"]] = _spent_by_cat.get(e["category"], 0) + e["amount_cents"] / 100.0
 
-    _non_bill_cats = [c["id"] for c in budget_planner_engine.CATEGORIES if not is_bill_map.get(c["id"])]
-    _bill_cats = [c["id"] for c in budget_planner_engine.CATEGORIES if is_bill_map.get(c["id"])]
+    _non_bill_cats = [c["id"] for c in categories if not is_bill_map.get(c["id"])]
+    _bill_cats = [c["id"] for c in categories if is_bill_map.get(c["id"])]
 
     _any_data = any(_spent_by_cat.get(c) for c in _non_bill_cats) or any(category_plan_amounts.get(c) for c in _non_bill_cats)
     st.markdown(f"**{_bll('category_chart_heading')}**")
@@ -26835,7 +26946,7 @@ def _render_ledger_category_chart(_bl, _bll, entries, category_plan_amounts, is_
         _cats_with_activity = [
             c for c in _non_bill_cats if _spent_by_cat.get(c) or category_plan_amounts.get(c)
         ]
-        _labels = [_bl(f"cat.{c}") for c in _cats_with_activity]
+        _labels = [_cat_id_to_label.get(c, c) for c in _cats_with_activity]
         _pct = []
         _texts = []
         for c in _cats_with_activity:
@@ -26875,24 +26986,27 @@ def _render_ledger_category_chart(_bl, _bll, entries, category_plan_amounts, is_
             _pl = category_plan_amounts.get(c)
             if _pl:
                 _bill_lines.append(
-                    _bll("bills_line", category=_bl(f"cat.{c}"),
+                    _bll("bills_line", category=_cat_id_to_label.get(c, c),
                          spent=_ledger_fmt_money(_sp), plan=_ledger_fmt_money(_pl))
                 )
         if _bill_lines:
             st.caption(" · ".join(_bill_lines))
 
 
-def _render_budget_planner_ledger_is_bill_expander(email, _bll, is_bill_map):
+def _render_budget_planner_ledger_is_bill_expander(email, _bll, is_bill_map, categories):
     """The "is a bill" tick next to the category chart - the user ticks
     it explicitly; never guessed from a category's name (instruction's
-    own explicit rule)."""
+    own explicit rule). TASK 8 (17 Oct 2026): loops `categories` (the
+    caller's own _categories_for_user() result) instead of budget_
+    planner_engine.CATEGORIES directly, so a custom category gets its
+    own is-a-bill tick too - its own icon+label, not an i18n lookup
+    that would never resolve for a custom id."""
     with st.expander(_bll("is_bill_expander")):
-        for _cat in budget_planner_engine.CATEGORIES:
+        for _cat in categories:
             _cid = _cat["id"]
             _ckey = f"tools_ledger_is_bill_{_cid}__{email}"
             _new_val = st.checkbox(
-                f"{_cat['icon']} {i18n.t(f'tools.budget.cat.{_cid}', st.session_state.get('lang', 'en'))} "
-                f"- {_bll('is_bill_checkbox')}",
+                f"{_cat['icon']} {_cat['label']} - {_bll('is_bill_checkbox')}",
                 value=is_bill_map.get(_cid, False), key=_ckey,
             )
             if _new_val != is_bill_map.get(_cid, False):
@@ -27035,8 +27149,8 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
     ACCOUNT (email), not to any one named plan - `active_plan` is only
     used to scope widget keys consistently with the rest of this tool,
     never to filter which ledger rows are shown. Grid category options
-    are all 10 preset CATEGORIES (not just ones with a nonzero plan
-    amount)."""
+    are every preset plus this email's own visible custom categories
+    (TASK 8, 17 Oct 2026 - not just ones with a nonzero plan amount)."""
     _bll = lambda key, **kw: i18n.t(f"tools.budget.ledger.{key}", _lang, **kw)
     _today = _ledger_today_brisbane()
 
@@ -27055,7 +27169,13 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
     _month_start, _month_end = _ledger_month_bounds(_sel_year, _sel_month)
     _month_label_str = _ledger_month_label(_sel_year, _sel_month, _lang)
 
-    _cat_id_to_label = {c["id"]: _bl(f"cat.{c['id']}") for c in budget_planner_engine.CATEGORIES}
+    # TASK 8 (17 Oct 2026): presets + this email's visible custom
+    # categories, one list - _cat_id_to_label/_cat_label_to_id/is_bill_
+    # map below all derive from it now, so a custom category reaches
+    # the dropdown, the chart, the is-a-bill tick, and CSV import's own
+    # cat_id_to_label for free.
+    _categories = _categories_for_user(email, _lang)
+    _cat_id_to_label = {c["id"]: c["label"] for c in _categories}
     _cat_label_to_id = {v: k for k, v in _cat_id_to_label.items()}
     _cat_labels = list(_cat_id_to_label.values())
 
@@ -27070,7 +27190,7 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
     _plan_data = tools_store.get_budget_plan(email, active_plan) or {}
     _plan_categories = _plan_data.get("categories") or {}
     _is_bill_map = {
-        _cid: tools_store.is_category_bill(email, _cid) for _cid in budget_planner_engine.CATEGORY_IDS
+        c["id"]: tools_store.is_category_bill(email, c["id"]) for c in _categories
     }
     _plan_total = budget_planner_engine.ledger_plan_total(_plan_categories)
     _bills_plan = budget_planner_engine.ledger_bills_plan(_plan_categories, _is_bill_map)
@@ -27090,7 +27210,7 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
         _grid_df = pd.DataFrame({
             "Date": [_date.fromisoformat(e["date"]) for e in _entries],
             "What": [e["description"] for e in _entries],
-            "Category": [_cat_id_to_label.get(e["category"], e["category"]) for e in _entries],
+            "Category": [_cat_id_to_label.get(e["category"], _bll("category_removed")) for e in _entries],
             "Amount": [e["amount_cents"] / 100.0 for e in _entries],
         })
     else:
@@ -27201,15 +27321,15 @@ def _render_budget_ledger_tab(email, active_plan, _bl, _lang):
     _chart_col, _bill_col = st.columns([3, 1])
     with _chart_col:
         with st.container(border=True):
-            _render_ledger_category_chart(_bl, _bll, _entries, _plan_categories, _is_bill_map)
+            _render_ledger_category_chart(_bll, _entries, _plan_categories, _is_bill_map, _categories)
     with _bill_col:
-        _render_budget_planner_ledger_is_bill_expander(email, _bll, _is_bill_map)
+        _render_budget_planner_ledger_is_bill_expander(email, _bll, _is_bill_map, _categories)
 
     if st.button(_bll("export_csv"), key=_tools_plan_key(active_plan, "tools_ledger_export")):
         _export_rows = tools_store.list_ledger_entries(email, _month_start, _month_end)
         _csv_lines = ["Date,What,Category,Amount"]
         for _r in _export_rows:
-            _cat_disp = _cat_id_to_label.get(_r["category"], _r["category"])
+            _cat_disp = _cat_id_to_label.get(_r["category"], _bll("category_removed"))
             _what_q = str(_r["description"] or "").replace('"', '""')
             _csv_lines.append(
                 f'{_r["date"]},"{_what_q}","{_cat_disp}",{_r["amount_cents"] / 100.0:.2f}'

@@ -401,6 +401,29 @@ def _conn():
             PRIMARY KEY (user_id, category)
         )"""
     )
+    # TASK 8 (Director, 17 Oct 2026, "custom budget categories"): a
+    # user-defined category, alongside (never replacing) budget_
+    # planner_engine.CATEGORIES's own 10 presets. `id` is the stable,
+    # hand-assigned "custom_<n>" string every other table that stores a
+    # category (budget_plans.categories_json, ledger_entries.category,
+    # ledger_rules.category, ledger_category_flags.category) already
+    # treats as plain opaque text - so a custom category needs NO
+    # schema change anywhere else, it just needs to exist as a
+    # (user_id, id) pair with a label/icon to show. `hidden` is a soft-
+    # delete flag, never a DELETE: see hide_custom_category()'s own
+    # docstring for why removal must never cascade into ledger rows
+    # that already used the id.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS custom_categories (
+            user_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            icon TEXT NOT NULL,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, id)
+        )"""
+    )
     return conn
 
 
@@ -1515,3 +1538,170 @@ def save_ledger_import_rows(email, rows, import_batch_id):
                  import_batch_id, r.get("note_fx"), now, now),
             )
     return len(rows)
+
+
+# -----------------------------------------------------------------
+# TASK 8 (Director, 17 Oct 2026, "custom budget categories"): a user-
+# defined category sitting alongside budget_planner_engine.CATEGORIES's
+# 10 presets. Every function below re-checks ownership (user_id = ?
+# in every WHERE clause, same IDENTITY rule as the rest of this
+# module), same no-information-leak shape as the ledger functions
+# above - a caller can never read/rename/hide another user's category.
+#
+# This module stays dependency-free (stdlib only, same rule can_check()
+# already documents) - the preset-label uniqueness check needs the
+# PRESET categories' own display labels, which live in i18n.py/
+# budget_planner_engine.py, so create_custom_category()/rename_custom_
+# category() take `preset_labels` as a plain argument from the caller
+# (app.py) rather than importing either module here.
+# -----------------------------------------------------------------
+
+MAX_VISIBLE_CUSTOM_CATEGORIES = 10
+CUSTOM_CATEGORY_LABEL_MAX_LEN = 30
+DEFAULT_CUSTOM_CATEGORY_ICON = "\U0001F3F7\U0000FE0F"  # 🏷️
+
+
+def list_custom_categories(email):
+    """Every VISIBLE custom category for this email, oldest first -
+    empty list if none, or if hidden. Hidden ones are never returned
+    here - every real call site (the Plan tab's own inputs, the Ledger
+    dropdown/chart/is-a-bill map, the CSV import's cat_id_to_label)
+    only ever wants the categories a user can currently pick from;
+    there is no "unhide" feature for a hidden one to need listing
+    anywhere (see hide_custom_category()'s own docstring)."""
+    if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, icon FROM custom_categories "
+            "WHERE user_id = ? AND hidden = 0 ORDER BY created_at",
+            (email,),
+        ).fetchall()
+    return [{"id": r[0], "label": r[1], "icon": r[2]} for r in rows]
+
+
+def _custom_category_next_id(conn, email):
+    """"custom_<n>" where n is one more than the highest n this email
+    has EVER had (hidden ones included - rows are never deleted, so
+    this is always a fresh id, never a reused one, even if every prior
+    custom category for this email is now hidden)."""
+    rows = conn.execute(
+        "SELECT id FROM custom_categories WHERE user_id = ?", (email,),
+    ).fetchall()
+    best_n = 0
+    for (row_id,) in rows:
+        try:
+            n = int(row_id.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        best_n = max(best_n, n)
+    return f"custom_{best_n + 1}"
+
+
+def _custom_category_validate_label(conn, email, label, preset_labels, exclude_id=None):
+    """Shared by create/rename: (clean_label, error) - error is None on
+    success, or one of "label_required" (empty after strip),
+    "label_too_long" (>30 chars), "duplicate" (case-insensitive match
+    against a preset label or this email's own other custom labels -
+    hidden ones included, so a retired label can't be silently reused
+    either). `exclude_id`: a rename excludes its OWN current row from
+    the duplicate check against itself."""
+    clean = (label or "").strip()
+    if not clean:
+        return None, "label_required"
+    if len(clean) > CUSTOM_CATEGORY_LABEL_MAX_LEN:
+        return None, "label_too_long"
+    clean_lower = clean.lower()
+    for p in (preset_labels or []):
+        if (p or "").strip().lower() == clean_lower:
+            return None, "duplicate"
+    rows = conn.execute(
+        "SELECT id, label FROM custom_categories WHERE user_id = ?", (email,),
+    ).fetchall()
+    for row_id, row_label in rows:
+        if row_id == exclude_id:
+            continue
+        if (row_label or "").strip().lower() == clean_lower:
+            return None, "duplicate"
+    return clean, None
+
+
+def create_custom_category(email, label, icon=None, preset_labels=None):
+    """Creates a new, visible custom category. Returns (category_id,
+    error) - error is None on success (category_id is then the new
+    "custom_<n>" id), or one of "no_email", "label_required",
+    "label_too_long", "duplicate", "limit_reached" (10 already
+    visible - counts visible only, so hiding one frees a slot).
+    `icon`: defaults to DEFAULT_CUSTOM_CATEGORY_ICON when blank.
+    `preset_labels`: the 10 preset categories' own display labels
+    (budget_planner_engine.CATEGORIES, via i18n), supplied by the
+    caller for the uniqueness check - see this section's own module
+    comment for why this module never imports either directly."""
+    if not email:
+        return None, "no_email"
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        if len(list_custom_categories(email)) >= MAX_VISIBLE_CUSTOM_CATEGORIES:
+            return None, "limit_reached"
+        clean_label, error = _custom_category_validate_label(conn, email, label, preset_labels)
+        if error:
+            return None, error
+        new_id = _custom_category_next_id(conn, email)
+        clean_icon = (icon or "").strip() or DEFAULT_CUSTOM_CATEGORY_ICON
+        conn.execute(
+            "INSERT INTO custom_categories (user_id, id, label, icon, hidden, created_at) "
+            "VALUES (?, ?, ?, ?, 0, ?)",
+            (email, new_id, clean_label, clean_icon, now),
+        )
+        return new_id, None
+
+
+def rename_custom_category(email, category_id, new_label, preset_labels=None):
+    """Renames this email's OWN custom category - re-checks ownership
+    (WHERE user_id = ? AND id = ?). Returns (ok, error) - error is None
+    on success, or "no_email"/"label_required"/"label_too_long"/
+    "duplicate"/"not_found" (missing, already hidden is fine - a
+    rename and a hide can both apply to the same row, order doesn't
+    matter). Only the label changes - the id and icon are untouched."""
+    if not email or not category_id:
+        return False, "no_email"
+    with _conn() as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM custom_categories WHERE user_id = ? AND id = ?",
+            (email, category_id),
+        ).fetchone()
+        if not existing:
+            return False, "not_found"
+        clean_label, error = _custom_category_validate_label(
+            conn, email, new_label, preset_labels, exclude_id=category_id,
+        )
+        if error:
+            return False, error
+        conn.execute(
+            "UPDATE custom_categories SET label = ? WHERE user_id = ? AND id = ?",
+            (clean_label, email, category_id),
+        )
+        return True, None
+
+
+def hide_custom_category(email, category_id):
+    """Marks this email's OWN custom category hidden - re-checks
+    ownership. NEVER a DELETE: ledger_entries/ledger_rules/ledger_
+    category_flags rows that already used this id keep their category
+    text forever (no foreign key anywhere - same "a category's id is
+    plain opaque text" rule budget_planner_engine.CATEGORIES's own
+    presets already live by). The caller (app.py) is responsible for
+    showing "(category removed)" wherever a row's category no longer
+    resolves to any CURRENTLY VISIBLE category - a presentation
+    fallback, never a DB constraint. Returns True if a row owned by
+    this email was actually hidden, False if it doesn't exist or
+    belongs to someone else (same no-information-leak shape as
+    delete_ledger_entry)."""
+    if not email or not category_id:
+        return False
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE custom_categories SET hidden = 1 WHERE user_id = ? AND id = ?",
+            (email, category_id),
+        )
+        return cur.rowcount > 0
