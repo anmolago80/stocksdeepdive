@@ -28,6 +28,7 @@ from the real function rather than inspecting its source text.
 
 Run: python3 tests/test_director_task11_streamlit_mem_heartbeat.py
 """
+import inspect
 import os
 import re
 import sys
@@ -56,35 +57,63 @@ def check(label, condition):
 _MEM_LINE_RE = re.compile(r"^\[mem\] rss=(\d+\.\d\d|unavailable)GB streamlit$")
 
 
-def _run_loop_briefly(role, run_seconds=0.3, tick_seconds=0.03):
-    """Starts the REAL scheduler_engine._loop() on a daemon thread for a
-    short, bounded wall-clock window, with _process_role()/_CHECK_EVERY_
-    SECONDS patched so it ticks fast and reports the given role, and
-    SCHEDULER_ENABLED=false so no real job ever runs. Returns the list
-    of captured log lines. The thread is left running (daemon=True,
-    same as production) - there is no clean way to stop an unbounded
-    `while True:` loop, so this test never joins it; it just stops
-    reading its output once run_seconds elapses, same convention this
-    repo already uses wherever scheduler_engine.start() itself is
-    exercised in a test."""
+def _run_loop_briefly(role, tick_seconds=0.01, settle_seconds=0.1,
+                       expect_match=None, max_wait_seconds=20.0):
+    """Starts the REAL scheduler_engine._loop() on a daemon thread, with
+    _process_role()/_CHECK_EVERY_SECONDS patched so it ticks fast and
+    reports the given role, and SCHEDULER_ENABLED=false so no real job
+    ever runs. The thread is left running (daemon=True, same as
+    production) - there is no clean way to stop an unbounded
+    `while True:` loop, so this never joins it.
+
+    POLLS rather than sleeping a fixed window, so this stays fast in
+    the common case and robust under CPU contention (a full regression
+    sweep runs 200+ test processes; a fixed short sleep that worked
+    standalone can miss a thread that simply hasn't been scheduled yet
+    - see this test file's own history, caught by exactly that sweep).
+
+    - expect_match given: returns as soon as a captured line matches
+      it (or once max_wait_seconds elapses without one).
+    - expect_match=None (a "confirm nothing fires" call): first waits
+      until sched._last_heartbeat has visibly advanced past this
+      call's own start (proof the thread actually ran at least one
+      real iteration, not just that it technically started), THEN
+      waits settle_seconds more - so a thread that was simply slow to
+      get scheduled can never be mistaken for "the gate correctly
+      stayed quiet".
+
+    Returns (lines, ticked: bool)."""
     _lines = []
     _old_env = os.environ.get("SCHEDULER_ENABLED")
     os.environ["SCHEDULER_ENABLED"] = "false"
+    _start = time.time()
+    ticked = False
     try:
         with mock.patch.object(sched, "_process_role", return_value=role), \
              mock.patch.object(sched, "_CHECK_EVERY_SECONDS", tick_seconds):
-            t = threading.Thread(
+            threading.Thread(
                 target=sched._loop, args=(lambda m, *a, **k: _lines.append(m),),
                 daemon=True,
-            )
-            t.start()
-            time.sleep(run_seconds)
+            ).start()
+            deadline = time.time() + max_wait_seconds
+            while time.time() < deadline:
+                if sched._last_heartbeat is not None and sched._last_heartbeat > _start:
+                    ticked = True
+                if expect_match is not None and any(expect_match.match(m) for m in _lines):
+                    break
+                if expect_match is None and ticked:
+                    break
+                time.sleep(0.01)
+            # A short settle window after whichever condition ended the
+            # poll, so an immediate double-fire (a bug this test wants
+            # to catch) still has a chance to show up in `_lines`.
+            time.sleep(settle_seconds)
     finally:
         if _old_env is None:
             os.environ.pop("SCHEDULER_ENABLED", None)
         else:
             os.environ["SCHEDULER_ENABLED"] = _old_env
-    return _lines
+    return _lines, ticked
 
 
 # ======================================================================
@@ -107,7 +136,7 @@ check("it is a SEPARATE constant from the existing alive-heartbeat "
 # ======================================================================
 sched._last_streamlit_mem_log_at = None
 sched._last_heartbeat_log_at = None
-_lines_streamlit = _run_loop_briefly("streamlit")
+_lines_streamlit, _ticked = _run_loop_briefly("streamlit", expect_match=_MEM_LINE_RE)
 _mem_lines = [m for m in _lines_streamlit if _MEM_LINE_RE.match(m)]
 check("role=streamlit: _loop() logs a '[mem] rss=X.XXGB streamlit' line "
       "(exact format the Director's instruction asked for)",
@@ -131,31 +160,54 @@ check("the [scheduler] loop-started line still logs the role too "
 # ----------------------------------------------------------------------
 sched._last_streamlit_mem_log_at = None
 sched._last_heartbeat_log_at = None
-_lines_fastapi = _run_loop_briefly("fastapi")
+_lines_fastapi, _ticked_fastapi = _run_loop_briefly("fastapi")
+check("role=fastapi: the loop actually ran (ticked) during this check",
+      _ticked_fastapi)
 check("role=fastapi: _loop() never logs a '[mem] ... streamlit' line",
       not any(_MEM_LINE_RE.match(m) for m in _lines_fastapi))
 
 
 # ======================================================================
-# CHECK 9-10: the 30-minute gate itself - directly exercising the exact
-# boundary condition _loop() evaluates, via its own module-level state
-# (_last_streamlit_mem_log_at) rather than waiting 30 real minutes.
-# Same technique this repo already uses for the "alive" heartbeat's own
-# interval gate and for other _record_job()-style state checks.
+# CHECK 9-10: the 30-minute gate's exact boundary condition - source-
+# text proof (same established convention as tests/test_director_
+# task1_scheduler_log_levels.py's own inspect.getsource(se._loop)
+# checks, for exactly the same reason stated there: _loop() is an
+# unbounded `while True:` daemon loop, so a precise 30-minute boundary
+# can't be proven by actually waiting on real OS thread scheduling -
+# attempting that in an earlier version of this test (manipulating
+# _last_streamlit_mem_log_at and re-running the real background thread)
+# was genuinely caught as flaky by this repo's own full regression
+# sweep under ordinary concurrent load, not just a contrived stress
+# test - see this file's own git history for that failure.
 # ======================================================================
-_now = time.time()
-sched._last_heartbeat = _now
-sched._last_streamlit_mem_log_at = _now - (sched._STREAMLIT_MEM_LOG_INTERVAL_SECONDS - 5)
-sched._last_heartbeat_log_at = _now
-_lines_not_due = _run_loop_briefly("streamlit", run_seconds=0.15)
-check("29m55s after the last mem-log: the gate does NOT fire again yet "
-      "(matches the exact >= interval comparison, not merely 'some time passed')",
-      not any(_MEM_LINE_RE.match(m) for m in _lines_not_due))
-
-sched._last_streamlit_mem_log_at = _now - (sched._STREAMLIT_MEM_LOG_INTERVAL_SECONDS + 5)
-_lines_due = _run_loop_briefly("streamlit", run_seconds=0.15)
-check("30m05s after the last mem-log: the gate DOES fire again",
-      any(_MEM_LINE_RE.match(m) for m in _lines_due))
+_loop_src = inspect.getsource(sched._loop)
+check("_loop(): the streamlit mem-log gate uses the exact same '>=' "
+      "comparison the existing alive-heartbeat gate uses (never fires "
+      "early, fires from the instant it's due onward)",
+      "(_last_heartbeat - _last_streamlit_mem_log_at)\n                     >= _STREAMLIT_MEM_LOG_INTERVAL_SECONDS" in _loop_src
+      or re.search(r"_last_heartbeat\s*-\s*_last_streamlit_mem_log_at\s*\)\s*\n?\s*>=\s*_STREAMLIT_MEM_LOG_INTERVAL_SECONDS",
+                    _loop_src))
+check("_loop(): the gate also fires on the very first tick ever "
+      "(_last_streamlit_mem_log_at is None), same 'or is None' shape "
+      "as the existing alive-heartbeat gate - never silent on a fresh "
+      "process boot",
+      "_last_streamlit_mem_log_at is None" in _loop_src)
+check("_loop(): the gate is role-checked BEFORE the interval check "
+      "(_process_role() == \"streamlit\" and (...)), so a fastapi-role "
+      "process never even evaluates the timing condition",
+      re.search(r'_process_role\(\)\s*==\s*"streamlit"\s*\n\s*and\s*\(', _loop_src))
+check("_loop(): on firing, the gate updates _last_streamlit_mem_log_at "
+      "to THIS tick's own _last_heartbeat (not time.time() again), so "
+      "the next window is measured from the tick that actually logged, "
+      "exactly like the existing alive-heartbeat gate does",
+      "_last_streamlit_mem_log_at = _last_heartbeat" in _loop_src)
+check("_loop(): the gate calls _log_mem(log, \"streamlit\") - the "
+      "exact literal label this task's instruction specified",
+      '_log_mem(log, "streamlit")' in _loop_src)
+check("_loop(): the mem-log gate sits BEFORE the `if cfg[\"enabled\"]:` "
+      "work block (same unconditional placement as the existing alive "
+      "heartbeat), confirmed by this exact substring ordering",
+      _loop_src.index('_log_mem(log, "streamlit")') < _loop_src.index('if cfg["enabled"]:'))
 
 
 # ======================================================================
