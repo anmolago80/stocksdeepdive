@@ -2303,6 +2303,23 @@ _TOP100_POLL_MIN_INTERVAL_SECONDS = 60 * 60
 # loop without this.
 _HEARTBEAT_LOG_INTERVAL_SECONDS = 30 * 60
 
+# Director TASK 11 (17 Oct 2026, memory diagnosis - PART A, measurement
+# logging only, no behaviour change): every existing [mem] line above
+# fires only right after a specific job (a universe scan, a Top 200
+# batch ingest/submit), in whichever process's scheduler thread
+# happened to run it - there is no line anywhere that says "this is
+# the Streamlit subprocess's own baseline memory", which is exactly
+# the gap the Director's own report named ("the Streamlit process
+# doesn't log its own memory, so its share is unknown"). A dedicated
+# interval/timestamp (not reusing _HEARTBEAT_LOG_INTERVAL_SECONDS/
+# _last_heartbeat_log_at) deliberately keeps this cadence independent
+# of the "[scheduler] alive" heartbeat's own cadence, even though both
+# happen to be 30 minutes today - this task's own spec fixes "every 30
+# minutes" for the memory line specifically, not "whatever the alive
+# heartbeat happens to be".
+_last_streamlit_mem_log_at = None
+_STREAMLIT_MEM_LOG_INTERVAL_SECONDS = 30 * 60
+
 # Audit fixes Commit 3 (30 Sep 2026, owner-directed): abandoned-worker
 # tracking. Problem (a6323ee + 24de00e): on a hard timeout, _record_job
 # below logs, records "timeout", and re-raises - but every call site's
@@ -2971,6 +2988,7 @@ def _run_top100_job_if_due(state, now, cfg, log, log_error=None):
 
 def _loop(log):
     global _last_heartbeat, _top100_boot_poll_attempted, _last_heartbeat_log_at
+    global _last_streamlit_mem_log_at
     # Director's 2-task queue, TASK 1 (13 Oct 2026): server.py's own
     # FastAPI startup passes start_with_retry(log=log.error) straight
     # through to this function, so every ROUTINE line below (and
@@ -3005,6 +3023,18 @@ def _loop(log):
             _last_heartbeat_log_at = _last_heartbeat
             log(f"[scheduler] alive, next due: top100 poll "
                 f"{_top100_poll_status_for_heartbeat()}")
+        # Director TASK 11 (17 Oct 2026, memory diagnosis - PART A):
+        # logging only, no effect on behaviour/caching/performance - see
+        # _STREAMLIT_MEM_LOG_INTERVAL_SECONDS's own comment above. Role-
+        # gated so this fires only in app.py's Streamlit subprocess, not
+        # server.py's FastAPI process (which has no memory question to
+        # answer here - the Director's report already has its numbers).
+        if (_process_role() == "streamlit"
+                and (_last_streamlit_mem_log_at is None
+                     or (_last_heartbeat - _last_streamlit_mem_log_at)
+                     >= _STREAMLIT_MEM_LOG_INTERVAL_SECONDS)):
+            _last_streamlit_mem_log_at = _last_heartbeat
+            _log_mem(log, "streamlit")
         try:
             cfg = _cfg()
             if cfg["enabled"]:
