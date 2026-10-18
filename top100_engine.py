@@ -772,7 +772,18 @@ def _build_best_by_ticker(log=print):
                     "mos_pct": row.get("MOS %"),
                     "price": row.get("Price"),
                     "intrinsic_value": row.get("Intrinsic Value"),
-                    "currency": "AUD" if ticker.endswith(".AX") else "USD",
+                    # TASK 13 (18 Oct 2026, Director-directed, URGENT):
+                    # was "AUD" if ticker.endswith(".AX") else "USD" -
+                    # written back when the pool was ASX+US only, so
+                    # every .L/.TO (and, from 19 Oct, European) member
+                    # was stored as USD regardless of its real listing
+                    # currency. No live Yahoo `info` blob is available
+                    # at this point in selection, so info=None - the
+                    # exact same calling convention
+                    # _cross_listing_traded_value_usd() and
+                    # preview_candidates_by_country() already use for
+                    # this same reason. No second rule.
+                    "currency": fcf_valuation_engine.trading_currency_for(ticker, info=None),
                     # v2 amendment: the raw scan row's own "Psychology"
                     # number (nightly_scan.py's fear-greed-fomo score,
                     # same field snapshot_store._PUBLIC_FIELD_MAP already

@@ -16,6 +16,7 @@ import os
 import streamlit as st
 
 import compounder_ui
+import fcf_valuation_engine
 import i18n
 import peer_context
 import quote_snapshot_store
@@ -1054,9 +1055,22 @@ def _enrich_rows(rows, scores, failures):
     for row in rows:
         score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores)
         composite = top100_engine.composite_score(score_row)
-        out.append({**row, "score_row": score_row, "composite": composite,
-                     "is_fallback_score": is_fallback,
-                     "score_failure": failures.get(row["ticker"])})
+        out.append({
+            **row,
+            # TASK 13 (18 Oct 2026, Director-directed, URGENT): recomputed
+            # here rather than trusted from the stored pool row, so the
+            # page is right immediately - before the next 23:00 UTC
+            # selection rewrites the pool with top100_engine.py's own
+            # TASK 13 fix. Every row this function returns flows through
+            # _enriched_pool()/_enriched_asx_extension() into every tab
+            # (the Top 20 country filters, the USD-count caption, the
+            # Full 100 tab) and the admin dry-run helper below, so fixing
+            # it once here fixes all of them - no separate per-call-site
+            # patch needed.
+            "currency": fcf_valuation_engine.trading_currency_for(row["ticker"]),
+            "score_row": score_row, "composite": composite,
+            "is_fallback_score": is_fallback,
+            "score_failure": failures.get(row["ticker"])})
     return out
 
 
@@ -1852,7 +1866,15 @@ def render_top100_page(lang="en"):
     # tag_html()'s own docstring).
     finer_industry = _finer_industry_by_ticker()
 
-    usd_count = sum(1 for r in pool if r["currency"] == "USD")
+    # TASK 13 (18 Oct 2026, Director-directed, URGENT): counts over
+    # `enriched` (whose "currency" _enrich_rows() recomputes via
+    # trading_currency_for()), NOT the raw `pool` rows above - `pool`
+    # still carries whatever top100_engine.py's own selection pass
+    # last stored, which is wrong for every .L/.TO/European ticker
+    # until the next 23:00 UTC selection re-runs under this task's own
+    # top100_engine.py fix. `len(pool)` alone (just a row count) is
+    # unaffected by the currency bug and stays as-is.
+    usd_count = sum(1 for r in enriched if r["currency"] == "USD")
     st.caption(_t("currency_banner", lang, count=usd_count, total=len(pool)))
 
     _changes_strip(enriched, lang)
