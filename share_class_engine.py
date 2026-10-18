@@ -85,6 +85,19 @@ SHARE_CLASS_PAIRS = [
     # value, not understates it - see fcf_valuation_engine.
     # dcf_intrinsic_value()'s own corrected docstring).
     frozenset({"VOW.DE", "VOW3.DE"}),      # Volkswagen AG
+    # TASK 15 (18 Oct 2026, Director-directed, owner-reviewed): 7 US
+    # pairs the nightly Top 200 selection has been logging "same company
+    # name, NOT in SHARE_CLASS_PAIRS - review and add by hand if
+    # genuine" for every night - all confirmed genuine dual share
+    # classes of one company with equal economic rights (voting differs
+    # only).
+    frozenset({"UA", "UAA"}),              # Under Armour, Inc.
+    frozenset({"BF-A", "BF-B"}),           # Brown-Forman Corporation
+    frozenset({"LBRDA", "LBRDK"}),         # Liberty Broadband Corporation
+    frozenset({"LLYVA", "LLYVK"}),         # Liberty Live Holdings, Inc.
+    frozenset({"UHAL", "UHAL-B"}),         # U-Haul Holding Company
+    frozenset({"RUSHA", "RUSHB"}),         # Rush Enterprises, Inc.
+    frozenset({"BATRA", "BATRK"}),         # Atlanta Braves Holdings, Inc.
 ]
 
 _KNOWN_MULTI_CLASS_TICKERS = frozenset(
