@@ -2303,22 +2303,57 @@ _TOP100_POLL_MIN_INTERVAL_SECONDS = 60 * 60
 # loop without this.
 _HEARTBEAT_LOG_INTERVAL_SECONDS = 30 * 60
 
-# Director TASK 11 (17 Oct 2026, memory diagnosis - PART A, measurement
-# logging only, no behaviour change): every existing [mem] line above
-# fires only right after a specific job (a universe scan, a Top 200
-# batch ingest/submit), in whichever process's scheduler thread
-# happened to run it - there is no line anywhere that says "this is
-# the Streamlit subprocess's own baseline memory", which is exactly
-# the gap the Director's own report named ("the Streamlit process
-# doesn't log its own memory, so its share is unknown"). A dedicated
-# interval/timestamp (not reusing _HEARTBEAT_LOG_INTERVAL_SECONDS/
-# _last_heartbeat_log_at) deliberately keeps this cadence independent
-# of the "[scheduler] alive" heartbeat's own cadence, even though both
-# happen to be 30 minutes today - this task's own spec fixes "every 30
-# minutes" for the memory line specifically, not "whatever the alive
-# heartbeat happens to be".
-_last_streamlit_mem_log_at = None
-_STREAMLIT_MEM_LOG_INTERVAL_SECONDS = 30 * 60
+# Director TASK 11 PART A (17 Oct 2026) tried a role-gated periodic
+# "[mem] ... streamlit" line inside _loop(), on the theory that
+# _process_role() == "streamlit" would reliably identify app.py's own
+# Streamlit subprocess. TASK 12 (18 Oct 2026, Director-directed)
+# replaces that approach entirely - production showed zero such lines
+# after 791276d went live, for two real reasons: (a) the Streamlit-side
+# copy of this loop only starts once a browser session first loads
+# app.py (st.cache_resource-wrapped - see app.py's own _start_
+# background_scheduler()), so it can sit idle for a long time after a
+# fresh deploy; (b) _process_role()'s sys.argv[0] heuristic was simply
+# wrong in production - Streamlit rewrites sys.argv[0] to the app
+# script's own path, which never contains the substring "streamlit" at
+# all, so every "[scheduler] loop started" line (both processes) was
+# mislabeled role=fastapi.
+#
+# The fix moves the measurement out of the Streamlit-side loop
+# entirely and into the FastAPI process (server.py's own lifespan()
+# always runs there, at pid 1, from the moment the container boots -
+# no "wait for a visitor" gap, and no need to trust _process_role() at
+# all): server.py already holds the Streamlit child's Popen handle
+# (_streamlit_proc), so it hands this module the child's pid via
+# set_streamlit_pid() right after spawning it, and _loop() - which
+# ALSO always runs in the FastAPI process, since lifespan() calls
+# start_with_retry() there too - logs both processes' own RSS together
+# every _PROCESS_MEM_LOG_INTERVAL_SECONDS, reading the Streamlit
+# child's /proc/<pid>/status directly rather than asking that process
+# to report on itself. This is independent of both visitor traffic
+# (server.py's own lifespan runs at boot, not on first page view) and
+# of _process_role() (whose only remaining job, after this task, is
+# the cosmetic role= label on the "[scheduler] loop started"/"alive"
+# lines - see that function's own TASK 12 fix below).
+_streamlit_subprocess_pid = None
+_last_process_mem_log_at = None
+_PROCESS_MEM_LOG_INTERVAL_SECONDS = 30 * 60
+
+
+def set_streamlit_pid(pid):
+    """Called once by server.py's lifespan(), immediately after it
+    spawns the Streamlit subprocess (_streamlit_proc = _start_
+    streamlit()) - hands this module the child's pid so _loop()'s own
+    periodic memory log (see _PROCESS_MEM_LOG_INTERVAL_SECONDS above)
+    can read ITS memory directly, without that process needing to
+    measure or report on itself at all. A plain module global, same
+    "process-local, nothing persisted" reasoning as _last_heartbeat and
+    friends above - only the ONE process that actually spawned
+    Streamlit (server.py's FastAPI process) ever calls this, so the
+    periodic memory log below naturally never fires in any OTHER
+    process (there is nothing to gate on besides "do I have a pid to
+    read")."""
+    global _streamlit_subprocess_pid
+    _streamlit_subprocess_pid = pid
 
 # Audit fixes Commit 3 (30 Sep 2026, owner-directed): abandoned-worker
 # tracking. Problem (a6323ee + 24de00e): on a hard timeout, _record_job
@@ -2591,19 +2626,26 @@ def _record_job(job_name, log, run_fn, lock_name=None, cancel_event=None, log_er
                 pass
 
 
-def _rss_gb():
-    """Current resident set size of THIS process, in GB - best-effort,
-    read straight from /proc/self/status (Linux only, which is what
-    Railway's containers run). Returns None rather than raising if the
-    file isn't there (e.g. local non-Linux dev) or doesn't parse, so a
-    log call site using this never needs its own try/except.
+def _rss_gb_for_pid(pid):
+    """Resident set size of the process identified by `pid`, in GB -
+    best-effort, read straight from /proc/<pid>/status (Linux only,
+    which is what Railway's containers run). `pid` may be a real
+    numeric pid or the string "self" (/proc/self is a Linux alias for
+    the calling process's own directory - see _rss_gb() below). Returns
+    None rather than raising on ANY failure - the file isn't there
+    (non-Linux dev), the process has already exited, or the content
+    doesn't parse - so a log call site using this never needs its own
+    try/except.
 
-    Memory addendum (9 Oct 2026, Director-directed, diagnosis-only
-    instruction_addendum_memory_cost.md): added purely to give the
-    [mem] log lines below something to report - no other effect, reads
-    nothing from Railway, writes nothing anywhere."""
+    TASK 12 (18 Oct 2026, Director-directed): generalised from the
+    original self-only _rss_gb() so the FastAPI process can read the
+    Streamlit CHILD process's own memory directly (via its Popen
+    handle's pid - see set_streamlit_pid() above) rather than asking
+    that process to measure and report on itself, which TASK 11's own
+    role-gated approach needed and which production showed doesn't
+    reliably run at all (see this module's TASK 12 comments above)."""
     try:
-        with open("/proc/self/status") as f:
+        with open(f"/proc/{pid}/status") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
                     kb = int(line.split()[1])
@@ -2613,12 +2655,30 @@ def _rss_gb():
     return None
 
 
-def _log_mem(log, label):
+def _rss_gb():
+    """Current resident set size of THIS process, in GB - see
+    _rss_gb_for_pid()'s own docstring for the mechanics; this is just
+    that function called with pid="self".
+
+    Memory addendum (9 Oct 2026, Director-directed, diagnosis-only
+    instruction_addendum_memory_cost.md): added purely to give the
+    [mem] log lines below something to report - no other effect, reads
+    nothing from Railway, writes nothing anywhere."""
+    return _rss_gb_for_pid("self")
+
+
+def _log_mem(log, label, pid=None):
     """[mem] rss=X.XXGB <label> - see _rss_gb()'s own docstring. Logs
     "unavailable" rather than skipping the line entirely if RSS can't
     be read, so a log search for "[mem]" always finds one line per
-    call site regardless of platform."""
-    rss = _rss_gb()
+    call site regardless of platform.
+
+    `pid` (TASK 12, 18 Oct 2026): optional - when given, reads THAT
+    process's memory (via _rss_gb_for_pid()) instead of this one's own,
+    e.g. the FastAPI process reading its Streamlit child's RSS. Every
+    pre-existing call site omits this and keeps logging its own
+    process's memory, exactly as before."""
+    rss = _rss_gb_for_pid(pid) if pid is not None else _rss_gb()
     log(f"[mem] rss={rss:.2f}GB {label}" if rss is not None else f"[mem] rss=unavailable {label}")
 
 
@@ -2663,33 +2723,40 @@ def _malloc_trim_and_log(log, label):
 
 def _process_role():
     """Returns "streamlit" (this process is app.py's own Streamlit
-    subprocess) or "fastapi" (server.py's process) - purely for the
-    boot/heartbeat log lines below, so a Railway log line can be told
-    apart between the two processes that legitimately each run their
-    own _loop() thread (see start()'s own docstring).
+    subprocess) or "fastapi" (server.py's process) - purely a cosmetic
+    label for the boot/heartbeat log lines below (nothing in this
+    module gates actual behaviour on this function's return value any
+    more - see set_streamlit_pid()/_PROCESS_MEM_LOG_INTERVAL_SECONDS's
+    own TASK 12 comments above for why the memory logging moved away
+    from needing this to be reliable).
 
-    URGENT COMMIT 1 fix (25 Sep 2026, owner-reported): the original
-    check here was `"streamlit" in sys.modules`, on the assumption only
-    app.py ever imports streamlit - WRONG, confirmed directly from a
-    real production log line ("[scheduler] loop started (pid=1,
-    role=streamlit)" - pid 1 is server.py's own process, Railway's
-    configured start command is literally "python server.py", so
-    server.py IS the container's own entrypoint and cannot be pid 1 AND
-    the genuinely separate subprocess.Popen()-spawned Streamlit
-    process at the same time). server.py imports api_v1, mcp_server
-    and nightly_scan at module level, and all three import
-    scanner_engine, which itself does `import streamlit as st` (for
-    its own @st.cache_data/@st.cache_resource decorators, used by
-    rendering code shared between the interactive app and server.py's
-    own server-rendered pages) - so "streamlit" was ALWAYS in sys.
-    modules for server.py's process too, misreporting every one of its
-    own heartbeat/boot lines as role=streamlit. Fixed by checking
-    sys.argv[0] instead: the Streamlit subprocess is launched via
-    `python -m streamlit run app.py` (server.py's own _start_streamlit()),
-    and `-m` resolves sys.argv[0] to that module's own file path (e.g.
-    ".../site-packages/streamlit/__main__.py") - genuinely unique to
-    that one process, never something an ordinary `import streamlit`
-    anywhere else could produce."""
+    TASK 12 (18 Oct 2026, Director-directed): checks the SDD_PROCESS_
+    ROLE env var FIRST - server.py's own _start_streamlit() now sets it
+    explicitly to "streamlit" in the child's environment at spawn time,
+    since the previous sys.argv[0] heuristic below turned out to be
+    wrong in production: Streamlit's script-runner rewrites sys.argv[0]
+    to the APP SCRIPT's own path (".../app.py") once it actually starts
+    running app.py's code - not to streamlit's own `__main__.py`, which
+    is only true of the top-level CLI process before it hands off to
+    the script-runner. Every "[scheduler] loop started"/"alive" line
+    from the Streamlit subprocess was therefore mislabeled role=fastapi
+    (confirmed directly from production logs - see this task's own
+    report). The old sys.argv[0] check is kept ONLY as a fallback for
+    when the env var isn't set (e.g. a local/dev run of app.py directly,
+    outside server.py's own subprocess launch).
+
+    URGENT COMMIT 1 fix (25 Sep 2026, owner-reported) history, still
+    relevant to the fallback branch below: the check used to be
+    `"streamlit" in sys.modules`, on the assumption only app.py ever
+    imports streamlit - wrong, since server.py imports api_v1/
+    mcp_server/nightly_scan at module level, and all three import
+    scanner_engine, which itself does `import streamlit as st` - so
+    "streamlit" was ALWAYS in sys.modules for server.py's own process
+    too. Replaced with the sys.argv[0] check, which is itself now only
+    the fallback (see above)."""
+    _env_role = os.environ.get("SDD_PROCESS_ROLE")
+    if _env_role in ("streamlit", "fastapi"):
+        return _env_role
     return "streamlit" if "streamlit" in sys.argv[0] else "fastapi"
 
 
@@ -2988,7 +3055,7 @@ def _run_top100_job_if_due(state, now, cfg, log, log_error=None):
 
 def _loop(log):
     global _last_heartbeat, _top100_boot_poll_attempted, _last_heartbeat_log_at
-    global _last_streamlit_mem_log_at
+    global _last_process_mem_log_at
     # Director's 2-task queue, TASK 1 (13 Oct 2026): server.py's own
     # FastAPI startup passes start_with_retry(log=log.error) straight
     # through to this function, so every ROUTINE line below (and
@@ -3023,18 +3090,23 @@ def _loop(log):
             _last_heartbeat_log_at = _last_heartbeat
             log(f"[scheduler] alive, next due: top100 poll "
                 f"{_top100_poll_status_for_heartbeat()}")
-        # Director TASK 11 (17 Oct 2026, memory diagnosis - PART A):
-        # logging only, no effect on behaviour/caching/performance - see
-        # _STREAMLIT_MEM_LOG_INTERVAL_SECONDS's own comment above. Role-
-        # gated so this fires only in app.py's Streamlit subprocess, not
-        # server.py's FastAPI process (which has no memory question to
-        # answer here - the Director's report already has its numbers).
-        if (_process_role() == "streamlit"
-                and (_last_streamlit_mem_log_at is None
-                     or (_last_heartbeat - _last_streamlit_mem_log_at)
-                     >= _STREAMLIT_MEM_LOG_INTERVAL_SECONDS)):
-            _last_streamlit_mem_log_at = _last_heartbeat
-            _log_mem(log, "streamlit")
+        # Director TASK 12 (18 Oct 2026, memory diagnosis - replaces
+        # TASK 11 PART A's role-gated attempt): logging only, no effect
+        # on behaviour/caching/performance - see _PROCESS_MEM_LOG_
+        # INTERVAL_SECONDS/set_streamlit_pid()'s own comments above.
+        # Gated on "do we have the Streamlit child's pid", not on
+        # _process_role() - only the FastAPI process (server.py's
+        # lifespan()) ever calls set_streamlit_pid(), so this naturally
+        # never fires anywhere else, and it fires from container boot
+        # (not "first visitor") since that same process's own copy of
+        # this loop is started there too.
+        if (_streamlit_subprocess_pid is not None
+                and (_last_process_mem_log_at is None
+                     or (_last_heartbeat - _last_process_mem_log_at)
+                     >= _PROCESS_MEM_LOG_INTERVAL_SECONDS)):
+            _last_process_mem_log_at = _last_heartbeat
+            _log_mem(log, f"streamlit (pid {_streamlit_subprocess_pid})", pid=_streamlit_subprocess_pid)
+            _log_mem(log, "fastapi")
         try:
             cfg = _cfg()
             if cfg["enabled"]:

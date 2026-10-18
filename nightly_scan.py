@@ -261,7 +261,19 @@ _FUND_SECTOR_OVERRIDE_NOT_A_FUND = frozenset({"EMG.L"})
 # without mis-flagging those companies too. Hand-maintained and
 # checked FIRST, unconditionally (never gated by universe/Sector) -
 # see the Is Fund assignment in run_universe_scan() below.
-_FUND_TICKER_OVERRIDE_IS_FUND = frozenset({"VEIL.L"})
+#
+# TASK 12 add-on (Director, 18 Oct 2026): INVE-B.ST (Investor AB) added
+# alongside VEIL.L for the same reason this override exists at all - a
+# standard company valuation doesn't apply to it. Investor AB is a
+# listed investment holding company (OMX Stockholm 30); its reported
+# net_income_financials includes realised/unrealised gains on its own
+# listed holdings, not operating earnings, so the site's normal
+# earnings-based valuation would be measuring the wrong thing entirely
+# for this ticker, same practical effect as VEIL.L's fund status even
+# though the underlying reason (a holding company's own financials,
+# not a fund structure) differs. Takes effect at the next OMX
+# Stockholm 30 scan.
+_FUND_TICKER_OVERRIDE_IS_FUND = frozenset({"VEIL.L", "INVE-B.ST"})
 
 # TASK 7 part 2 (Director, 16 Oct 2026): REVIEW LOGGING ONLY - never
 # auto-flagging. A non-fund row (Is Fund already False, via the rule/

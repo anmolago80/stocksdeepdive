@@ -4449,8 +4449,26 @@ def run_nightly(log=print, scan_day=None):
     straight through to select_top100_pool() - see that function's
     own docstring for why this must be the scheduler's own logical
     scan night, never a fresh wall-clock read taken this deep into
-    the call."""
+    the call.
+
+    TASK 12 Part B item 1 (18 Oct 2026, Director-directed, measurement
+    logging only): a [mem] bracket around select_top100_pool() alone -
+    the same _log_mem/_malloc_trim_and_log pair scheduler_engine's own
+    _run_nightly()/_run_top100_poll() already use around a universe
+    scan / a Top 200 batch ingest, reused directly here (top100_engine
+    already imports scheduler_engine at module level - see that
+    module's own nightly_universe_cadence()/_DERIVED_UNIVERSE_PARENTS
+    call sites above). TASK 11 Part B's own investigation found this
+    step - the 23:00 sector-backfill loop, NOT the lighter poll/submit
+    stages below - as the likely source of the Top 200 path's retained
+    memory, with no [mem] line anywhere around it to confirm or size
+    it; this brackets it on BOTH sides (not just "after", like the
+    existing call sites) so the reading is unambiguously about THIS
+    stage, not inherited from whatever ran immediately before it."""
+    scheduler_engine._log_mem(log, "before Top 200 pool selection")
     select_top100_pool(log=log, scan_day=scan_day)
+    scheduler_engine._log_mem(log, "after Top 200 pool selection")
+    scheduler_engine._malloc_trim_and_log(log, "after Top 200 pool selection")
     poll_and_ingest_batch(log=log)
     submit_nightly_batch(log=log)
 

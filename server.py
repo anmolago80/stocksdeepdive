@@ -238,7 +238,17 @@ def _start_streamlit():
         "--server.fileWatcherType", "none",
     ]
     log.info("starting Streamlit: %s", " ".join(cmd))
-    return subprocess.Popen(cmd, env=os.environ.copy())
+    # TASK 12 (18 Oct 2026, Director-directed): SDD_PROCESS_ROLE=streamlit,
+    # explicit in the child's own environment - scheduler_engine.
+    # _process_role() reads this first, rather than guessing from
+    # sys.argv[0] (which Streamlit's script-runner rewrites to app.py's
+    # own path once it starts running the script, not to streamlit's
+    # __main__.py - see that function's own TASK 12 docstring for why
+    # the old guess was wrong in production). Labelling only - nothing
+    # in this codebase gates behaviour on _process_role() any more.
+    _env = os.environ.copy()
+    _env["SDD_PROCESS_ROLE"] = "streamlit"
+    return subprocess.Popen(cmd, env=_env)
 
 
 async def _wait_for_streamlit(timeout=180):
@@ -424,6 +434,18 @@ async def lifespan(app: FastAPI):
         follow_redirects=False, limits=httpx.Limits(max_connections=200),
     )
     _streamlit_proc = _start_streamlit()
+    # TASK 12 (18 Oct 2026, Director-directed): hand the Streamlit
+    # child's own pid to scheduler_engine, so THIS process's own
+    # _loop() (started above via start_with_retry(), always running
+    # here at boot, in the FastAPI process) can read that child's RSS
+    # directly from /proc/<pid>/status every 30 min, alongside this
+    # process's own - see scheduler_engine.set_streamlit_pid()'s own
+    # docstring. Never allowed to stop the site serving, same rule as
+    # every other startup step in this function - reading a pid off an
+    # already-created Popen handle essentially can't fail, but there's
+    # no reason to risk it either.
+    with suppress(Exception):
+        scheduler_engine.set_streamlit_pid(_streamlit_proc.pid)
     # Don't block startup on it: /blog must answer even while the app is
     # still importing, and Railway's own health probe shouldn't time out.
     asyncio.create_task(_wait_for_streamlit())

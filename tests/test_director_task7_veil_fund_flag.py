@@ -51,9 +51,15 @@ def check(label, condition):
 
 # ======================================================================
 # CHECK 1: the override set itself.
+#
+# TASK 12 add-on (18 Oct 2026): INVE-B.ST (Investor AB) was added
+# alongside VEIL.L - see tests/test_director_task12_addon_investor_ab_
+# fund_flag.py for its own dedicated end-to-end coverage. This check is
+# updated to reflect the set's new, real contents rather than asserting
+# it's still VEIL.L-only.
 # ======================================================================
-check("_FUND_TICKER_OVERRIDE_IS_FUND contains exactly VEIL.L",
-      ns._FUND_TICKER_OVERRIDE_IS_FUND == frozenset({"VEIL.L"}))
+check("_FUND_TICKER_OVERRIDE_IS_FUND contains VEIL.L and INVE-B.ST",
+      ns._FUND_TICKER_OVERRIDE_IS_FUND == frozenset({"VEIL.L", "INVE-B.ST"}))
 
 # ======================================================================
 # CHECK 2: EMG.L's existing not-a-fund override is unchanged by this
