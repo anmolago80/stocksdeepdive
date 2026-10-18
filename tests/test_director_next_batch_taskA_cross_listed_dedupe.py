@@ -92,6 +92,15 @@ check("one log line names both traded values",
 # ======================================================================
 # CHECK 4-5: Canada/Australia pair (CS.TO/CSC.AX shape) - same
 # mechanism, proving it's not US-specific.
+#
+# TASK 14 (18 Oct 2026, Director-directed, owner decision - "the
+# audience is Australian") UPDATE: CACO.AX's own traded value ($6.5M)
+# clears the new $1M ASX-preference floor, so it now wins OUTRIGHT
+# over CACO.TO - even though CACO.TO's traded value is higher ($7.5M
+# vs $6.5M). Before TASK 14 the higher-traded-value side always won
+# regardless of country; this is the exact behaviour TASK 14 changes,
+# not a regression - see tests/test_director_task14_asx_cross_listing_
+# preference.py for the dedicated floor/no-ASX/multi-ASX coverage.
 # ======================================================================
 _best_by_ticker2 = {
     "CACO.TO": {"ticker": "CACO.TO", "company_name": "CA Co Ltd", "avg_volume": 500_000,
@@ -100,14 +109,17 @@ _best_by_ticker2 = {
                 "price": 1.0, "value_score": 50.0},
 }
 # CACO.TO: 500,000 x 20.0 x 0.75 (CAD->USD) = $7,500,000
-# CACO.AX: 10,000,000 x 1.0 x 0.65 (AUD->USD) = $6,500,000
+# CACO.AX: 10,000,000 x 1.0 x 0.65 (AUD->USD) = $6,500,000 - clears the
+# TASK 14 $1M ASX-preference floor, so it wins despite the lower number.
 with mock.patch("fcf_valuation_engine.fx_rate", return_value=(0.75, "live")) as _m:
     def _fx_side_effect(from_ccy, to_ccy, log=print):
         return (0.75, "live") if from_ccy == "CAD" else (0.65, "live")
     _m.side_effect = _fx_side_effect
     te._dedupe_cross_listings(_best_by_ticker2, log=lambda *a, **k: None)
-check("CACO.TO (higher traded value, $7.5M vs $6.5M) wins over CACO.AX",
-      "CACO.TO" in _best_by_ticker2 and "CACO.AX" not in _best_by_ticker2)
+check("CACO.AX (the ASX listing, traded value $6.5M - above the TASK 14 "
+      "$1M floor) wins over CACO.TO despite CACO.TO's higher traded "
+      "value ($7.5M) - the audience-is-Australian preference rule",
+      "CACO.AX" in _best_by_ticker2 and "CACO.TO" not in _best_by_ticker2)
 check("peer_context.market_for() confirms this really was a cross-country pair "
       "(Canada vs Australia), not a same-country one",
       peer_context.market_for("CACO.TO") == "Canada" and peer_context.market_for("CACO.AX") == "Australia")
@@ -216,6 +228,16 @@ check("with no cross-country same-name collision present, _dedupe_cross_listings
 # this fix it silently kept only losers[0], dropping the third ticker's
 # identity from the display badge while it was still correctly excluded
 # from scoring either way.
+#
+# TASK 14 (18 Oct 2026, Director-directed) UPDATE: the survivor changes
+# from NWSA to NWS.AX. Among the two ASX listings (NWS.AX $9.9M,
+# NWSLV.AX $1.98M traded value), NWS.AX wins today's own rule first
+# (TASK 14's own "apply today's rule among the ASX ones first" step),
+# then clears the $1M ASX-preference floor, so it wins the WHOLE group
+# outright - even though NWSA's own traded value ($84M) is higher than
+# either ASX listing's. This is the Director's own explicitly-named
+# TASK 14 test case ("3-way News Corp group keeps NWS.AX"), not a
+# regression.
 # ======================================================================
 _best_by_ticker8 = {
     "NWS.AX": {"ticker": "NWS.AX", "company_name": "News Corporation",
@@ -228,20 +250,24 @@ _best_by_ticker8 = {
 _logs8 = []
 with mock.patch("fcf_valuation_engine.fx_rate", return_value=(0.66, "live")):
     te._dedupe_cross_listings(_best_by_ticker8, log=_logs8.append)
-check("3-way News Corp group: exactly ONE ticker survives (NWSA, "
-      "highest traded value - its USD-converted 3,000,000 x 28.0 beats "
-      "both AUD-converted AU listings)",
-      list(_best_by_ticker8.keys()) == ["NWSA"])
-check("3-way News Corp group: BOTH other tickers (NWS.AX, NWSLV.AX) "
+check("3-way News Corp group: exactly ONE ticker survives (NWS.AX - "
+      "the better of the two ASX listings by traded value [$9.9M vs "
+      "$1.98M], and $9.9M clears the TASK 14 $1M ASX-preference floor, "
+      "so it wins outright over NWSA's higher $84M traded value)",
+      list(_best_by_ticker8.keys()) == ["NWS.AX"])
+check("3-way News Corp group: BOTH other tickers (NWSA, NWSLV.AX) "
       "are dropped, not just one",
-      "NWS.AX" not in _best_by_ticker8 and "NWSLV.AX" not in _best_by_ticker8)
+      "NWSA" not in _best_by_ticker8 and "NWSLV.AX" not in _best_by_ticker8)
 check("3-way News Corp group: one log line per dropped ticker (two "
       "total), not one line for the whole group",
       len(_logs8) == 2
-      and any("NWS.AX" in l for l in _logs8) and any("NWSLV.AX" in l for l in _logs8))
+      and any("NWSA" in l for l in _logs8) and any("NWSLV.AX" in l for l in _logs8))
 check("3-way News Corp group: the survivor's also_trades_as now names "
       "BOTH dropped tickers, not just the first one",
-      set(_best_by_ticker8["NWSA"]["also_trades_as"].split(", ")) == {"NWS.AX", "NWSLV.AX"})
+      set(_best_by_ticker8["NWS.AX"]["also_trades_as"].split(", ")) == {"NWSA", "NWSLV.AX"})
+check("3-way News Corp group: the log line names the ASX preference "
+      "rule, not a plain traded-value comparison",
+      any("ASX preference" in l for l in _logs8))
 
 
 # ======================================================================

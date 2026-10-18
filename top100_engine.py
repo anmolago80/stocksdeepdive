@@ -341,6 +341,16 @@ def _dedupe_share_classes(best_by_ticker, log=print):
 # populated, empty until a real one is found.
 CROSS_LISTED_EXCLUDE = frozenset()
 
+# TASK 14 (18 Oct 2026, Director-directed, owner decision): the
+# audience is Australian - when a cross-listed group has an ASX
+# listing whose own daily traded value clears this floor, it's kept
+# over a higher-traded-value foreign listing (RIO.L kept over RIO.AX
+# today, etc. - see _dedupe_cross_listings()'s own TASK 14 docstring
+# for the full rule order). Below this floor, an ASX listing that's
+# genuinely illiquid falls back to today's rule rather than being
+# preferred on name alone.
+ASX_PREFERENCE_MIN_TRADED_VALUE_USD = 1_000_000
+
 
 def _cross_listing_traded_value_usd(row):
     """avg_volume x price, converted to USD via fcf_valuation_engine.
@@ -405,7 +415,28 @@ def _dedupe_cross_listings(best_by_ticker, log=print):
     the cross-listed loser from the pool either way).
 
     CROSS_LISTED_EXCLUDE above is checked first, by normalized name -
-    a name on that list is never grouped for this function at all."""
+    a name on that list is never grouped for this function at all.
+
+    TASK 14 (18 Oct 2026, Director-directed, owner decision - "the
+    audience is Australian"): an ASX listing is now preferred over a
+    higher-traded-value foreign listing, checked BEFORE the traded-
+    value rule above, in this order:
+      1. If the group has one or more ASX listings (peer_context.
+         market_for() == "Australia"), pick the best ASX candidate
+         among them using TODAY's own rule (traded value, Value Score
+         fallback) - scoped to just the ASX tickers, so a group with
+         several ASX listings still picks exactly one before this
+         step goes any further.
+      2. If that ASX candidate's own traded value is >=
+         ASX_PREFERENCE_MIN_TRADED_VALUE_USD, it wins the WHOLE group
+         outright, regardless of a foreign listing's traded value.
+      3. Otherwise (no ASX listing in the group at all, or the ASX
+         candidate's traded value is below the floor - including
+         "unavailable", never treated as meeting a floor), falls
+         through to today's rule UNCHANGED, over the full group (the
+         ASX ticker stays a candidate there too - it can still win on
+         an ordinary traded-value/Value-Score basis even when it
+         doesn't clear the ASX-preference floor)."""
     by_name = {}
     for ticker, row in best_by_ticker.items():
         name = (row.get("company_name") or "").strip().lower()
@@ -421,21 +452,48 @@ def _dedupe_cross_listings(best_by_ticker, log=print):
             continue  # every ticker in this name group is the SAME country - leave alone
 
         traded_values = {t: _cross_listing_traded_value_usd(best_by_ticker[t]) for t in tickers}
-        if any(v is None for v in traded_values.values()):
-            ranked = sorted(tickers, key=lambda t: best_by_ticker[t].get("value_score") or 0,
-                             reverse=True)
-            by_traded_value = False
-        else:
-            ranked = sorted(tickers, key=lambda t: traded_values[t], reverse=True)
-            by_traded_value = True
 
-        winner, *losers = ranked
+        winner = None
+        rule = None  # "asx_preference" | "traded_value" | "value_score"
+        asx_tickers = [t for t in tickers if countries[t] == "Australia"]
+        if asx_tickers:
+            if any(traded_values[t] is None for t in asx_tickers):
+                asx_candidate = max(
+                    asx_tickers, key=lambda t: best_by_ticker[t].get("value_score") or 0)
+            else:
+                asx_candidate = max(asx_tickers, key=lambda t: traded_values[t])
+            _asx_traded_value = traded_values[asx_candidate]
+            if (_asx_traded_value is not None
+                    and _asx_traded_value >= ASX_PREFERENCE_MIN_TRADED_VALUE_USD):
+                winner, rule = asx_candidate, "asx_preference"
+
+        if winner is None:
+            if any(v is None for v in traded_values.values()):
+                ranked = sorted(tickers, key=lambda t: best_by_ticker[t].get("value_score") or 0,
+                                 reverse=True)
+                rule = "value_score"
+            else:
+                ranked = sorted(tickers, key=lambda t: traded_values[t], reverse=True)
+                rule = "traded_value"
+            winner = ranked[0]
+
+        losers = [t for t in tickers if t != winner]
         for loser in losers:
-            if by_traded_value:
+            _loser_tv = traded_values[loser]
+            _loser_tv_str = f"${_loser_tv:,.0f}" if _loser_tv is not None else "unavailable"
+            if rule == "asx_preference":
+                log(f"[top100] cross-listing dedupe: kept {winner} (ASX listing, "
+                    f"traded value ${traded_values[winner]:,.0f}/day, at/above the "
+                    f"${ASX_PREFERENCE_MIN_TRADED_VALUE_USD:,.0f} ASX-preference floor) "
+                    f"over {loser} (traded value {_loser_tv_str}) - same company "
+                    f"({name!r}), {countries[winner]} vs {countries[loser]}, ASX "
+                    f"preference, not in SHARE_CLASS_PAIRS")
+            elif rule == "traded_value":
                 log(f"[top100] cross-listing dedupe: kept {winner} (traded value "
                     f"${traded_values[winner]:,.0f}) over {loser} (traded value "
-                    f"${traded_values[loser]:,.0f}) - same company ({name!r}), "
-                    f"{countries[winner]} vs {countries[loser]}, not in SHARE_CLASS_PAIRS")
+                    f"{_loser_tv_str}) - same company ({name!r}), "
+                    f"{countries[winner]} vs {countries[loser]}, traded value, "
+                    f"not in SHARE_CLASS_PAIRS")
             else:
                 log(f"[top100] cross-listing dedupe: kept {winner} (Value Score "
                     f"{best_by_ticker[winner].get('value_score') or 0:.1f}) over {loser} "
