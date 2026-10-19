@@ -33299,6 +33299,144 @@ def _render_market_readiness_panel():
             )
 
 
+def _render_evolution_shadow_panel():
+    """TASK 16 (Director-directed, 19 Oct 2026): "Evolution since purchase
+    (shadow)" - owner-only, read-only, NO LIVE EFFECT. A holding's action
+    should measure whether the business's fix is WORKING since purchase -
+    not today's absolute levels, and not news the market had already
+    priced in at purchase (often the reason the owner bought in the first
+    place). See portfolio_health_engine.compute_evolution()'s own
+    docstring for the exact weights/thresholds and for why this is purely
+    additive (compute_health*/compute_progress*/_recommend() are never
+    called or modified here).
+
+    Calls _analyze_holding() for the real LIVE snapshot/Health/Action
+    (never a second, independently-computed live score - see its own
+    "Live Health"/"Live Action" columns below, placed next to the new
+    shadow numbers for direct comparison) and portfolio_health_engine.
+    compute_evolution() for the new shadow score only. Nothing here is
+    persisted to any store and nothing here is read by any live page.
+
+    No gate of its own - called only from inside page_admin_dashboard(),
+    after that function's own owner check. Placed directly after
+    _render_market_readiness_panel() and before _render_top200_preview_
+    panel(), since that panel is slow and would otherwise delay this one."""
+    st.markdown("### Evolution since purchase (shadow)")
+    st.caption(
+        "Owner-only, read-only, no live effect. Measures whether the "
+        "business is IMPROVING since purchase - not today's absolute "
+        "levels, and not news the market had already priced in at "
+        "purchase. Proposed weights and action thresholds only; the live "
+        "Health score and action (columns on the right) are unaffected."
+    )
+    _owner_email = ai_gate.owner_email()
+    _owner_holdings = portfolio_store.get_holdings_all(_owner_email) if _owner_email else []
+    if not _owner_holdings:
+        st.write("No holdings on file for the owner account yet.")
+        return
+
+    _rows = []
+    _distortion_rows = []
+    _detail = []
+    for h in _owner_holdings:
+        ticker = h["ticker"]
+        is_etf = (h.get("kind") or "STOCK").upper() == "ETF"
+        try:
+            _live = _analyze_holding(h, email=_owner_email)
+        except Exception:
+            _live = {}
+        snap = _live.get("snapshot") or {}
+        _valuation_mos = ((_live.get("components") or {}).get("Valuation") or {}).get("current")
+        try:
+            evo = portfolio_health_engine.compute_evolution(
+                snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), h.get("buy_date"),
+                ticker=ticker, valuation_mos_pct=_valuation_mos,
+            )
+        except Exception:
+            evo = {"components": {}, "overall": None, "action": "Error (see logs)",
+                   "review_now": False, "distortions": [], "is_etf": is_etf}
+
+        comps = evo.get("components", {})
+
+        def _score(name, _comps=comps):
+            return (_comps.get(name) or {}).get("score")
+
+        _live_health = _live.get("health") or {}
+        _rows.append({
+            "Ticker": ticker, "Portfolio": h.get("portfolio"),
+            "Growth Δ": _score("Growth Δ"), "Margins Δ": _score("Margins Δ"),
+            "ROIC Δ": _score("ROIC Δ"), "FCF Δ": _score("FCF Δ"), "Debt Δ": _score("Debt Δ"),
+            "Intrinsic Δ": _score("Intrinsic Δ"),
+            "Price since purchase": _score("Price since purchase"), "Income Δ": _score("Income Δ"),
+            "News since purchase": _score("News since purchase"),
+            "Evolution score": evo.get("overall"), "Evolution action": evo.get("action"),
+            "Review now (thesis-breaking)": "yes" if evo.get("review_now") else "no",
+            "Live Health": _live_health.get("overall"), "Live Action": _live_health.get("action"),
+            "Distortions flagged": ", ".join(d["component"] for d in evo.get("distortions", [])) or "none",
+        })
+        for d in evo.get("distortions", []):
+            _distortion_rows.append({"Ticker": ticker, "Component": d["component"], "Note": d["note"]})
+        _detail.append((h, comps, evo))
+
+    st.dataframe(_rows, hide_index=True, width='stretch')
+    st.download_button(
+        "Download evolution since purchase (CSV)",
+        data=data_export_engine.table_to_csv_bytes(pd.DataFrame(_rows)),
+        file_name="evolution_since_purchase.csv", mime="text/csv",
+        key="admin_evolution_since_purchase_csv",
+    )
+
+    if _distortion_rows:
+        st.caption(
+            "Baselines flagged as distorted - near-zero/negative baseline "
+            "(the relative-change formula saturates) or a legacy website_v1 "
+            "baseline missing fundamentals fields entirely:"
+        )
+        st.dataframe(_distortion_rows, hide_index=True, width='stretch')
+
+    for _row_idx, (h, comps, evo) in enumerate(_detail):
+        ticker = h["ticker"]
+        _row_key = f"{_row_idx}_{ticker}"
+        with st.expander(f"{ticker} - evolution detail", key=f"admin_evolution_expander_{_row_key}"):
+            _fund_rows = [
+                {"Component": _name, "Baseline": (comps.get(_name) or {}).get("baseline"),
+                 "Current": (comps.get(_name) or {}).get("current"), "Score": (comps.get(_name) or {}).get("score")}
+                for _name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ", "Income Δ")
+                if comps.get(_name) is not None
+            ]
+            if _fund_rows:
+                st.dataframe(_fund_rows, hide_index=True, width='stretch')
+            else:
+                st.caption("No fundamentals-since-purchase data (ETF or no baseline on file).")
+
+            _price = comps.get("Price since purchase") or {}
+            if _price.get("drawdown") is not None:
+                st.caption(
+                    f"Price since purchase: return score {_price.get('return_score')}, "
+                    f"drawdown from post-purchase peak {_price['drawdown'] * 100:.1f}% "
+                    f"(score {_price.get('drawdown_score')}), blended score {_price.get('score')}."
+                )
+            else:
+                st.caption("Price since purchase: no price history on file to compute drawdown.")
+
+            _news = comps.get("News since purchase") or {}
+            _headlines = _news.get("headlines") or []
+            if _headlines:
+                st.caption(f"News strictly after buy_date (score {_news.get('score')}):")
+                st.dataframe([
+                    {
+                        "Date": _hl["date"].strftime("%Y-%m-%d") if _hl.get("date") else "undated",
+                        "Tier": _hl["tier"], "Points": _hl["points"],
+                        "Headline": (f"Review: {_hl['title']}" if _hl["tier"] == "review-only" else _hl["title"]),
+                    }
+                    for _hl in _headlines
+                ], hide_index=True, width='stretch')
+            elif is_etf:
+                st.caption("ETFs/funds have no company news to score.")
+            else:
+                st.caption("No stored headlines strictly after buy_date for this holding.")
+
+
 def _render_top200_preview_panel():
     """PART 5 STEP 5.2 of instruction_health_fixes_chart_and_new_
     markets.md (8 Oct 2026, Director-directed): owner-only, read-only
@@ -35825,6 +35963,15 @@ def page_admin_dashboard():
     # gate of its own" pattern as every panel above.
     st.markdown("---")
     _render_market_readiness_panel()
+
+    # --- EVOLUTION SINCE PURCHASE, SHADOW (TASK 16, Director-directed,
+    # 19 Oct 2026) - see _render_evolution_shadow_panel()'s own docstring.
+    # Placed here, directly after Market readiness and BEFORE the slow
+    # Top 200 preview panel below, per the Director's own instruction ("that
+    # panel is slow and delays everything below it"). Same "no gate of its
+    # own" pattern as every panel above.
+    st.markdown("---")
+    _render_evolution_shadow_panel()
 
     # --- TOP 200 PREVIEW (PART 5 STEP 5.2 of instruction_health_fixes_
     # chart_and_new_markets.md, 8 Oct 2026, Director-directed) - see

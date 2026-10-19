@@ -1383,3 +1383,251 @@ def component_bars_html(components, order):
             "</div>"
         )
     return "<div>" + "".join(rows) + "</div>"
+
+
+# ---------------------------------------------------------------------
+# PART E: "Evolution since purchase" score (TASK 16, Director-directed,
+# owner-only shadow panel, no live effect). A holding's action should
+# measure whether the business's fix is WORKING since purchase, not
+# today's absolute levels and not news the market had already priced in
+# at purchase. This section is purely additive: it calls compute_progress()
+# / compute_progress_v2() and _post_purchase_drawdown() exactly as they
+# already exist, and adds one brand-new, narrower-than-portfolio_news_
+# engine.py news tiering for events strictly after buy_date. Nothing here
+# is read by compute_health*/compute_progress*/_recommend(), and nothing
+# here is persisted to any store - it exists only to be displayed on the
+# owner-only shadow panel and exported to CSV for manual review.
+# ---------------------------------------------------------------------
+
+EVOLUTION_WEIGHTS = {
+    "Growth Δ": 12.0, "Margins Δ": 10.0, "ROIC Δ": 10.0, "FCF Δ": 8.0, "Debt Δ": 5.0,
+    "Intrinsic Δ": 20.0, "Price since purchase": 15.0, "Income Δ": 5.0,
+    "News since purchase": 15.0,
+}
+# ETFs have no company fundamentals/thesis/news to score - proposed split
+# keeps the stock weights' own 15:5 (Price:Income) ratio, re-normalised to
+# 100: not specified by the Director beyond "Price since purchase + Income
+# Δ only", so this exact 75/25 split is this report's own proposal.
+EVOLUTION_WEIGHTS_ETF = {"Price since purchase": 75.0, "Income Δ": 25.0}
+
+EVOLUTION_ACTION_HOLD = 60
+EVOLUTION_ACTION_WATCH = 45
+EVOLUTION_VALUATION_MOS_ADD = 30.0
+
+# News-since-purchase tiers for TASK 16 - deliberately NOT a reuse of
+# THESIS_BREAKING/MATERIAL_RISK/POSITIVE from portfolio_news_engine.py:
+# the Director's own scheme moves leadership changes/restructuring/
+# demergers/CEO-CFO exits/class actions OUT of the cut-driving lists into
+# a third, no-cut "Review" tier for owner judgement - a different
+# grouping, so it needs its own lists. The underlying fetch/storage
+# (pne._load_events_with_fetched_at) and whole-word matcher
+# (pne._contains_any_v2) are reused unchanged - no new fetch, no new
+# classifier infrastructure.
+EVOLUTION_THESIS_BREAKING = [
+    "fraud", "accounting scandal", "restates earnings", "earnings restatement",
+    "material weakness", "sec investigation", "asic investigation",
+    "regulator investigation", "regulatory investigation", "insolvency",
+    "bankruptcy", "going concern", "chapter 11", "delisting", "delisted",
+    "licence revoked", "license revoked", "covenant breach",
+    "credit rating cut to junk", "downgraded to junk", "trial failed",
+    "phase 3 failure", "fda rejection", "complete response letter",
+]
+EVOLUTION_MATERIAL_NEGATIVE = [
+    "cuts guidance", "lowers guidance", "guidance cut", "slashes guidance",
+    "profit warning", "misses estimates", "misses expectations",
+    "downgrade", "downgraded", "impairment", "writedown", "write-down",
+]
+EVOLUTION_REVIEW_ONLY = [
+    "ceo resigns", "cfo resigns", "ceo steps down", "cfo steps down",
+    "new ceo", "leadership change", "restructuring", "demerger",
+    "spin-off", "spinoff", "class action",
+]
+EVOLUTION_POSITIVE = [
+    "raises guidance", "guidance raised", "lifts guidance",
+    "beats estimates", "beats expectations", "margin improvement",
+    "margins improve", "restructuring complete", "restructuring milestone",
+    "debt reduced", "reduces debt", "upgrade", "upgraded",
+]
+
+EVOLUTION_NEWS_PER_HEADLINE = {"thesis-breaking": 20.0, "material-negative": 5.0, "positive": 5.0}
+EVOLUTION_NEWS_CUT_CAP_THESIS = 30.0
+EVOLUTION_NEWS_CUT_CAP_MATERIAL = 10.0
+EVOLUTION_NEWS_ADD_CAP_POSITIVE = 10.0
+
+
+def _evolution_classify_news(text):
+    """Director's own narrow three-tier (+positive) scheme for TASK 16 -
+    priority order: thesis-breaking first, then material-negative, then
+    the no-cut review-only tier, then positive. Anything matching none of
+    the four lists is not counted at all (unlike portfolio_news_engine.py's
+    own classifier, which always falls through to "noise")."""
+    t = (text or "").lower()
+    if pne._contains_any_v2(t, EVOLUTION_THESIS_BREAKING):
+        return "thesis-breaking"
+    if pne._contains_any_v2(t, EVOLUTION_MATERIAL_NEGATIVE):
+        return "material-negative"
+    if pne._contains_any_v2(t, EVOLUTION_REVIEW_ONLY):
+        return "review-only"
+    if pne._contains_any_v2(t, EVOLUTION_POSITIVE):
+        return "positive"
+    return None
+
+
+def _evolution_news_since_purchase(ticker, buy_date):
+    """Reads the SAME stored news_events rows analyze_holding_news_v2()
+    reads (pne._load_events_with_fetched_at - no fetch triggered here),
+    but applies a strictly-after-buy_date cutoff (no analyze_holding_
+    news_v2()-style buy_date-minus-3-day grace window) and the Director's
+    own tiering above instead of THESIS_BREAKING/MATERIAL_RISK/POSITIVE.
+    Returns {"score", "thesis_breaking": bool, "headlines": [...]}; every
+    matched headline is listed with its date/tier/points even once a
+    tier's cut/add-back cap is reached, so the owner can see everything
+    that was counted, not just what still moved the score."""
+    buy_dt = pne._parse_date(buy_date)
+    if buy_dt is None or not ticker:
+        return {"score": None, "thesis_breaking": False, "headlines": [],
+                "note": "No buy date on file - news-since-purchase not available"}
+
+    events = pne._load_events_with_fetched_at(ticker.upper())
+    headlines = []
+    thesis_cut = 0.0
+    material_cut = 0.0
+    positive_add = 0.0
+    thesis_breaking = False
+
+    for evt in events:
+        date = evt.get("date")
+        if date is None or date <= buy_dt:
+            continue
+        text = f"{evt.get('title') or ''} {evt.get('description') or ''}"
+        tier = _evolution_classify_news(text)
+        if tier is None:
+            continue
+        if tier == "thesis-breaking":
+            thesis_breaking = True
+            points = -EVOLUTION_NEWS_PER_HEADLINE["thesis-breaking"]
+            if thesis_cut > -EVOLUTION_NEWS_CUT_CAP_THESIS:
+                thesis_cut = max(thesis_cut + points, -EVOLUTION_NEWS_CUT_CAP_THESIS)
+        elif tier == "material-negative":
+            points = -EVOLUTION_NEWS_PER_HEADLINE["material-negative"]
+            if material_cut > -EVOLUTION_NEWS_CUT_CAP_MATERIAL:
+                material_cut = max(material_cut + points, -EVOLUTION_NEWS_CUT_CAP_MATERIAL)
+        elif tier == "positive":
+            points = EVOLUTION_NEWS_PER_HEADLINE["positive"]
+            if positive_add < EVOLUTION_NEWS_ADD_CAP_POSITIVE:
+                positive_add = min(positive_add + points, EVOLUTION_NEWS_ADD_CAP_POSITIVE)
+        else:
+            points = 0.0
+        headlines.append({"date": date, "title": evt.get("title"), "tier": tier, "points": points})
+
+    score = max(0.0, min(100.0, 50.0 + thesis_cut + material_cut + positive_add))
+    headlines.sort(key=lambda h: h["date"], reverse=True)
+    return {"score": round(score, 1), "thesis_breaking": thesis_breaking, "headlines": headlines}
+
+
+def _prog_distortion_note(current, baseline):
+    """Flags exactly the mechanism _rel()'s own clamp(-1, 1) saturates on -
+    a near-zero or negative baseline, where an arbitrarily small absolute
+    move reads as a huge relative one (the Director's own example: growth
+    1% -> 3% reads as "tripled"). Not a fixed epsilon: the real signal is
+    whether |current-baseline|/|baseline| has already reached 1.0, the
+    exact point _rel()'s clamp saturates the score to +-50 - so this
+    fires precisely when, and only when, that saturation actually
+    happened, for any field on the relative-change formula."""
+    if current is None or baseline is None:
+        return None
+    if baseline == 0:
+        return ("baseline is exactly zero - the relative-change score is a "
+                "sign-only saturation, not a real magnitude")
+    ratio = abs(current - baseline) / abs(baseline)
+    if baseline < 0:
+        return f"baseline is negative ({baseline:g}) - relative-change direction can read backwards"
+    if ratio >= 1.0:
+        return (f"baseline ({baseline:g}) is small enough that this move saturates the "
+                f"relative-change score (|change|/|baseline| = {ratio:.1f}x)")
+    return None
+
+
+def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None,
+                       valuation_mos_pct=None):
+    """TASK 16 (Director-directed, owner-only shadow score, no live
+    effect): measures EVOLUTION SINCE PURCHASE - is the business's fix
+    working - instead of today's absolute levels and instead of news the
+    market had already priced in at purchase. Reuses compute_progress()/
+    compute_progress_v2() (gated on is_progress_v2_live(), exactly like
+    every live caller) for every fundamentals-since-purchase component,
+    _post_purchase_drawdown() for the price side, and the new, narrower
+    news tiering above for news strictly after buy_date. compute_health*/
+    compute_progress*/_recommend() are never called or modified by this
+    function, and this function never writes to any store - it returns a
+    plain dict for the shadow panel to display and export."""
+    is_etf = (kind or "STOCK").upper() == "ETF"
+    baseline = baseline or {}
+    is_legacy_baseline = baseline.get("schema") == "website_v1"
+
+    progress_fn = compute_progress_v2 if is_progress_v2_live() else compute_progress
+    progress = progress_fn(snapshot, baseline, kind, buy_price, buy_date)
+    prog_comps = progress.get("components", {})
+
+    distortions = []
+    rel_based = {"Debt Δ", "Intrinsic Δ", "Return", "Income Δ"}
+    if not is_progress_v2_live():
+        rel_based |= {"Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ"}
+    for name in rel_based:
+        comp = prog_comps.get(name) or {}
+        note = _prog_distortion_note(comp.get("current"), comp.get("baseline"))
+        if note:
+            distortions.append({"component": name, "note": note})
+    if is_legacy_baseline:
+        distortions.append({
+            "component": "baseline",
+            "note": "Legacy website_v1 baseline - Growth/Margins/ROIC/FCF/Debt/Income "
+                     "baseline fields are missing (read as n/a); only Price/Intrinsic "
+                     "Value/Quality were captured at purchase.",
+        })
+
+    drawdown = _post_purchase_drawdown(snapshot.get("history"), buy_date, snapshot.get("price"))
+    drawdown_score = _interp(DRAWDOWN_BAND, drawdown * 100 if drawdown is not None else None)
+    return_score = (prog_comps.get("Return") or {}).get("score")
+    price_parts = [p for p in (return_score, drawdown_score) if p is not None]
+    price_since_purchase = {
+        "score": round(sum(price_parts) / len(price_parts), 1) if price_parts else None,
+        "return_score": return_score, "drawdown": drawdown, "drawdown_score": drawdown_score,
+    }
+
+    news = None if is_etf else _evolution_news_since_purchase(ticker, buy_date)
+
+    comps = {}
+    if not is_etf:
+        for name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ"):
+            comps[name] = prog_comps.get(name) or {"score": None, "current": None, "baseline": None}
+    comps["Price since purchase"] = price_since_purchase
+    comps["Income Δ"] = prog_comps.get("Income Δ") or {"score": None, "current": None, "baseline": None}
+    if news is not None:
+        comps["News since purchase"] = {
+            "score": news["score"], "thesis_breaking": news["thesis_breaking"],
+            "headlines": news["headlines"],
+        }
+
+    weights = EVOLUTION_WEIGHTS_ETF if is_etf else EVOLUTION_WEIGHTS
+    weighted = [(w, comps[name]["score"]) for name, w in weights.items()
+                if comps.get(name, {}).get("score") is not None]
+    overall = round(sum(w * s for w, s in weighted) / sum(w for w, _ in weighted), 1) if weighted else None
+
+    if overall is None:
+        action = "Not enough data yet"
+    elif overall < EVOLUTION_ACTION_WATCH:
+        action = "REVIEW"
+    elif overall < EVOLUTION_ACTION_HOLD:
+        action = "HOLD & WATCH"
+    elif valuation_mos_pct is not None and valuation_mos_pct >= EVOLUTION_VALUATION_MOS_ADD:
+        action = "HOLD / ADD"
+    else:
+        action = "HOLD"
+
+    return {
+        "components": comps, "overall": overall, "action": action,
+        "review_now": bool(news and news["thesis_breaking"]),
+        "distortions": distortions, "is_etf": is_etf,
+        "progress_source": "v2" if is_progress_v2_live() else "v1",
+    }
