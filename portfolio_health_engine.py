@@ -1399,16 +1399,40 @@ def component_bars_html(components, order):
 # owner-only shadow panel and exported to CSV for manual review.
 # ---------------------------------------------------------------------
 
+# TASK 16b (Director-directed, 20 Oct 2026): Intrinsic Δ compares the IV
+# stored at purchase against today's IV, but the valuation MODEL itself
+# has changed since then (discount-rate design, growth rules, risk-free
+# fixes) and purchase-day model inputs were never stored, so there is no
+# way to recompute the baseline under today's model - the comparison is
+# apples-to-oranges, not a real read of business change (OCL's CSV showed
+# Intrinsic Δ 19.5, a ~-60% reading driven by model drift, not the
+# business). Intrinsic Δ is now INFORMATION ONLY: still computed and
+# shown (EVOLUTION_INTRINSIC_WEIGHT below), but weight 0 - excluded from
+# EVOLUTION_WEIGHTS entirely, so it can never move the overall score. Its
+# 20% is redistributed PROPORTIONALLY across the other four Fundamentals
+# Δ components (12:10:10:8 -> 17:15:14:12, each rounded to the nearest
+# whole point) plus Debt Δ (5 -> 7), giving Fundamentals Δ 65% total.
+EVOLUTION_INTRINSIC_WEIGHT = 0.0
 EVOLUTION_WEIGHTS = {
-    "Growth Δ": 12.0, "Margins Δ": 10.0, "ROIC Δ": 10.0, "FCF Δ": 8.0, "Debt Δ": 5.0,
-    "Intrinsic Δ": 20.0, "Price since purchase": 15.0, "Income Δ": 5.0,
+    "Growth Δ": 17.0, "Margins Δ": 15.0, "ROIC Δ": 14.0, "FCF Δ": 12.0, "Debt Δ": 7.0,
+    "Price since purchase": 15.0, "Income Δ": 5.0,
     "News since purchase": 15.0,
 }
-# ETFs have no company fundamentals/thesis/news to score - proposed split
-# keeps the stock weights' own 15:5 (Price:Income) ratio, re-normalised to
-# 100: not specified by the Director beyond "Price since purchase + Income
-# Δ only", so this exact 75/25 split is this report's own proposal.
+# ETFs have no company fundamentals/thesis/news to score (and no
+# Intrinsic Δ either way) - proposed split keeps the stock weights' own
+# 15:5 (Price:Income) ratio, re-normalised to 100: not specified by the
+# Director beyond "Price since purchase + Income Δ only", so this exact
+# 75/25 split is this report's own proposal.
 EVOLUTION_WEIGHTS_ETF = {"Price since purchase": 75.0, "Income Δ": 25.0}
+
+# TASK 16b: Income Δ's current/baseline dividend_rate both come from the
+# SAME field - fetch_snapshot()'s own "dividend_rate": _num("dividendRate")
+# (see that function's own comment: Yahoo's indicated annual $/share
+# dividend rate, never a trailing-12-month sum or a ratio). Shown next to
+# the baseline/current figures so the owner can judge a drop against the
+# field's real meaning (an indicated-rate cut reads very differently from
+# a trailing-sum artifact) rather than a bare number.
+EVOLUTION_INCOME_SOURCE_NOTE = "dividendRate (Yahoo Finance's indicated annual $/share dividend rate)"
 
 EVOLUTION_ACTION_HOLD = 60
 EVOLUTION_ACTION_WATCH = 45
@@ -1550,29 +1574,52 @@ def _prog_distortion_note(current, baseline):
 
 def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None,
                        valuation_mos_pct=None):
-    """TASK 16 (Director-directed, owner-only shadow score, no live
+    """TASK 16/16b (Director-directed, owner-only shadow score, no live
     effect): measures EVOLUTION SINCE PURCHASE - is the business's fix
     working - instead of today's absolute levels and instead of news the
-    market had already priced in at purchase. Reuses compute_progress()/
-    compute_progress_v2() (gated on is_progress_v2_live(), exactly like
-    every live caller) for every fundamentals-since-purchase component,
-    _post_purchase_drawdown() for the price side, and the new, narrower
-    news tiering above for news strictly after buy_date. compute_health*/
-    compute_progress*/_recommend() are never called or modified by this
-    function, and this function never writes to any store - it returns a
-    plain dict for the shadow panel to display and export."""
+    market had already priced in at purchase.
+
+    TASK 16b fix 1: Growth/Margins/ROIC/FCF Δ are ALWAYS read from
+    compute_progress_v2() - never compute_progress() (v1) - regardless of
+    is_progress_v2_live(). That switch only ever controls the LIVE
+    Progress tab/Health blend (app.py's own _analyze_holding() dispatch);
+    it has no effect here. v2's rate fields are already scored in
+    percentage points (_prog_score_v2_rate()), so this shadow score never
+    exhibits v1's relative-change saturation (CSL's Growth Δ 100/Margins Δ
+    0/ROIC Δ 0, all flagged distorted, was exactly v1's bug leaking in
+    through the is_progress_v2_live()-off default). Debt Δ/Intrinsic
+    Δ/Return/Income Δ are identical between v1 and v2 (confirmed in PART C
+    STEP C2's own tests), so calling compute_progress_v2() unconditionally
+    changes nothing for those four fields either way.
+
+    TASK 16b fix 2: Intrinsic Δ is INFORMATION ONLY - still computed and
+    returned (baseline/current/score, plus a note), but excluded from
+    EVOLUTION_WEIGHTS, so it never moves `overall` (see that constant's
+    own comment for why: the valuation model has changed since purchase
+    and purchase-day model inputs were never stored).
+
+    compute_health*/compute_progress*/_recommend() are never called or
+    modified by this function, and this function never writes to any
+    store - it returns a plain dict for the shadow panel to display and
+    export."""
     is_etf = (kind or "STOCK").upper() == "ETF"
     baseline = baseline or {}
     is_legacy_baseline = baseline.get("schema") == "website_v1"
 
-    progress_fn = compute_progress_v2 if is_progress_v2_live() else compute_progress
-    progress = progress_fn(snapshot, baseline, kind, buy_price, buy_date)
+    progress = compute_progress_v2(snapshot, baseline, kind, buy_price, buy_date)
     prog_comps = progress.get("components", {})
 
     distortions = []
+    # Growth/Margins/ROIC/FCF Δ are deliberately NOT in this set any more
+    # (TASK 16b fix 1) - they're always percentage-point scored here now,
+    # so they never hit _rel()'s relative-change saturation in the first
+    # place. Debt Δ/Return/Income Δ stay on the relative-change formula in
+    # both v1 and v2 (PART C STEP C2 never touched "level" fields), so the
+    # same saturation guard still applies to them. Intrinsic Δ is still
+    # flagged here too (a near-zero/negative IV baseline is a real
+    # distortion in its own right) - separate from, and in addition to,
+    # its own model-drift note below.
     rel_based = {"Debt Δ", "Intrinsic Δ", "Return", "Income Δ"}
-    if not is_progress_v2_live():
-        rel_based |= {"Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ"}
     for name in rel_based:
         comp = prog_comps.get(name) or {}
         note = _prog_distortion_note(comp.get("current"), comp.get("baseline"))
@@ -1593,16 +1640,30 @@ def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None
     price_since_purchase = {
         "score": round(sum(price_parts) / len(price_parts), 1) if price_parts else None,
         "return_score": return_score, "drawdown": drawdown, "drawdown_score": drawdown_score,
+        "current": snapshot.get("price"), "baseline": buy_price or baseline.get("price"),
     }
 
     news = None if is_etf else _evolution_news_since_purchase(ticker, buy_date)
 
     comps = {}
     if not is_etf:
-        for name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ"):
+        for name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ"):
             comps[name] = prog_comps.get(name) or {"score": None, "current": None, "baseline": None}
+        _intrinsic = dict(prog_comps.get("Intrinsic Δ") or {"score": None, "current": None, "baseline": None})
+        _intrinsic["note"] = (
+            (_intrinsic.get("note") or "")
+            + (" " if _intrinsic.get("note") else "")
+            + "Information only (weight 0) - the valuation model has changed since "
+              "purchase (discount-rate design, growth rules, risk-free fixes) and "
+              "purchase-day model inputs were never stored, so this isn't a reliable "
+              "like-for-like comparison."
+        ).strip()
+        comps["Intrinsic Δ"] = _intrinsic
     comps["Price since purchase"] = price_since_purchase
-    comps["Income Δ"] = prog_comps.get("Income Δ") or {"score": None, "current": None, "baseline": None}
+    comps["Income Δ"] = dict(
+        prog_comps.get("Income Δ") or {"score": None, "current": None, "baseline": None},
+        source=EVOLUTION_INCOME_SOURCE_NOTE,
+    )
     if news is not None:
         comps["News since purchase"] = {
             "score": news["score"], "thesis_breaking": news["thesis_breaking"],
@@ -1629,5 +1690,10 @@ def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None
         "components": comps, "overall": overall, "action": action,
         "review_now": bool(news and news["thesis_breaking"]),
         "distortions": distortions, "is_etf": is_etf,
-        "progress_source": "v2" if is_progress_v2_live() else "v1",
+        # TASK 16b fix 1: always "v2" now - compute_evolution() calls
+        # compute_progress_v2() unconditionally, independent of
+        # is_progress_v2_live() (that switch only ever controls the LIVE
+        # Progress tab/Health blend). Kept as a field, not removed, so
+        # anything already reading it keeps a stable key.
+        "progress_source": "v2",
     }

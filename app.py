@@ -33300,15 +33300,21 @@ def _render_market_readiness_panel():
 
 
 def _render_evolution_shadow_panel():
-    """TASK 16 (Director-directed, 19 Oct 2026): "Evolution since purchase
-    (shadow)" - owner-only, read-only, NO LIVE EFFECT. A holding's action
-    should measure whether the business's fix is WORKING since purchase -
-    not today's absolute levels, and not news the market had already
-    priced in at purchase (often the reason the owner bought in the first
-    place). See portfolio_health_engine.compute_evolution()'s own
-    docstring for the exact weights/thresholds and for why this is purely
-    additive (compute_health*/compute_progress*/_recommend() are never
-    called or modified here).
+    """TASK 16/16b (Director-directed, 19-20 Oct 2026): "Evolution since
+    purchase (shadow)" - owner-only, read-only, NO LIVE EFFECT. A
+    holding's action should measure whether the business's fix is
+    WORKING since purchase - not today's absolute levels, and not news
+    the market had already priced in at purchase (often the reason the
+    owner bought in the first place). See portfolio_health_engine.
+    compute_evolution()'s own docstring for the exact weights/thresholds
+    and for why this is purely additive (compute_health*/compute_
+    progress*/_recommend() are never called or modified here).
+
+    TASK 16b: the table/CSV now carry baseline (purchase-day) AND current
+    values for every component, not just scores - the owner's 20 Oct
+    report was exactly "the export only has scores." Buy date and
+    baseline-captured date are shown per holding too (TASK 16 item 1
+    originally asked for this and it was missed).
 
     Calls _analyze_holding() for the real LIVE snapshot/Health/Action
     (never a second, independently-computed live score - see its own
@@ -33327,7 +33333,9 @@ def _render_evolution_shadow_panel():
         "business is IMPROVING since purchase - not today's absolute "
         "levels, and not news the market had already priced in at "
         "purchase. Proposed weights and action thresholds only; the live "
-        "Health score and action (columns on the right) are unaffected."
+        "Health score and action (columns on the right) are unaffected. "
+        "Intrinsic Δ is shown for information only (weight 0) - see its "
+        "own note below."
     )
     _owner_email = ai_gate.owner_email()
     _owner_holdings = portfolio_store.get_holdings_all(_owner_email) if _owner_email else []
@@ -33358,22 +33366,33 @@ def _render_evolution_shadow_panel():
 
         comps = evo.get("components", {})
 
-        def _score(name, _comps=comps):
-            return (_comps.get(name) or {}).get("score")
+        def _comp(name, field, _comps=comps):
+            return (_comps.get(name) or {}).get(field)
 
         _live_health = _live.get("health") or {}
-        _rows.append({
+        _row = {
             "Ticker": ticker, "Portfolio": h.get("portfolio"),
-            "Growth Δ": _score("Growth Δ"), "Margins Δ": _score("Margins Δ"),
-            "ROIC Δ": _score("ROIC Δ"), "FCF Δ": _score("FCF Δ"), "Debt Δ": _score("Debt Δ"),
-            "Intrinsic Δ": _score("Intrinsic Δ"),
-            "Price since purchase": _score("Price since purchase"), "Income Δ": _score("Income Δ"),
-            "News since purchase": _score("News since purchase"),
-            "Evolution score": evo.get("overall"), "Evolution action": evo.get("action"),
-            "Review now (thesis-breaking)": "yes" if evo.get("review_now") else "no",
-            "Live Health": _live_health.get("overall"), "Live Action": _live_health.get("action"),
-            "Distortions flagged": ", ".join(d["component"] for d in evo.get("distortions", [])) or "none",
-        })
+            "Buy date": h.get("buy_date"), "Baseline captured": h.get("baseline_date"),
+        }
+        for _name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ"):
+            _row[f"{_name} baseline"] = _comp(_name, "baseline")
+            _row[f"{_name} current"] = _comp(_name, "current")
+            _row[f"{_name} score"] = _comp(_name, "score")
+        _row["Price baseline (buy price)"] = _comp("Price since purchase", "baseline")
+        _row["Price current"] = _comp("Price since purchase", "current")
+        _row["Price since purchase score"] = _comp("Price since purchase", "score")
+        _row["Income Δ baseline (div rate)"] = _comp("Income Δ", "baseline")
+        _row["Income Δ current (div rate)"] = _comp("Income Δ", "current")
+        _row["Income Δ score"] = _comp("Income Δ", "score")
+        _row["Income Δ source"] = _comp("Income Δ", "source")
+        _row["News since purchase score"] = _comp("News since purchase", "score")
+        _row["Evolution score"] = evo.get("overall")
+        _row["Evolution action"] = evo.get("action")
+        _row["Review now (thesis-breaking)"] = "yes" if evo.get("review_now") else "no"
+        _row["Live Health"] = _live_health.get("overall")
+        _row["Live Action"] = _live_health.get("action")
+        _row["Distortions flagged"] = ", ".join(d["component"] for d in evo.get("distortions", [])) or "none"
+        _rows.append(_row)
         for d in evo.get("distortions", []):
             _distortion_rows.append({"Ticker": ticker, "Component": d["component"], "Note": d["note"]})
         _detail.append((h, comps, evo))
@@ -33398,21 +33417,35 @@ def _render_evolution_shadow_panel():
         ticker = h["ticker"]
         _row_key = f"{_row_idx}_{ticker}"
         with st.expander(f"{ticker} - evolution detail", key=f"admin_evolution_expander_{_row_key}"):
+            st.caption(f"Buy date: {h.get('buy_date') or 'n/a'} | Baseline captured: {h.get('baseline_date') or 'n/a'}")
             _fund_rows = [
                 {"Component": _name, "Baseline": (comps.get(_name) or {}).get("baseline"),
-                 "Current": (comps.get(_name) or {}).get("current"), "Score": (comps.get(_name) or {}).get("score")}
-                for _name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ", "Income Δ")
+                 "Current": (comps.get(_name) or {}).get("current"), "Score": (comps.get(_name) or {}).get("score"),
+                 "Note": (comps.get(_name) or {}).get("note") or ""}
+                for _name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ")
                 if comps.get(_name) is not None
             ]
             if _fund_rows:
                 st.dataframe(_fund_rows, hide_index=True, width='stretch')
             else:
                 st.caption("No fundamentals-since-purchase data (ETF or no baseline on file).")
+            _intrinsic_note = (comps.get("Intrinsic Δ") or {}).get("note")
+            if _intrinsic_note:
+                st.caption(f"Intrinsic Δ: {_intrinsic_note}")
+
+            _income = comps.get("Income Δ") or {}
+            if _income.get("source"):
+                st.caption(
+                    f"Income Δ source field: {_income['source']} - baseline "
+                    f"{_income.get('baseline')}, current {_income.get('current')}, "
+                    f"score {_income.get('score')}."
+                )
 
             _price = comps.get("Price since purchase") or {}
             if _price.get("drawdown") is not None:
                 st.caption(
-                    f"Price since purchase: return score {_price.get('return_score')}, "
+                    f"Price since purchase: buy price {_price.get('baseline')}, current price "
+                    f"{_price.get('current')}, return score {_price.get('return_score')}, "
                     f"drawdown from post-purchase peak {_price['drawdown'] * 100:.1f}% "
                     f"(score {_price.get('drawdown_score')}), blended score {_price.get('score')}."
                 )

@@ -1,12 +1,11 @@
 """
-TASK 16 (Director-directed, 19 Oct 2026): "Evolution since purchase" score -
-OWNER-ONLY SHADOW SCORE, no live effect.
+TASK 16/16b (Director-directed, 19-20 Oct 2026): "Evolution since purchase"
+score - OWNER-ONLY SHADOW SCORE, no live effect.
 
 Covers the task's own listed tests for compute_evolution() in
 portfolio_health_engine.py:
   - each fundamentals-since-purchase component (Growth/Margins/ROIC/FCF/
-    Debt/Intrinsic Δ) is read straight from compute_progress()/compute_
-    progress_v2() - never re-derived.
+    Debt Δ) is read straight from compute_progress_v2() - never re-derived.
   - price-since-purchase blends Return and post-purchase-drawdown.
   - news-since-purchase tiering: thesis-breaking (capped cut + red flag),
     material-negative (capped at 10), review-only (no cut), positive
@@ -17,6 +16,17 @@ portfolio_health_engine.py:
   - the ETF path (Price since purchase + Income Δ only).
   - action thresholds (REVIEW / HOLD & WATCH / HOLD / HOLD-ADD).
   - compute_health*/compute_progress*/_recommend() are never touched.
+
+TASK 16b fixes, covered below:
+  - rate fields (Growth/Margins/ROIC/FCF Δ) are ALWAYS percentage-point
+    scored via compute_progress_v2(), regardless of PROGRESS_V2_LIVE -
+    that switch only ever controls the live Progress tab/Health blend.
+  - Intrinsic Δ has weight 0 (information only) but is still computed,
+    displayed, and carries an explanatory note; EVOLUTION_WEIGHTS sums
+    to 100 without it, redistributed into Fundamentals Δ (now 65%).
+  - Income Δ carries its source field (dividendRate) alongside
+    baseline/current, for the owner to judge a drop against the field's
+    real meaning.
 
 Run: python3 tests/test_director_task16_evolution_since_purchase.py
 """
@@ -64,30 +74,42 @@ _BASELINE = {
 
 # ======================================================================
 # CHECK 1: compute_evolution()'s own fundamentals/Intrinsic/Income
-# components are read verbatim from compute_progress() - never re-derived.
+# components are read verbatim from compute_progress_v2() - never
+# re-derived. (TASK 16b: always v2, never v1 - see CHECK 2.)
 # ======================================================================
-_progress = phe.compute_progress(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01")
+_progress_v2 = phe.compute_progress_v2(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01")
 _evo = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01", ticker=None)
 for _key in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ", "Income Δ"):
-    check(f"compute_evolution()'s {_key!r} component matches compute_progress()'s own score exactly",
-          _evo["components"][_key]["score"] == _progress["components"][_key]["score"])
+    check(f"compute_evolution()'s {_key!r} component matches compute_progress_v2()'s own score exactly",
+          _evo["components"][_key]["score"] == _progress_v2["components"][_key]["score"])
 print("[task16_c1_reuse] every fundamentals/Intrinsic/Income component is a verbatim "
-      "read of compute_progress(), never re-derived OK")
+      "read of compute_progress_v2(), never re-derived OK")
 
 # ======================================================================
-# CHECK 2: compute_progress_v2() is used instead when PROGRESS_V2_LIVE is
-# on, and still never re-derived.
+# CHECK 2 (TASK 16b fix 1): rate fields are ALWAYS percentage-point
+# scored via compute_progress_v2() - PROGRESS_V2_LIVE has NO effect on
+# compute_evolution() at all; that switch only controls the live
+# Progress tab/Health blend (app.py's own _analyze_holding() dispatch).
 # ======================================================================
+_progress_v1 = phe.compute_progress(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01")
+check("compute_evolution()'s Growth Δ differs from v1's own relative-change score on this "
+      "fixture (proof it's genuinely percentage-point scored, not accidentally equal)",
+      _evo["components"]["Growth Δ"]["score"] != _progress_v1["components"]["Growth Δ"]["score"])
+check("compute_evolution()'s own progress_source is always 'v2'", _evo["progress_source"] == "v2")
+
+check("PROGRESS_V2_LIVE starts unset for this test run", phe.is_progress_v2_live() is False)
 os.environ["PROGRESS_V2_LIVE"] = "1"
-_progress_v2 = phe.compute_progress_v2(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01")
-_evo_v2 = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01", ticker=None)
-check("compute_evolution() switches to compute_progress_v2() under PROGRESS_V2_LIVE=1",
-      _evo_v2["progress_source"] == "v2"
-      and _evo_v2["components"]["Growth Δ"]["score"] == _progress_v2["components"]["Growth Δ"]["score"])
-check("under v1 (the first call), progress_source is reported as 'v1'",
-      _evo["progress_source"] == "v1")
+_evo_switch_on = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01", ticker=None)
 os.environ.pop("PROGRESS_V2_LIVE", None)
-print("[task16_c2_v2_switch] compute_evolution() follows is_progress_v2_live() exactly OK")
+_evo_switch_off = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01", ticker=None)
+check("compute_evolution()'s Growth Δ score is IDENTICAL whether PROGRESS_V2_LIVE is on or off",
+      _evo_switch_on["components"]["Growth Δ"]["score"] == _evo_switch_off["components"]["Growth Δ"]["score"]
+      == _evo["components"]["Growth Δ"]["score"])
+check("same for Margins Δ/ROIC Δ/FCF Δ - the switch has zero effect on compute_evolution()",
+      all(_evo_switch_on["components"][k]["score"] == _evo_switch_off["components"][k]["score"]
+          for k in ("Margins Δ", "ROIC Δ", "FCF Δ")))
+print("[task16_c2_always_v2] compute_evolution() is completely independent of "
+      "PROGRESS_V2_LIVE - rate fields are always percentage-point scored OK")
 
 # ======================================================================
 # CHECK 3: Price since purchase blends Return (vs buy price) and
@@ -229,34 +251,36 @@ if os.path.exists(pne.DB_PATH):
     os.remove(pne.DB_PATH)
 
 # ======================================================================
-# CHECK 5: near-zero / negative baseline distortion guard - the real
-# mechanism is _rel()'s clamp(-1, 1) saturating, flagged whenever
-# |current-baseline|/|baseline| has already reached 1.0.
+# CHECK 5 (TASK 16b fix 1): near-zero / negative baseline distortion
+# guard - Growth Δ is NEVER flagged any more (always percentage-point
+# scored now, regardless of PROGRESS_V2_LIVE), while Debt Δ (a "level"
+# field, still on the relative-change formula in both v1 and v2) is
+# still flagged whenever |current-baseline|/|baseline| has reached 1.0.
 # ======================================================================
 _distort_snapshot = dict(_SNAPSHOT, revenue_growth=0.03, debt_to_equity=5.0)
 _distort_baseline = dict(_BASELINE, revenue_growth=0.01, debt_to_equity=-5.0)
 _evo_distort = phe.compute_evolution(_distort_snapshot, _distort_baseline, "STOCK", 95.0,
                                       "2025-01-01", ticker=None)
 _distorted_names = {d["component"] for d in _evo_distort["distortions"]}
-check("a near-zero Growth baseline (1% -> 3%, under v1) is flagged as distorted",
-      "Growth Δ" in _distorted_names)
-check("a negative Debt baseline is flagged as distorted",
+check("a near-zero Growth baseline (1% -> 3%) is NEVER flagged any more - compute_evolution() "
+      "always percentage-point scores Growth Δ, so this distortion can no longer occur here",
+      "Growth Δ" not in _distorted_names)
+check("a negative Debt baseline is still flagged as distorted (Debt Δ stays on the "
+      "relative-change formula in both v1 and v2)",
       "Debt Δ" in _distorted_names)
 check("compute_evolution() does not crash on a near-zero/negative baseline - overall is still computed",
       _evo_distort["overall"] is not None)
 
 os.environ["PROGRESS_V2_LIVE"] = "1"
-_evo_distort_v2 = phe.compute_evolution(_distort_snapshot, _distort_baseline, "STOCK", 95.0,
-                                         "2025-01-01", ticker=None)
-_distorted_names_v2 = {d["component"] for d in _evo_distort_v2["distortions"]}
-check("under v2 (percentage-point scale), the near-zero Growth baseline is NOT flagged - "
-      "v2's own fix already removed that distortion for rate fields",
-      "Growth Δ" not in _distorted_names_v2)
-check("under v2, the negative Debt baseline is STILL flagged - v2 never touched level fields",
-      "Debt Δ" in _distorted_names_v2)
+_evo_distort_switch_on = phe.compute_evolution(_distort_snapshot, _distort_baseline, "STOCK", 95.0,
+                                                "2025-01-01", ticker=None)
 os.environ.pop("PROGRESS_V2_LIVE", None)
-print("[task16_c5_distortion] near-zero/negative baselines are flagged via the real "
-      "saturation mechanism; v2 narrows the flagged set exactly where it fixed the formula OK")
+check("the distortion flags are IDENTICAL regardless of PROGRESS_V2_LIVE - the switch has no "
+      "effect on compute_evolution() at all",
+      {d["component"] for d in _evo_distort_switch_on["distortions"]} == _distorted_names)
+print("[task16_c5_distortion] Growth Δ can no longer be flagged (always percentage-point "
+      "scored); Debt Δ (a level field) is still flagged on a saturated baseline; "
+      "PROGRESS_V2_LIVE has zero effect either way OK")
 
 # ======================================================================
 # CHECK 6: legacy "website_v1" baseline is flagged by schema, not guessed.
@@ -286,6 +310,69 @@ check("stock weights (EVOLUTION_WEIGHTS) sum to exactly 100",
       sum(phe.EVOLUTION_WEIGHTS.values()) == 100.0)
 print("[task16_c7_etf_path] ETF evolution score uses only Price since purchase + Income Δ, "
       "both weight tables sum to 100 OK")
+
+# ======================================================================
+# CHECK 7b (TASK 16b fix 2): Intrinsic Δ has weight 0 (information only)
+# but is still computed and displayed, with an explanatory note; its 20%
+# was redistributed proportionally into Fundamentals Δ (now 65% total).
+# ======================================================================
+check("Intrinsic Δ is NOT one of the weighted keys - EVOLUTION_WEIGHTS excludes it entirely",
+      "Intrinsic Δ" not in phe.EVOLUTION_WEIGHTS)
+check("EVOLUTION_INTRINSIC_WEIGHT is exactly 0.0, as the Director specified",
+      phe.EVOLUTION_INTRINSIC_WEIGHT == 0.0)
+check("Fundamentals Δ (Growth+Margins+ROIC+FCF+Debt) now sums to 65 points",
+      sum(phe.EVOLUTION_WEIGHTS[k] for k in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")) == 65.0)
+check("the exact per-component Fundamentals Δ split matches the Director's own numbers "
+      "(Growth 17, Margins 15, ROIC 14, FCF 12, Debt 7)",
+      phe.EVOLUTION_WEIGHTS["Growth Δ"] == 17.0 and phe.EVOLUTION_WEIGHTS["Margins Δ"] == 15.0
+      and phe.EVOLUTION_WEIGHTS["ROIC Δ"] == 14.0 and phe.EVOLUTION_WEIGHTS["FCF Δ"] == 12.0
+      and phe.EVOLUTION_WEIGHTS["Debt Δ"] == 7.0)
+
+_intrinsic_drift_snapshot = dict(_SNAPSHOT, intrinsic_value=40.0)  # a big drop vs baseline 100.0
+_evo_intrinsic = phe.compute_evolution(_intrinsic_drift_snapshot, _BASELINE, "STOCK", 95.0,
+                                        "2025-01-01", ticker=None)
+check("Intrinsic Δ is still computed and present in components (shown, not removed)",
+      "Intrinsic Δ" in _evo_intrinsic["components"]
+      and _evo_intrinsic["components"]["Intrinsic Δ"]["score"] is not None)
+check("Intrinsic Δ carries an explanatory 'information only' note",
+      "information only" in (_evo_intrinsic["components"]["Intrinsic Δ"].get("note") or "").lower())
+
+# Prove weight 0 is REAL, not just documented: swinging Intrinsic Δ from
+# a strong score to a very weak one must not move `overall` at all, same
+# snapshot/baseline otherwise.
+_evo_intrinsic_control = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0,
+                                                "2025-01-01", ticker=None)
+check("a large swing in Intrinsic Δ's own score does not move the overall evolution score "
+      "at all - weight 0 is enforced, not just labelled",
+      _evo_intrinsic["components"]["Intrinsic Δ"]["score"]
+      != _evo_intrinsic_control["components"]["Intrinsic Δ"]["score"]
+      and _evo_intrinsic["overall"] == _evo_intrinsic_control["overall"])
+print("[task16_c7b_intrinsic_info_only] Intrinsic Δ is excluded from EVOLUTION_WEIGHTS "
+      "(weight 0, proven not just documented), still shown with an explanatory note; "
+      "Fundamentals Δ absorbed its 20% as 65% total, split 17/15/14/12/7 OK")
+
+# ======================================================================
+# CHECK 7c (TASK 16b fix 3/4): Income Δ carries its source field
+# alongside baseline/current, so a drop can be judged against the
+# field's real meaning (dividendRate, not a trailing-12-month sum).
+# ======================================================================
+check("Income Δ's 'source' field names the real underlying field (dividendRate)",
+      "dividendRate" in (_evo["components"]["Income Δ"].get("source") or ""))
+check("Income Δ still carries baseline/current dividend_rate numbers alongside the source note",
+      _evo["components"]["Income Δ"]["baseline"] == _BASELINE["dividend_rate"]
+      and _evo["components"]["Income Δ"]["current"] == _SNAPSHOT["dividend_rate"])
+print("[task16_c7c_income_source] Income Δ's source field (dividendRate) is attached "
+      "alongside its baseline/current values OK")
+
+# ======================================================================
+# CHECK 7d (TASK 16b fix 3): Price since purchase now also carries the
+# raw baseline (buy price) and current price values, not just scores.
+# ======================================================================
+check("Price since purchase carries baseline (buy price) and current price alongside its score",
+      _evo["components"]["Price since purchase"]["baseline"] == 95.0
+      and _evo["components"]["Price since purchase"]["current"] == _SNAPSHOT["price"])
+print("[task16_c7d_price_values] Price since purchase exposes buy price/current price, "
+      "not just the blended score OK")
 
 # ======================================================================
 # CHECK 8: action thresholds - REVIEW / HOLD & WATCH / HOLD / HOLD-ADD -
@@ -349,7 +436,7 @@ print("[task16_c8_actions] REVIEW < 45 <= HOLD & WATCH < 60 <= HOLD(/ADD if MOS>
 # ======================================================================
 check("compute_progress() (v1) is unaffected by compute_evolution() existing in the module",
       phe.compute_progress(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01")["overall"]
-      == _progress["overall"])
+      == _progress_v1["overall"])
 check("_recommend() still returns its documented action/tone pairs unchanged",
       phe._recommend(80, 70) == ("HOLD / ADD - attractively priced", "good")
       and phe._recommend(30, 50)[0] == "REVIEW / REDUCE")
@@ -415,6 +502,20 @@ app._render_evolution_shadow_panel()
            "Review now (thesis-breaking)", "Distortions flagged"}.issubset(set(_evo_df.columns)))
     check("EVOLPANEL appears as a row in the evolution table",
           _evo_df is not None and "EVOLPANEL" in _evo_df["Ticker"].tolist())
+    check("TASK 16b: the table carries buy date and baseline-captured date per holding",
+          _evo_df is not None and {"Buy date", "Baseline captured"}.issubset(set(_evo_df.columns)))
+    check("TASK 16b: the table carries baseline AND current values for every fundamentals "
+          "component, not just scores",
+          _evo_df is not None and {
+              "Growth Δ baseline", "Growth Δ current", "Growth Δ score",
+              "Intrinsic Δ baseline", "Intrinsic Δ current", "Intrinsic Δ score",
+          }.issubset(set(_evo_df.columns)))
+    check("TASK 16b: Price since purchase's baseline (buy price)/current price are exported",
+          _evo_df is not None and
+          {"Price baseline (buy price)", "Price current", "Price since purchase score"}.issubset(set(_evo_df.columns)))
+    check("TASK 16b: Income Δ's baseline/current/source field are all exported",
+          _evo_df is not None and
+          {"Income Δ baseline (div rate)", "Income Δ current (div rate)", "Income Δ source"}.issubset(set(_evo_df.columns)))
 
     _download_labels = [b.label or "" for b in at.download_button]
     check("a CSV download button for the evolution export is present",
