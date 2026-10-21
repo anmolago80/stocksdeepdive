@@ -52,16 +52,18 @@ that spot.
 
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import streamlit as st
 import yfinance as yf
 
 import auto_compounder_engine
+import financials_classifier
 import fundamentals_data
 import nightly_scan
 import portfolio_news_engine as pne
 import resolver_engine
+import results_engine
 
 # ---------------------------------------------------------------------
 # Scoring tables - transcribed from the desktop Portfolio Health Monitor's
@@ -1572,31 +1574,420 @@ def _prog_distortion_note(current, baseline):
     return None
 
 
+# ---------------------------------------------------------------------
+# TASK 16c (Director-directed, 22 Oct 2026): fundamentals-since-purchase
+# measured from REPORTED ACCOUNTS (tk.income_stmt/balance_sheet/cashflow,
+# tk.dividends), never from Yahoo's live `.info` snapshot fields that
+# fetch_snapshot()/compute_progress_v2() read (profitMargins/
+# returnOnEquity/debtToEquity/dividendRate). SHADOW ONLY: this section
+# feeds compute_evolution() alone - fetch_snapshot(), compute_health*,
+# compute_progress*, and every live caller of them are untouched; the
+# OLD Yahoo-snapshot-based numbers are still computed and kept on each
+# component's own "old" sub-dict for comparison, they just no longer
+# drive the Evolution score (see compute_evolution()'s own "old" wiring
+# below). Root causes (Director's own, 22 Oct 2026):
+#   A. profit_margin/roe are STATUTORY (post one-off items) - a
+#      restructuring/impairment year (CSL FY26: US$7.1B pre-tax
+#      impairments + US$0.8B restructuring) scores as business failure
+#      instead of a deliberate, one-off cost. Fixed by using "Normalized
+#      Income" (falling back to Net Income - Total Unusual Items*(1-tax
+#      rate)) for Margins/ROIC/Growth, instead of the statutory figure.
+#   B. dividend_rate (Yahoo's "dividendRate") is an INDICATED rate that
+#      can read differently between two baseline captures on the SAME
+#      day on a name with uneven interim/final dividends (OCL: two 28
+#      Aug baselines hold 0.26 and 0.21, current reads 0.13 -> a false
+#      "cut" that never happened). Fixed by using the actual trailing-
+#      12-month SUM of real paid dividends (tk.dividends) as of buy_date
+#      vs as of today - a fact, not a snapshot of an indicated rate.
+#   C. A locked baseline snapshot's exact numbers depend on WHEN in the
+#      refresh cycle it was captured (OCL SMSF vs Financial Freedom
+#      differ on the same capture date). Fixed by anchoring every
+#      fundamentals figure to a NAMED FISCAL YEAR column (FY_base/
+#      FY_now) instead of a live snapshot value.
+#   D. fetch_snapshot()'s own inline OCF/Capex lookup uses literal exact
+#      row names only, no fallback - CSL's fcf_growth silently returns
+#      None whenever either row's real name doesn't match exactly.
+#      Fixed by reusing auto_compounder_engine._find_row()'s fallback-
+#      aware row-name matching (the SAME aliases the Compounder/DCF
+#      tools already use), plus a "Free Cash Flow" row fallback.
+# ---------------------------------------------------------------------
+
+EVOLUTION_FY_PUBLIC_DATE_FALLBACK_DAYS = 60
+EVOLUTION_FY_PUBLIC_DATE_WINDOW_DAYS = 150
+EVOLUTION_DEBT_TURNS_SCALE = 1.0
+
+
+def _evolution_series_by_date(df, key):
+    """{date: value} for a statement row, keyed by its REAL period-end
+    date rather than column position - built from auto_compounder_
+    engine._series_with_dates() (never a second date parser), so
+    income/balance/cashflow rows (which don't share identical column
+    sets on every ticker) can be looked up by the SAME fiscal-year date
+    without assuming positional alignment across the three statements."""
+    if df is None:
+        return {}
+    try:
+        pairs = auto_compounder_engine._series_with_dates(df, key)
+    except Exception:
+        return {}
+    return {d: v for d, v in pairs if d is not None}
+
+
+@st.cache_data(ttl=21600)
+def _evolution_report_dates(ticker):
+    """Best-effort list of past earnings/announcement dates for `ticker`
+    (ISO date strings) - reuses results_engine._parse_earnings_dates_df()
+    (never a second parser of yf.Ticker.get_earnings_dates()' own shape)
+    purely for its reported dates, not its EPS values. Returns [] on any
+    failure or if the ticker has no earnings-date history on Yahoo (e.g.
+    most ETFs) - this is a best-effort "if available" lookup; the
+    Director's own spec names period-end + 60 days as the explicit
+    fallback for exactly this case, applied by
+    _evolution_public_date()."""
+    try:
+        df = yf.Ticker(ticker).get_earnings_dates(limit=12)
+    except Exception:
+        return []
+    try:
+        parsed = results_engine._parse_earnings_dates_df(df)
+    except Exception:
+        return []
+    return [e["date"] for e in (parsed.get("eps_history") or [])]
+
+
+def _evolution_public_date(period_end, report_dates):
+    """The public/announcement date for one fiscal-year column - the
+    earliest known report date strictly after `period_end`, within
+    EVOLUTION_FY_PUBLIC_DATE_WINDOW_DAYS (generous enough to cover slow
+    AU/UK reporters); period_end + EVOLUTION_FY_PUBLIC_DATE_FALLBACK_DAYS
+    when no report date is known in that window - the Director's own
+    explicit fallback rule."""
+    if period_end is None:
+        return None
+    best = None
+    for d_str in report_dates:
+        try:
+            d = date.fromisoformat(str(d_str)[:10])
+        except Exception:
+            continue
+        delta = (d - period_end).days
+        if 0 <= delta <= EVOLUTION_FY_PUBLIC_DATE_WINDOW_DAYS and (best is None or d < best):
+            best = d
+    if best is not None:
+        return best
+    return period_end + timedelta(days=EVOLUTION_FY_PUBLIC_DATE_FALLBACK_DAYS)
+
+
+def _evolution_normalized_income(income, fy):
+    """(normalized_income, source, total_unusual_items) for one fiscal-
+    year column of the income statement. "Normalized Income" row
+    directly when present ("normalized" source - the one-off items are
+    already excluded by the data provider); otherwise Net Income - Total
+    Unusual Items*(1 - effective tax rate) ("fallback" source) - the
+    Director's own exact reconstruction formula, reusing auto_
+    compounder_engine.effective_tax_rate() (never a second tax-rate
+    guess) for the (1 - tax rate) term. Root cause A's own fix: this is
+    what keeps a one-off impairment/restructuring year from reading as
+    a margin/ROIC collapse."""
+    norm = _evolution_series_by_date(income, "normalized_income").get(fy)
+    unusual = _evolution_series_by_date(income, "total_unusual_items").get(fy)
+    if norm is not None:
+        return norm, "normalized", unusual
+    net_income = _evolution_series_by_date(income, "net_income").get(fy)
+    if net_income is None or unusual is None:
+        return None, "unavailable", unusual
+    tax_provision = _evolution_series_by_date(income, "tax_provision").get(fy)
+    pretax_income = _evolution_series_by_date(income, "pretax_income").get(fy)
+    tax_rate = auto_compounder_engine.effective_tax_rate(tax_provision, pretax_income)
+    return net_income - unusual * (1.0 - tax_rate), "fallback", unusual
+
+
+def _evolution_margins(income, fy_base, fy_now):
+    revenue = _evolution_series_by_date(income, "revenue")
+    rev_base, rev_now = revenue.get(fy_base), revenue.get(fy_now)
+    ni_base, src_base, uu_base = _evolution_normalized_income(income, fy_base)
+    ni_now, src_now, uu_now = _evolution_normalized_income(income, fy_now)
+    margin_base = (ni_base / rev_base) if (ni_base is not None and rev_base) else None
+    margin_now = (ni_now / rev_now) if (ni_now is not None and rev_now) else None
+    score = (_prog_score_v2_rate(margin_now, margin_base, PROGRESS_V2_MARGIN_SCALE_PP)
+              if (margin_base is not None and margin_now is not None) else None)
+    note = "" if score is not None else "Revenue or normalized income unavailable for FY_base and/or FY_now"
+    return {"score": round(score, 1) if score is not None else None,
+            "fy_base": str(fy_base), "fy_now": str(fy_now),
+            "base": margin_base, "now": margin_now,
+            "unusual_items_base": uu_base, "unusual_items_now": uu_now,
+            "source": f"{src_base}/{src_now}", "note": note}
+
+
+def _evolution_roic(income, balance, fy_base, fy_now, bal_dates):
+    equity = _evolution_series_by_date(balance, "stockholders_equity")
+
+    def _avg_equity(fy):
+        if fy not in bal_dates:
+            return equity.get(fy)
+        idx = bal_dates.index(fy)
+        cur = equity.get(fy)
+        prior = equity.get(bal_dates[idx + 1]) if idx + 1 < len(bal_dates) else None
+        vals = [v for v in (cur, prior) if v is not None]
+        return (sum(vals) / len(vals)) if vals else None
+
+    ni_base, src_base, uu_base = _evolution_normalized_income(income, fy_base)
+    ni_now, src_now, uu_now = _evolution_normalized_income(income, fy_now)
+    eq_base, eq_now = _avg_equity(fy_base), _avg_equity(fy_now)
+    roic_base = (ni_base / eq_base) if (ni_base is not None and eq_base) else None
+    roic_now = (ni_now / eq_now) if (ni_now is not None and eq_now) else None
+    score = (_prog_score_v2_rate(roic_now, roic_base, PROGRESS_V2_ROIC_SCALE_PP)
+              if (roic_base is not None and roic_now is not None) else None)
+    note = "" if score is not None else "Average equity or normalized income unavailable for FY_base and/or FY_now"
+    return {"score": round(score, 1) if score is not None else None,
+            "fy_base": str(fy_base), "fy_now": str(fy_now),
+            "base": roic_base, "now": roic_now,
+            "unusual_items_base": uu_base, "unusual_items_now": uu_now,
+            "source": f"{src_base}/{src_now}", "note": note}
+
+
+def _evolution_growth(income, fy_base, fy_now, fy_dates):
+    revenue = _evolution_series_by_date(income, "revenue")
+    ni_series = {fy: _evolution_normalized_income(income, fy)[0] for fy in fy_dates}
+
+    def _growth_rate(fy, series):
+        if fy not in fy_dates:
+            return None
+        idx = fy_dates.index(fy)
+        if idx + 1 >= len(fy_dates):
+            return None
+        cur, prior = series.get(fy), series.get(fy_dates[idx + 1])
+        if cur is None or not prior:
+            return None
+        return (cur - prior) / abs(prior)
+
+    rev_growth_base, rev_growth_now = _growth_rate(fy_base, revenue), _growth_rate(fy_now, revenue)
+    ni_growth_base, ni_growth_now = _growth_rate(fy_base, ni_series), _growth_rate(fy_now, ni_series)
+    scores = []
+    if rev_growth_base is not None and rev_growth_now is not None:
+        scores.append(_prog_score_v2_rate(rev_growth_now, rev_growth_base, PROGRESS_V2_GROWTH_SCALE_PP))
+    if ni_growth_base is not None and ni_growth_now is not None:
+        scores.append(_prog_score_v2_rate(ni_growth_now, ni_growth_base, PROGRESS_V2_GROWTH_SCALE_PP))
+    score = round(sum(scores) / len(scores), 1) if scores else None
+    note = "" if score is not None else "Fewer than 2 annual columns available for a year-over-year growth rate"
+    return {"score": score, "fy_base": str(fy_base), "fy_now": str(fy_now),
+            "base": rev_growth_base, "now": rev_growth_now,
+            "income_growth_base": ni_growth_base, "income_growth_now": ni_growth_now,
+            "source": "revenue_growth+normalized_income_growth", "note": note}
+
+
+def _evolution_fcf(income, cashflow, fy_base, fy_now):
+    revenue = _evolution_series_by_date(income, "revenue")
+    ocf = _evolution_series_by_date(cashflow, "operating_cash_flow")
+    capex = _evolution_series_by_date(cashflow, "capex")
+    fcf_row = _evolution_series_by_date(cashflow, "free_cash_flow")
+
+    def _fcf_margin(fy):
+        rev = revenue.get(fy)
+        if not rev:
+            return None, "revenue_missing"
+        o, c = ocf.get(fy), capex.get(fy)
+        if o is not None and c is not None:
+            return (o + c) / rev, "ocf_capex"
+        f = fcf_row.get(fy)
+        if f is not None:
+            return f / rev, "free_cash_flow_row"
+        missing = [n for n, v in (("Operating Cash Flow", o), ("Capital Expenditure", c),
+                                    ("Free Cash Flow", f)) if v is None]
+        return None, "missing: " + ", ".join(missing)
+
+    margin_base, src_base = _fcf_margin(fy_base)
+    margin_now, src_now = _fcf_margin(fy_now)
+    score = (_prog_score_v2_rate(margin_now, margin_base, PROGRESS_V2_FCF_SCALE_PP)
+              if (margin_base is not None and margin_now is not None) else None)
+    note = "" if score is not None else f"FY_base: {src_base}; FY_now: {src_now}"
+    return {"score": round(score, 1) if score is not None else None,
+            "fy_base": str(fy_base), "fy_now": str(fy_now),
+            "base": margin_base, "now": margin_now,
+            "source": f"{src_base}/{src_now}", "note": note}
+
+
+def _evolution_debt(income, balance, fy_base, fy_now):
+    total_debt = _evolution_series_by_date(balance, "total_debt")
+    cash = _evolution_series_by_date(balance, "cash")
+    ebitda_norm = _evolution_series_by_date(income, "normalized_ebitda")
+    ebitda_plain = _evolution_series_by_date(income, "ebitda")
+
+    def _turns(fy):
+        debt = total_debt.get(fy)
+        if debt is None:
+            return None, "total_debt_missing"
+        net_debt = debt - (cash.get(fy) or 0.0)
+        ebitda, src = ebitda_norm.get(fy), "normalized_ebitda"
+        if ebitda is None:
+            ebitda, src = ebitda_plain.get(fy), "ebitda"
+        if not ebitda or ebitda <= 0:
+            return None, "ebitda_missing_or_nonpositive"
+        return net_debt / ebitda, src
+
+    turns_base, src_base = _turns(fy_base)
+    turns_now, src_now = _turns(fy_now)
+    if turns_base is None or turns_now is None:
+        score = None
+    else:
+        delta_turns = turns_now - turns_base
+        score = round(50.0 - max(-1.0, min(1.0, delta_turns / EVOLUTION_DEBT_TURNS_SCALE)) * 50.0, 1)
+    note = "" if score is not None else f"FY_base: {src_base}; FY_now: {src_now}"
+    return {"score": score, "fy_base": str(fy_base), "fy_now": str(fy_now),
+            "base": turns_base, "now": turns_now,
+            "source": f"{src_base}/{src_now}", "note": note}
+
+
+def _evolution_income_from_dividends(dividends, buy_date):
+    """Income Δ (TASK 16c fix B): the trailing-12-month SUM of ACTUAL
+    paid dividends (tk.dividends, via fundamentals_data.get_bundle()'s
+    own "dividends" {"dates","amounts"} shape) as of buy_date vs as of
+    today - never Yahoo's live "dividendRate" (an indicated rate that
+    can read differently between two same-day baseline captures on a
+    name with uneven interim/final payments, root cause B). Relative
+    change via the EXISTING _prog_score() formula, per the Director's
+    own instruction - not percentage-point scored. A holding that paid
+    nothing in EITHER window (e.g. GOLD) scores None, not a saturated
+    0/50/100 - there is no real change to measure on a non-payer."""
+    dates, amounts = dividends.get("dates") or [], dividends.get("amounts") or []
+    pairs = []
+    for d_str, amt in zip(dates, amounts):
+        try:
+            pairs.append((date.fromisoformat(str(d_str)[:10]), amt))
+        except Exception:
+            continue
+
+    def _ttm_sum(ref_date):
+        if ref_date is None:
+            return None
+        cutoff = ref_date - timedelta(days=365)
+        return sum(amt for d, amt in pairs if cutoff <= d <= ref_date)
+
+    buy_dt = pne._parse_date(buy_date)
+    base_ttm = _ttm_sum(buy_dt.date()) if buy_dt else None
+    now_ttm = _ttm_sum(datetime.now(timezone.utc).date())
+    if base_ttm is None:
+        return {"score": None, "base": None, "now": now_ttm, "note": "No buy date on file"}
+    if base_ttm == 0.0 and now_ttm == 0.0:
+        return {"score": None, "base": 0.0, "now": 0.0,
+                "note": "No dividends paid in either 12-month window (non-payer)"}
+    return {"score": _prog_score(now_ttm, base_ttm), "base": round(base_ttm, 4), "now": round(now_ttm, 4),
+            "source": "tk.dividends - trailing-12-month sum of actual paid dividends", "note": ""}
+
+
+def evolution_fundamentals(ticker, buy_date):
+    """TASK 16c (Director-directed, 22 Oct 2026): fundamentals-since-
+    purchase measured from REPORTED ACCOUNTS, not Yahoo's `.info`
+    snapshot - see this section's own module-level comment above for the
+    four root causes this fixes. Used ONLY by compute_evolution().
+
+    FY_base = the latest ANNUAL column whose results were PUBLIC on or
+    before buy_date (see _evolution_public_date()). FY_now = the latest
+    annual column available today, regardless of its own public date.
+    If the two are the SAME column, every FY-anchored component is None
+    with a "No new annual report since purchase" note - dropped from the
+    weighting entirely (compute_evolution() already treats a None score
+    as "not available", never as neutral/50).
+
+    Financials-mode tickers (financials_classifier.is_financials()) -
+    banks/insurers, whose Total Revenue/OCF/Capex/EBITDA don't mean the
+    same thing as a standard company's - get Growth/Margins/FCF/Debt Δ
+    as None with an explanatory note; only Income Δ still scores (a
+    dividend is a dividend regardless of sector).
+
+    Returns a dict with keys "Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ",
+    "Debt Δ", "Income Δ" - never raises; any missing/unavailable data
+    degrades to score=None with a note, never a guess."""
+    _na = {"score": None, "note": "No financial statements available"}
+    out = {k: dict(_na) for k in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")}
+
+    bundle = None
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+    except Exception:
+        bundle = None
+    if not bundle:
+        out["Income Δ"] = {"score": None, "note": "No financial statements available"}
+        return out
+
+    income, balance, cashflow = bundle.get("income"), bundle.get("balance"), bundle.get("cashflow")
+    info = bundle.get("info") or {}
+    try:
+        is_fin = financials_classifier.is_financials(info, ticker=ticker)
+    except Exception:
+        is_fin = False
+
+    ni_by_date = _evolution_series_by_date(income, "net_income")
+    fy_dates = sorted(ni_by_date.keys(), reverse=True)
+    bal_dates = sorted(_evolution_series_by_date(balance, "stockholders_equity").keys(), reverse=True)
+
+    buy_dt = pne._parse_date(buy_date)
+    report_dates = _evolution_report_dates(ticker) if ticker else []
+    fy_base = None
+    if buy_dt is not None:
+        buy_day = buy_dt.date()
+        for d in fy_dates:
+            pub = _evolution_public_date(d, report_dates)
+            if pub is not None and pub <= buy_day:
+                fy_base = d
+                break
+    fy_now = fy_dates[0] if fy_dates else None
+
+    if not fy_dates:
+        note = "No annual income statement available"
+        out = {k: {"score": None, "note": note} for k in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")}
+    elif fy_base is None:
+        note = "No annual report was public as of buy_date"
+        out = {k: {"score": None, "fy_now": str(fy_now), "note": note}
+               for k in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")}
+    elif fy_base == fy_now:
+        note = "No new annual report since purchase"
+        out = {k: {"score": None, "fy_base": str(fy_base), "fy_now": str(fy_now), "note": note}
+               for k in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")}
+    elif is_fin:
+        note = "Financials-mode ticker - standard revenue/FCF/EBITDA model not applicable"
+        out = {k: {"score": None, "fy_base": str(fy_base), "fy_now": str(fy_now), "note": note}
+               for k in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")}
+    else:
+        out["Margins Δ"] = _evolution_margins(income, fy_base, fy_now)
+        out["ROIC Δ"] = _evolution_roic(income, balance, fy_base, fy_now, bal_dates)
+        out["Growth Δ"] = _evolution_growth(income, fy_base, fy_now, fy_dates)
+        out["FCF Δ"] = _evolution_fcf(income, cashflow, fy_base, fy_now)
+        out["Debt Δ"] = _evolution_debt(income, balance, fy_base, fy_now)
+
+    out["Income Δ"] = _evolution_income_from_dividends(bundle.get("dividends") or {}, buy_date)
+    return out
+
+
 def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None,
                        valuation_mos_pct=None):
-    """TASK 16/16b (Director-directed, owner-only shadow score, no live
-    effect): measures EVOLUTION SINCE PURCHASE - is the business's fix
-    working - instead of today's absolute levels and instead of news the
-    market had already priced in at purchase.
+    """TASK 16/16b/16c (Director-directed, owner-only shadow score, no
+    live effect): measures EVOLUTION SINCE PURCHASE - is the business's
+    fix working - instead of today's absolute levels and instead of news
+    the market had already priced in at purchase.
 
-    TASK 16b fix 1: Growth/Margins/ROIC/FCF Δ are ALWAYS read from
-    compute_progress_v2() - never compute_progress() (v1) - regardless of
-    is_progress_v2_live(). That switch only ever controls the LIVE
-    Progress tab/Health blend (app.py's own _analyze_holding() dispatch);
-    it has no effect here. v2's rate fields are already scored in
-    percentage points (_prog_score_v2_rate()), so this shadow score never
-    exhibits v1's relative-change saturation (CSL's Growth Δ 100/Margins Δ
-    0/ROIC Δ 0, all flagged distorted, was exactly v1's bug leaking in
-    through the is_progress_v2_live()-off default). Debt Δ/Intrinsic
-    Δ/Return/Income Δ are identical between v1 and v2 (confirmed in PART C
-    STEP C2's own tests), so calling compute_progress_v2() unconditionally
-    changes nothing for those four fields either way.
+    TASK 16c fix: Growth/Margins/ROIC/FCF/Debt/Income Δ now come from
+    evolution_fundamentals() - REPORTED ACCOUNTS (tk.income_stmt/
+    balance_sheet/cashflow/dividends), anchored to a named fiscal-year
+    column, never Yahoo's live `.info` snapshot. See that function's own
+    module-level comment for the four root causes this fixes (statutory
+    one-off items distorting Margins/ROIC, dividendRate's same-day-
+    baseline unreliability, snapshot-timing-dependent baselines, and
+    fetch_snapshot()'s own narrow OCF/Capex row lookup). The OLD Yahoo-
+    snapshot-based numbers (compute_progress_v2()'s own components) are
+    still computed and kept on each component's own "old" sub-dict for
+    comparison - per the Director's own instruction, they no longer
+    drive the score at all.
+
+    TASK 16b fix 1 (superseded for rate fields by 16c, still true for
+    Debt Δ/Return/Intrinsic Δ, which 16c doesn't touch): compute_
+    progress_v2() is always used, never compute_progress() (v1),
+    regardless of is_progress_v2_live() - that switch only ever controls
+    the LIVE Progress tab/Health blend.
 
     TASK 16b fix 2: Intrinsic Δ is INFORMATION ONLY - still computed and
     returned (baseline/current/score, plus a note), but excluded from
-    EVOLUTION_WEIGHTS, so it never moves `overall` (see that constant's
-    own comment for why: the valuation model has changed since purchase
-    and purchase-day model inputs were never stored).
+    EVOLUTION_WEIGHTS, so it never moves `overall`.
 
     compute_health*/compute_progress*/_recommend() are never called or
     modified by this function, and this function never writes to any
@@ -1608,23 +1999,28 @@ def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None
 
     progress = compute_progress_v2(snapshot, baseline, kind, buy_price, buy_date)
     prog_comps = progress.get("components", {})
+    evo_fund = evolution_fundamentals(ticker, buy_date) if ticker else {}
 
     distortions = []
-    # Growth/Margins/ROIC/FCF Δ are deliberately NOT in this set any more
-    # (TASK 16b fix 1) - they're always percentage-point scored here now,
-    # so they never hit _rel()'s relative-change saturation in the first
-    # place. Debt Δ/Return/Income Δ stay on the relative-change formula in
-    # both v1 and v2 (PART C STEP C2 never touched "level" fields), so the
-    # same saturation guard still applies to them. Intrinsic Δ is still
-    # flagged here too (a near-zero/negative IV baseline is a real
-    # distortion in its own right) - separate from, and in addition to,
-    # its own model-drift note below.
+    # TASK 16c: Growth/Margins/ROIC/FCF Δ no longer read prog_comps at
+    # all (see evo_fund above), so the OLD relative-change saturation
+    # guard below applies only to the comparison columns, never to the
+    # score - each is labelled "(old Yahoo-snapshot comparison)" so a
+    # flagged OLD column is never mistaken for a live distortion in the
+    # new, reported-accounts-based score. Debt Δ/Return/Income Δ's OLD
+    # comparison columns stay on the relative-change formula in both v1
+    # and v2 (PART C STEP C2 never touched "level" fields), so the same
+    # guard still applies to them too. Intrinsic Δ is still flagged here
+    # (a near-zero/negative IV baseline is a real distortion in its own
+    # right) - separate from, and in addition to, its own model-drift
+    # note below.
     rel_based = {"Debt Δ", "Intrinsic Δ", "Return", "Income Δ"}
     for name in rel_based:
         comp = prog_comps.get(name) or {}
         note = _prog_distortion_note(comp.get("current"), comp.get("baseline"))
         if note:
-            distortions.append({"component": name, "note": note})
+            label = name if name in ("Intrinsic Δ", "Return") else f"{name} (old Yahoo-snapshot comparison)"
+            distortions.append({"component": label, "note": note})
     if is_legacy_baseline:
         distortions.append({
             "component": "baseline",
@@ -1648,7 +2044,9 @@ def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None
     comps = {}
     if not is_etf:
         for name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ"):
-            comps[name] = prog_comps.get(name) or {"score": None, "current": None, "baseline": None}
+            new_c = dict(evo_fund.get(name) or {"score": None, "note": "evolution_fundamentals() unavailable"})
+            new_c["old"] = prog_comps.get(name) or {"score": None, "current": None, "baseline": None}
+            comps[name] = new_c
         _intrinsic = dict(prog_comps.get("Intrinsic Δ") or {"score": None, "current": None, "baseline": None})
         _intrinsic["note"] = (
             (_intrinsic.get("note") or "")
@@ -1660,10 +2058,12 @@ def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None
         ).strip()
         comps["Intrinsic Δ"] = _intrinsic
     comps["Price since purchase"] = price_since_purchase
-    comps["Income Δ"] = dict(
+    _income_new = dict(evo_fund.get("Income Δ") or {"score": None, "note": "evolution_fundamentals() unavailable"})
+    _income_new["old"] = dict(
         prog_comps.get("Income Δ") or {"score": None, "current": None, "baseline": None},
         source=EVOLUTION_INCOME_SOURCE_NOTE,
     )
+    comps["Income Δ"] = _income_new
     if news is not None:
         comps["News since purchase"] = {
             "score": news["score"], "thesis_breaking": news["thesis_breaking"],

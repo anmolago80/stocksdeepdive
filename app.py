@@ -33300,8 +33300,8 @@ def _render_market_readiness_panel():
 
 
 def _render_evolution_shadow_panel():
-    """TASK 16/16b (Director-directed, 19-20 Oct 2026): "Evolution since
-    purchase (shadow)" - owner-only, read-only, NO LIVE EFFECT. A
+    """TASK 16/16b/16c (Director-directed, 19-22 Oct 2026): "Evolution
+    since purchase (shadow)" - owner-only, read-only, NO LIVE EFFECT. A
     holding's action should measure whether the business's fix is
     WORKING since purchase - not today's absolute levels, and not news
     the market had already priced in at purchase (often the reason the
@@ -33310,11 +33310,18 @@ def _render_evolution_shadow_panel():
     and for why this is purely additive (compute_health*/compute_
     progress*/_recommend() are never called or modified here).
 
-    TASK 16b: the table/CSV now carry baseline (purchase-day) AND current
-    values for every component, not just scores - the owner's 20 Oct
-    report was exactly "the export only has scores." Buy date and
-    baseline-captured date are shown per holding too (TASK 16 item 1
-    originally asked for this and it was missed).
+    TASK 16c: Growth/Margins/ROIC/FCF/Debt/Income Δ are now measured
+    from REPORTED ACCOUNTS (portfolio_health_engine.evolution_
+    fundamentals()) - each carries its own FY_base/FY_now fiscal-year
+    labels, raw base/now values, one-offs-excluded (Total Unusual Items)
+    where applicable, and the source used (normalized vs fallback). The
+    OLD Yahoo-snapshot-based numbers (what TASK 16b showed) are KEPT in
+    their own "OLD (Yahoo snapshot)" columns for comparison - per the
+    Director's own instruction, they no longer drive the score at all.
+
+    TASK 16b: the table/CSV carry baseline (purchase-day) AND current
+    values for every component, not just scores. Buy date and baseline-
+    captured date are shown per holding too.
 
     Calls _analyze_holding() for the real LIVE snapshot/Health/Action
     (never a second, independently-computed live score - see its own
@@ -33330,13 +33337,15 @@ def _render_evolution_shadow_panel():
     st.markdown("### Evolution since purchase (shadow)")
     st.caption(
         "Owner-only, read-only, no live effect. Measures whether the "
-        "business is IMPROVING since purchase - not today's absolute "
-        "levels, and not news the market had already priced in at "
-        "purchase. Proposed weights and action thresholds only; the live "
-        "Health score and action (columns on the right) are unaffected. "
-        "Intrinsic Δ is shown for information only (weight 0) - see its "
-        "own note below."
+        "business is IMPROVING since purchase, from REPORTED ACCOUNTS "
+        "(not today's live Yahoo snapshot) - and not news the market had "
+        "already priced in at purchase. Proposed weights and action "
+        "thresholds only; the live Health score and action (columns on "
+        "the right) are unaffected. Intrinsic Δ is shown for information "
+        "only (weight 0) - see its own note below. 'OLD (Yahoo snapshot)' "
+        "columns are the pre-16c method, kept for comparison only."
     )
+    _FUND_NAMES = ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")
     _owner_email = ai_gate.owner_email()
     _owner_holdings = portfolio_store.get_holdings_all(_owner_email) if _owner_email else []
     if not _owner_holdings:
@@ -33369,22 +33378,39 @@ def _render_evolution_shadow_panel():
         def _comp(name, field, _comps=comps):
             return (_comps.get(name) or {}).get(field)
 
+        def _old(name, field, _comps=comps):
+            return ((_comps.get(name) or {}).get("old") or {}).get(field)
+
         _live_health = _live.get("health") or {}
         _row = {
             "Ticker": ticker, "Portfolio": h.get("portfolio"),
             "Buy date": h.get("buy_date"), "Baseline captured": h.get("baseline_date"),
         }
-        for _name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ"):
-            _row[f"{_name} baseline"] = _comp(_name, "baseline")
-            _row[f"{_name} current"] = _comp(_name, "current")
+        for _name in _FUND_NAMES:
+            _row[f"{_name} FY_base"] = _comp(_name, "fy_base")
+            _row[f"{_name} FY_now"] = _comp(_name, "fy_now")
+            _row[f"{_name} base"] = _comp(_name, "base")
+            _row[f"{_name} now"] = _comp(_name, "now")
+            _row[f"{_name} one-offs excluded (base)"] = _comp(_name, "unusual_items_base")
+            _row[f"{_name} one-offs excluded (now)"] = _comp(_name, "unusual_items_now")
+            _row[f"{_name} source"] = _comp(_name, "source")
             _row[f"{_name} score"] = _comp(_name, "score")
+            _row[f"{_name} OLD baseline (Yahoo)"] = _old(_name, "baseline")
+            _row[f"{_name} OLD current (Yahoo)"] = _old(_name, "current")
+            _row[f"{_name} OLD score (Yahoo)"] = _old(_name, "score")
+        _row["Intrinsic Δ baseline"] = _comp("Intrinsic Δ", "baseline")
+        _row["Intrinsic Δ current"] = _comp("Intrinsic Δ", "current")
+        _row["Intrinsic Δ score"] = _comp("Intrinsic Δ", "score")
         _row["Price baseline (buy price)"] = _comp("Price since purchase", "baseline")
         _row["Price current"] = _comp("Price since purchase", "current")
         _row["Price since purchase score"] = _comp("Price since purchase", "score")
-        _row["Income Δ baseline (div rate)"] = _comp("Income Δ", "baseline")
-        _row["Income Δ current (div rate)"] = _comp("Income Δ", "current")
-        _row["Income Δ score"] = _comp("Income Δ", "score")
+        _row["Income Δ TTM base (actual dividends)"] = _comp("Income Δ", "base")
+        _row["Income Δ TTM now (actual dividends)"] = _comp("Income Δ", "now")
         _row["Income Δ source"] = _comp("Income Δ", "source")
+        _row["Income Δ score"] = _comp("Income Δ", "score")
+        _row["Income Δ OLD baseline (dividendRate)"] = _old("Income Δ", "baseline")
+        _row["Income Δ OLD current (dividendRate)"] = _old("Income Δ", "current")
+        _row["Income Δ OLD score (dividendRate)"] = _old("Income Δ", "score")
         _row["News since purchase score"] = _comp("News since purchase", "score")
         _row["Evolution score"] = evo.get("overall")
         _row["Evolution action"] = evo.get("action")
@@ -33409,7 +33435,9 @@ def _render_evolution_shadow_panel():
         st.caption(
             "Baselines flagged as distorted - near-zero/negative baseline "
             "(the relative-change formula saturates) or a legacy website_v1 "
-            "baseline missing fundamentals fields entirely:"
+            "baseline missing fundamentals fields entirely. Rows marked "
+            "'(old Yahoo-snapshot comparison)' concern the OLD columns "
+            "only, not the FY-anchored score."
         )
         st.dataframe(_distortion_rows, hide_index=True, width='stretch')
 
@@ -33419,26 +33447,38 @@ def _render_evolution_shadow_panel():
         with st.expander(f"{ticker} - evolution detail", key=f"admin_evolution_expander_{_row_key}"):
             st.caption(f"Buy date: {h.get('buy_date') or 'n/a'} | Baseline captured: {h.get('baseline_date') or 'n/a'}")
             _fund_rows = [
-                {"Component": _name, "Baseline": (comps.get(_name) or {}).get("baseline"),
-                 "Current": (comps.get(_name) or {}).get("current"), "Score": (comps.get(_name) or {}).get("score"),
+                {"Component": _name, "FY_base": (comps.get(_name) or {}).get("fy_base"),
+                 "FY_now": (comps.get(_name) or {}).get("fy_now"),
+                 "Base": (comps.get(_name) or {}).get("base"), "Now": (comps.get(_name) or {}).get("now"),
+                 "One-offs excluded (base)": (comps.get(_name) or {}).get("unusual_items_base"),
+                 "One-offs excluded (now)": (comps.get(_name) or {}).get("unusual_items_now"),
+                 "Source": (comps.get(_name) or {}).get("source"), "Score": (comps.get(_name) or {}).get("score"),
+                 "OLD score (Yahoo)": ((comps.get(_name) or {}).get("old") or {}).get("score"),
                  "Note": (comps.get(_name) or {}).get("note") or ""}
-                for _name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ")
+                for _name in _FUND_NAMES
                 if comps.get(_name) is not None
             ]
             if _fund_rows:
                 st.dataframe(_fund_rows, hide_index=True, width='stretch')
             else:
-                st.caption("No fundamentals-since-purchase data (ETF or no baseline on file).")
-            _intrinsic_note = (comps.get("Intrinsic Δ") or {}).get("note")
-            if _intrinsic_note:
-                st.caption(f"Intrinsic Δ: {_intrinsic_note}")
+                st.caption("No fundamentals-since-purchase data (ETF or financials-mode ticker).")
+
+            _intrinsic = comps.get("Intrinsic Δ") or {}
+            if _intrinsic.get("note"):
+                st.caption(
+                    f"Intrinsic Δ: baseline {_intrinsic.get('baseline')}, current "
+                    f"{_intrinsic.get('current')}, score {_intrinsic.get('score')} - {_intrinsic['note']}"
+                )
 
             _income = comps.get("Income Δ") or {}
-            if _income.get("source"):
+            _income_old = _income.get("old") or {}
+            if _income.get("source") or _income.get("note"):
                 st.caption(
-                    f"Income Δ source field: {_income['source']} - baseline "
-                    f"{_income.get('baseline')}, current {_income.get('current')}, "
-                    f"score {_income.get('score')}."
+                    f"Income Δ (actual TTM dividends): base {_income.get('base')}, now "
+                    f"{_income.get('now')}, score {_income.get('score')}"
+                    + (f" - {_income['note']}" if _income.get("note") else "")
+                    + f". OLD (Yahoo dividendRate): baseline {_income_old.get('baseline')}, "
+                      f"current {_income_old.get('current')}, score {_income_old.get('score')}."
                 )
 
             _price = comps.get("Price since purchase") or {}

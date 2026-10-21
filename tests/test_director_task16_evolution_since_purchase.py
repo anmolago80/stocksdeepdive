@@ -34,6 +34,7 @@ import datetime as _dt
 import os
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -41,6 +42,9 @@ TESTVOL = tempfile.mkdtemp(prefix="task16_evolution_test_")
 os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = TESTVOL
 os.environ.pop("PROGRESS_V2_LIVE", None)
 
+import pandas as pd
+
+import fundamentals_data
 import portfolio_health_engine as phe
 import portfolio_news_engine as pne
 
@@ -73,28 +77,75 @@ _BASELINE = {
 }
 
 # ======================================================================
-# CHECK 1: compute_evolution()'s own fundamentals/Intrinsic/Income
-# components are read verbatim from compute_progress_v2() - never
-# re-derived. (TASK 16b: always v2, never v1 - see CHECK 2.)
+# CHECK 1 (TASK 16c superseded fix 1): Intrinsic Δ (unaffected by 16c)
+# is still read verbatim from compute_progress_v2(). Growth/Margins/
+# ROIC/FCF/Debt/Income Δ are now sourced from evolution_fundamentals()
+# instead (TASK 16c) - with no ticker, that's never even attempted, so
+# their TOP-LEVEL score is None, while their "old" sub-dict still
+# carries the pre-16c compute_progress_v2()-based comparison numbers
+# verbatim, kept per the Director's own "keep the old columns for
+# comparison" instruction.
 # ======================================================================
 _progress_v2 = phe.compute_progress_v2(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01")
 _evo = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01", ticker=None)
-for _key in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ", "Income Δ"):
-    check(f"compute_evolution()'s {_key!r} component matches compute_progress_v2()'s own score exactly",
-          _evo["components"][_key]["score"] == _progress_v2["components"][_key]["score"])
-print("[task16_c1_reuse] every fundamentals/Intrinsic/Income component is a verbatim "
-      "read of compute_progress_v2(), never re-derived OK")
+check("Intrinsic Δ (unaffected by TASK 16c) still matches compute_progress_v2()'s own score exactly",
+      _evo["components"]["Intrinsic Δ"]["score"] == _progress_v2["components"]["Intrinsic Δ"]["score"])
+for _key in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ"):
+    check(f"with no ticker, {_key!r}'s top-level score is None (evolution_fundamentals() never attempted)",
+          _evo["components"][_key]["score"] is None)
+    check(f"{_key!r}'s OLD sub-dict still matches compute_progress_v2()'s own score verbatim "
+          "(kept for comparison, per the Director's own instruction)",
+          _evo["components"][_key]["old"]["score"] == _progress_v2["components"][_key]["score"])
+check("Income Δ's OLD sub-dict matches compute_progress_v2()'s own score verbatim",
+      _evo["components"]["Income Δ"]["old"]["score"] == _progress_v2["components"]["Income Δ"]["score"])
+print("[task16_c1_reuse] Intrinsic Δ is unaffected; every other replaced component's OLD "
+      "sub-dict is a verbatim read of compute_progress_v2(), kept for comparison only OK")
 
 # ======================================================================
-# CHECK 2 (TASK 16b fix 1): rate fields are ALWAYS percentage-point
-# scored via compute_progress_v2() - PROGRESS_V2_LIVE has NO effect on
-# compute_evolution() at all; that switch only controls the live
-# Progress tab/Health blend (app.py's own _analyze_holding() dispatch).
+# CHECK 1b (TASK 16c): with a real ticker and a mocked statement bundle,
+# the TOP-LEVEL Growth/Margins/ROIC/FCF/Debt/Income Δ scores come from
+# evolution_fundamentals() - genuinely different from the OLD compute_
+# progress_v2()-based numbers on the same fixture, proving the new
+# scores are not secretly still the old ones under a new key.
+# ======================================================================
+_MOCK_BUNDLE = {
+    "income": pd.DataFrame({
+        "2025-12-31": {"Total Revenue": 1000.0, "Net Income": 150.0, "Normalized Income": 150.0},
+        "2024-12-31": {"Total Revenue": 900.0, "Net Income": 120.0, "Normalized Income": 120.0},
+        "2023-12-31": {"Total Revenue": 800.0, "Net Income": 100.0, "Normalized Income": 100.0},
+    }),
+    "balance": pd.DataFrame({
+        "2025-12-31": {"Stockholders Equity": 800.0, "Total Debt": 200.0, "Cash And Cash Equivalents": 100.0},
+        "2024-12-31": {"Stockholders Equity": 700.0, "Total Debt": 180.0, "Cash And Cash Equivalents": 90.0},
+    }),
+    "cashflow": pd.DataFrame({
+        "2025-12-31": {"Operating Cash Flow": 180.0, "Capital Expenditure": -40.0},
+        "2024-12-31": {"Operating Cash Flow": 150.0, "Capital Expenditure": -35.0},
+    }),
+    "info": {}, "dividends": {"dates": [], "amounts": []},
+}
+with mock.patch.object(fundamentals_data, "get_bundle", return_value=_MOCK_BUNDLE), \
+     mock.patch.object(phe, "_evolution_report_dates", return_value=[]):
+    _evo_ticked = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-06-01", ticker="MOCKCO")
+    check("with a ticker and a statement bundle, Growth Δ's TOP-LEVEL score is computed "
+          "(not None) and genuinely differs from its own OLD (Yahoo-snapshot) score",
+          _evo_ticked["components"]["Growth Δ"]["score"] is not None
+          and _evo_ticked["components"]["Growth Δ"]["score"] != _evo_ticked["components"]["Growth Δ"]["old"]["score"])
+    check("Margins Δ's top-level score likewise comes from the statement bundle, not prog_comps",
+          _evo_ticked["components"]["Margins Δ"]["score"] is not None
+          and _evo_ticked["components"]["Margins Δ"]["fy_now"] == "2025-12-31")
+print("[task16_c1b_new_source] Growth/Margins/ROIC/FCF/Debt Δ's top-level scores genuinely "
+      "come from evolution_fundamentals(), distinct from their own OLD comparison score OK")
+
+# ======================================================================
+# CHECK 2 (TASK 16c): Growth/Margins/ROIC/FCF Δ no longer touch
+# compute_progress_v2()/PROGRESS_V2_LIVE AT ALL any more - they're
+# fully statement-driven now. Confirmed by proving the switch has zero
+# effect on either the top-level (statement-based) OR the "old"
+# (compute_progress_v2()-based, itself already switch-independent
+# since TASK 16b) score.
 # ======================================================================
 _progress_v1 = phe.compute_progress(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01")
-check("compute_evolution()'s Growth Δ differs from v1's own relative-change score on this "
-      "fixture (proof it's genuinely percentage-point scored, not accidentally equal)",
-      _evo["components"]["Growth Δ"]["score"] != _progress_v1["components"]["Growth Δ"]["score"])
 check("compute_evolution()'s own progress_source is always 'v2'", _evo["progress_source"] == "v2")
 
 check("PROGRESS_V2_LIVE starts unset for this test run", phe.is_progress_v2_live() is False)
@@ -102,14 +153,16 @@ os.environ["PROGRESS_V2_LIVE"] = "1"
 _evo_switch_on = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01", ticker=None)
 os.environ.pop("PROGRESS_V2_LIVE", None)
 _evo_switch_off = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01", ticker=None)
-check("compute_evolution()'s Growth Δ score is IDENTICAL whether PROGRESS_V2_LIVE is on or off",
+check("compute_evolution()'s Growth Δ (top-level, None with no ticker either way) is "
+      "IDENTICAL whether PROGRESS_V2_LIVE is on or off",
       _evo_switch_on["components"]["Growth Δ"]["score"] == _evo_switch_off["components"]["Growth Δ"]["score"]
-      == _evo["components"]["Growth Δ"]["score"])
-check("same for Margins Δ/ROIC Δ/FCF Δ - the switch has zero effect on compute_evolution()",
-      all(_evo_switch_on["components"][k]["score"] == _evo_switch_off["components"][k]["score"]
+      == _evo["components"]["Growth Δ"]["score"] is None)
+check("same for Margins Δ/ROIC Δ/FCF Δ's OLD comparison column - the switch has zero "
+      "effect on compute_evolution() at all, top-level or OLD",
+      all(_evo_switch_on["components"][k]["old"]["score"] == _evo_switch_off["components"][k]["old"]["score"]
           for k in ("Margins Δ", "ROIC Δ", "FCF Δ")))
 print("[task16_c2_always_v2] compute_evolution() is completely independent of "
-      "PROGRESS_V2_LIVE - rate fields are always percentage-point scored OK")
+      "PROGRESS_V2_LIVE, for both the new statement-based score and the OLD comparison OK")
 
 # ======================================================================
 # CHECK 3: Price since purchase blends Return (vs buy price) and
@@ -265,9 +318,9 @@ _distorted_names = {d["component"] for d in _evo_distort["distortions"]}
 check("a near-zero Growth baseline (1% -> 3%) is NEVER flagged any more - compute_evolution() "
       "always percentage-point scores Growth Δ, so this distortion can no longer occur here",
       "Growth Δ" not in _distorted_names)
-check("a negative Debt baseline is still flagged as distorted (Debt Δ stays on the "
-      "relative-change formula in both v1 and v2)",
-      "Debt Δ" in _distorted_names)
+check("a negative Debt baseline is still flagged as distorted in its OLD comparison column "
+      "(Debt Δ's old Yahoo-snapshot figure stays on the relative-change formula)",
+      "Debt Δ (old Yahoo-snapshot comparison)" in _distorted_names)
 check("compute_evolution() does not crash on a near-zero/negative baseline - overall is still computed",
       _evo_distort["overall"] is not None)
 
@@ -352,17 +405,21 @@ print("[task16_c7b_intrinsic_info_only] Intrinsic Δ is excluded from EVOLUTION_
       "Fundamentals Δ absorbed its 20% as 65% total, split 17/15/14/12/7 OK")
 
 # ======================================================================
-# CHECK 7c (TASK 16b fix 3/4): Income Δ carries its source field
-# alongside baseline/current, so a drop can be judged against the
-# field's real meaning (dividendRate, not a trailing-12-month sum).
+# CHECK 7c (TASK 16b fix 3/4, now kept on the OLD comparison column
+# after TASK 16c): Income Δ's OLD sub-dict still carries its source
+# field alongside baseline/current, so a drop can be judged against the
+# field's real meaning (dividendRate, not a trailing-12-month sum) -
+# the TOP-LEVEL Income Δ is TASK 16c's own actual-dividends method now
+# (see test_director_task16c_evolution_fundamentals.py for that).
 # ======================================================================
-check("Income Δ's 'source' field names the real underlying field (dividendRate)",
-      "dividendRate" in (_evo["components"]["Income Δ"].get("source") or ""))
-check("Income Δ still carries baseline/current dividend_rate numbers alongside the source note",
-      _evo["components"]["Income Δ"]["baseline"] == _BASELINE["dividend_rate"]
-      and _evo["components"]["Income Δ"]["current"] == _SNAPSHOT["dividend_rate"])
-print("[task16_c7c_income_source] Income Δ's source field (dividendRate) is attached "
-      "alongside its baseline/current values OK")
+check("Income Δ's OLD 'source' field names the real underlying field (dividendRate)",
+      "dividendRate" in (_evo["components"]["Income Δ"]["old"].get("source") or ""))
+check("Income Δ's OLD sub-dict still carries baseline/current dividend_rate numbers "
+      "alongside the source note",
+      _evo["components"]["Income Δ"]["old"]["baseline"] == _BASELINE["dividend_rate"]
+      and _evo["components"]["Income Δ"]["old"]["current"] == _SNAPSHOT["dividend_rate"])
+print("[task16_c7c_income_source] Income Δ's OLD source field (dividendRate) is attached "
+      "alongside its OLD baseline/current values, kept for comparison OK")
 
 # ======================================================================
 # CHECK 7d (TASK 16b fix 3): Price since purchase now also carries the
@@ -466,6 +523,8 @@ _FAKE_SNAPSHOT = dict(_SNAPSHOT)
 _patches = [
     mock.patch.object(phe, "fetch_snapshot", return_value=_FAKE_SNAPSHOT),
     mock.patch.object(pne, "_claim_fetch", return_value=False),
+    mock.patch.object(fundamentals_data, "get_bundle", return_value=_MOCK_BUNDLE),
+    mock.patch.object(phe, "_evolution_report_dates", return_value=[]),
 ]
 for p in _patches:
     p.start()
@@ -504,18 +563,23 @@ app._render_evolution_shadow_panel()
           _evo_df is not None and "EVOLPANEL" in _evo_df["Ticker"].tolist())
     check("TASK 16b: the table carries buy date and baseline-captured date per holding",
           _evo_df is not None and {"Buy date", "Baseline captured"}.issubset(set(_evo_df.columns)))
-    check("TASK 16b: the table carries baseline AND current values for every fundamentals "
-          "component, not just scores",
+    check("TASK 16c: the table carries FY_base/FY_now, raw base/now values, and the OLD "
+          "Yahoo-snapshot comparison for every statement-based component, not just scores",
           _evo_df is not None and {
-              "Growth Δ baseline", "Growth Δ current", "Growth Δ score",
+              "Growth Δ FY_base", "Growth Δ FY_now", "Growth Δ base", "Growth Δ now", "Growth Δ score",
+              "Growth Δ OLD baseline (Yahoo)", "Growth Δ OLD current (Yahoo)", "Growth Δ OLD score (Yahoo)",
+              "Margins Δ one-offs excluded (base)", "Margins Δ one-offs excluded (now)",
               "Intrinsic Δ baseline", "Intrinsic Δ current", "Intrinsic Δ score",
           }.issubset(set(_evo_df.columns)))
     check("TASK 16b: Price since purchase's baseline (buy price)/current price are exported",
           _evo_df is not None and
           {"Price baseline (buy price)", "Price current", "Price since purchase score"}.issubset(set(_evo_df.columns)))
-    check("TASK 16b: Income Δ's baseline/current/source field are all exported",
+    check("TASK 16c: Income Δ's new TTM-actual-dividends base/now/source are exported, "
+          "alongside the OLD dividendRate-based comparison columns",
           _evo_df is not None and
-          {"Income Δ baseline (div rate)", "Income Δ current (div rate)", "Income Δ source"}.issubset(set(_evo_df.columns)))
+          {"Income Δ TTM base (actual dividends)", "Income Δ TTM now (actual dividends)", "Income Δ source",
+           "Income Δ OLD baseline (dividendRate)", "Income Δ OLD current (dividendRate)",
+           "Income Δ OLD score (dividendRate)"}.issubset(set(_evo_df.columns)))
 
     _download_labels = [b.label or "" for b in at.download_button]
     check("a CSV download button for the evolution export is present",

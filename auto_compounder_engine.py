@@ -511,6 +511,15 @@ _ROW_ALIASES = {
     "operating_cash_flow": ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities", "totalCashFromOperatingActivities", "Cash Flowsfromusedin Operating Activities Direct"],
     "capex": ["Capital Expenditure", "Purchase Of PPE", "capitalExpenditures"],
     "free_cash_flow": ["Free Cash Flow", "freeCashFlow"],
+    # TASK 16c (22 Oct 2026, Director-directed, portfolio_health_engine.
+    # evolution_fundamentals()): additive keys only - no existing caller
+    # requests these, so nothing already using this dict's other keys is
+    # affected. "Normalized Income"/"Normalized EBITDA"/"EBITDA" are
+    # yfinance's own standard row names (one-off-items excluded), never
+    # looked up anywhere else in this codebase before now.
+    "normalized_income": ["Normalized Income"],
+    "normalized_ebitda": ["Normalized EBITDA"],
+    "ebitda": ["EBITDA"],
 }
 
 
