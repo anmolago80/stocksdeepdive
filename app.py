@@ -17928,6 +17928,18 @@ def _analyze_holding(h, email=None):
         _health = portfolio_health_engine.compute_health(
             _components, news=_news, is_etf=is_etf, progress_overall=_progress.get("overall"),
         )
+    # TASK 17 (Director-directed, 23 Oct 2026): HEALTH_EVOLUTION_LIVE's
+    # single dispatch point - see apply_live_evolution_switch()'s own
+    # docstring. With the switch unset (default), this is a no-op:
+    # returns `_health` completely unchanged, no added call/cost. Every
+    # other reader of "health" below (Holdings table, Health & News tab,
+    # pulse band, holding cards) just consumes whichever shape this
+    # produced - no further edits needed at any of those read sites.
+    _valuation_mos = (_components.get("Valuation") or {}).get("current")
+    _health = portfolio_health_engine.apply_live_evolution_switch(
+        _health, _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), h.get("buy_date"),
+        ticker=h["ticker"], valuation_mos_pct=_valuation_mos,
+    )
     return {"snapshot": _snap, "news": _news, "components": _components,
             "health": _health, "progress": _progress, "is_etf": is_etf,
             "iv_override": _iv_override, "method": ("v2" if _v2_live else "v1")}
@@ -24898,7 +24910,8 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
     _raw_health_summary = []
     for h in _holdings:
         _a = _analyses[_hkey(h)]
-        _health_val = _a["health"]["overall"]
+        _health = _a["health"]
+        _health_val = _health["overall"]
         _row = {"Ticker": h["ticker"]}
         if _is_combined:
             _row["Portfolio"] = h.get("portfolio")
@@ -24906,11 +24919,22 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         # other two Portfolio price tables (see the Holdings-table
         # comment for the full rationale).
         _ccy_suffix = f" {h['currency']}" if h.get("currency") else ""
+        # TASK 17 (Director-directed, 23 Oct 2026): with HEALTH_
+        # EVOLUTION_LIVE on, a None score means compute_evolution()
+        # itself couldn't score this holding yet (e.g. no new annual
+        # report since purchase) - shown as the literal words, not a
+        # bare dash, so it reads as "waiting on data", not "broken".
+        _health_cell = (
+            "Not enough data yet"
+            if (_health_val is None and _health.get("score_label") == "Evolution since purchase")
+            else _pf_cell(_health_val, "{:.0f}")
+        )
         _row.update({
             "Name": h.get("name") or h["ticker"],
-            "Health": _pf_cell(_health_val, "{:.0f}"),
-            "Score type": _a["health"].get("score_label", "Investment Health Score"),
-            "Action": _a["health"]["action"],
+            "Health": _health_cell,
+            "Score type": _health.get("score_label", "Investment Health Score"),
+            "Action": _health["action"],
+            "Review now": "yes" if _health.get("review_now") else "no",
             "Price": _pf_cell(_a["snapshot"].get("price"), "{:.4f}" + _ccy_suffix),
             "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}" + _ccy_suffix),
         })
@@ -24946,6 +24970,14 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
     _m4.metric("Shares", f"{(_h.get('shares') or 0):,.0f}")
 
     _score_label = _health.get("score_label", "Investment Health Score")
+    # TASK 17 (Director-directed, 23 Oct 2026): apply_live_evolution_
+    # switch() only ever sets score_label to this exact string - used
+    # below to show "Not enough data yet" instead of a bare dash, and
+    # to swap the component bars for the plain-English Evolution
+    # breakdown (item 5), without a second HEALTH_EVOLUTION_LIVE check
+    # of its own (the dict shape already tells us which mode we're in).
+    _is_evolution_live = (_score_label == "Evolution since purchase")
+    _none_label = "Not enough data yet" if _is_evolution_live else "–"
     if _is_etf:
         st.info(
             f"**{_score_label}** - this is a fund, so Health blends Price "
@@ -24956,10 +24988,14 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         )
         _sc1, _sc2 = st.columns([1, 2])
         with _sc1:
-            st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"]),
+            st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"],
+                                                                  none_label=_none_label),
                          unsafe_allow_html=True)
             st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
                          unsafe_allow_html=True)
+            if _health.get("review_now"):
+                st.markdown(portfolio_health_engine.action_badge_html("Review now", "critical"),
+                             unsafe_allow_html=True)
         with _sc2:
             _pa = (_health["components"].get("Price Action") or {})
             _pa_score = _pa.get("score")
@@ -24973,15 +25009,40 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
     else:
         _sc1, _sc2 = st.columns([1, 2])
         with _sc1:
-            st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"]),
+            st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"],
+                                                                  none_label=_none_label),
                          unsafe_allow_html=True)
             st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
                          unsafe_allow_html=True)
+            if _health.get("review_now"):
+                st.markdown(portfolio_health_engine.action_badge_html("Review now", "critical"),
+                             unsafe_allow_html=True)
         with _sc2:
-            st.markdown(
-                portfolio_health_engine.component_bars_html(_health["components"], portfolio_health_engine.COMPONENT_ORDER),
-                unsafe_allow_html=True,
-            )
+            if _is_evolution_live and _health.get("evolution"):
+                st.markdown("**What changed since purchase:**")
+                for _line in portfolio_health_engine.evolution_plain_english(_health["evolution"]):
+                    st.markdown(f"- {_line}")
+            else:
+                st.markdown(
+                    portfolio_health_engine.component_bars_html(_health["components"], portfolio_health_engine.COMPONENT_ORDER),
+                    unsafe_allow_html=True,
+                )
+
+    # TASK 17 item 2: the old absolute Health stays visible as
+    # information only, relabelled "Business quality today", with no
+    # action attached - apply_live_evolution_switch() only sets this
+    # key when the switch is actually on, so this block renders nothing
+    # extra with the switch off (byte-identical to before this task).
+    _bqt = _health.get("business_quality_today")
+    if _bqt is not None:
+        st.markdown("---")
+        st.caption("Business quality today (information only - no action attached):")
+        st.markdown(portfolio_health_engine.big_score_html(_bqt["score_label"], _bqt["overall"]),
+                     unsafe_allow_html=True)
+        st.markdown(
+            portfolio_health_engine.component_bars_html(_health["components"], portfolio_health_engine.COMPONENT_ORDER),
+            unsafe_allow_html=True,
+        )
 
     if _health["red_flags"]:
         st.warning("**Red flags:** " + "; ".join(_health["red_flags"]))
@@ -33417,6 +33478,13 @@ def _render_evolution_shadow_panel():
         _row["Review now (thesis-breaking)"] = "yes" if evo.get("review_now") else "no"
         _row["Live Health"] = _live_health.get("overall")
         _row["Live Action"] = _live_health.get("action")
+        # TASK 17 (Director-directed, 23 Oct 2026): HEALTH_EVOLUTION_LIVE
+        # decides which of the two above is actually shown to users -
+        # this column says so plainly rather than making the owner infer
+        # it from whether "Live Health"/"Evolution score" happen to match.
+        _row["Live action is"] = ("Evolution since purchase"
+                                   if portfolio_health_engine.is_health_evolution_live()
+                                   else "Business quality today (old method)")
         _row["Distortions flagged"] = ", ".join(d["component"] for d in evo.get("distortions", [])) or "none"
         _rows.append(_row)
         for d in evo.get("distortions", []):

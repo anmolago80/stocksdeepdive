@@ -279,6 +279,16 @@ def _analyze_holding(h):
         health = portfolio_health_engine.compute_health(
             components, news=news, is_etf=is_etf, progress_overall=progress.get("overall"),
         )
+    # TASK 17 (Director-directed, 23 Oct 2026): the SAME HEALTH_
+    # EVOLUTION_LIVE dispatch point as app.py's own _analyze_holding() -
+    # the nightly watchdog's email/push digest must never show a
+    # different action than the live Portfolio page. With the switch
+    # unset (default), this is a no-op.
+    _valuation_mos = (components.get("Valuation") or {}).get("current")
+    health = portfolio_health_engine.apply_live_evolution_switch(
+        health, snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), h.get("buy_date"),
+        ticker=h["ticker"], valuation_mos_pct=_valuation_mos,
+    )
     return {"snapshot": snap, "news": news, "health": health, "is_etf": is_etf,
             "method": ("v2" if v2_live else "v1")}
 
@@ -333,12 +343,27 @@ def _build_prompt(ticker, h, analysis, prev_overall):
     lines = [f"Ticker: {ticker}"]
     if h.get("thesis"):
         lines.append(f"Investor's saved thesis: {h['thesis']}")
-    overall_line = f"Health score now: {health.get('overall')}/100"
-    if prev_overall is not None:
+    # TASK 17 (Director-directed, 23 Oct 2026): with HEALTH_EVOLUTION_
+    # LIVE on, health["overall"] can legitimately be None ("not enough
+    # data yet" - e.g. no new annual report since purchase) - the old
+    # bare f-string would have printed the literal text "None/100".
+    _label = health.get("score_label") or "Health score"
+    _overall = health.get("overall")
+    overall_line = (f"{_label} now: {_overall}/100" if _overall is not None
+                     else f"{_label}: Not enough data yet")
+    if prev_overall is not None and _overall is not None:
         overall_line += f" (was {prev_overall}/100 at last check)"
     lines.append(overall_line)
     if health.get("action"):
         lines.append(f"Health verdict: {health['action']}")
+    _bqt = health.get("business_quality_today")
+    if _bqt is not None:
+        lines.append(
+            "Business quality today (information only, no action attached): "
+            + (f"{_bqt.get('overall')}/100" if _bqt.get("overall") is not None else "n/a")
+        )
+    if health.get("review_now"):
+        lines.append("Flag: Review now - thesis-breaking news detected since purchase.")
     if health.get("thesis_breaking"):
         lines.append("Flag: thesis-threatening news detected.")
     if news.get("today"):

@@ -1229,6 +1229,21 @@ def is_progress_v2_live():
     return raw in ("1", "on")
 
 
+def is_health_evolution_live():
+    """TASK 17 (Director-directed, 23 Oct 2026) - same unset/""/0/off=OFF,
+    1/on=ON pattern as every other switch in this codebase. A DIFFERENT
+    switch from HEALTH_NEWS_V2_LIVE/PROGRESS_V2_LIVE - this one decides
+    whether the LIVE Health score/action shown to users is the absolute-
+    levels score (compute_health*(), off/default) or the Evolution-
+    since-purchase score (compute_evolution(), on) - see apply_live_
+    evolution_switch()'s own docstring for the single dispatch point
+    this feeds. Re-read on every call. Claude Code never sets this - the
+    Director does, on Railway, once the owner has reviewed the 16c
+    shadow panel's real-data CSV."""
+    raw = (os.environ.get("HEALTH_EVOLUTION_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
 # Director's own proposed scales, in percentage POINTS, for the full
 # +-50 swing around the neutral 50 score - named constants so Andrew
 # can see and adjust them from the STEP B2/C2 comparison panel before
@@ -1330,20 +1345,28 @@ def compute_progress_v2(snapshot, baseline, kind, buy_price, buy_date=None):
 # the same numbered, colour-banded bar list directly as HTML).
 # ---------------------------------------------------------------------
 
-def big_score_html(label, score, suffix="/100", color_fn=score_color):
+def big_score_html(label, score, suffix="/100", color_fn=score_color, none_label="–"):
     """color_fn (PART C STEP C1, Director, 6 Oct 2026): defaults to
     score_color() - every pre-existing caller (Health, News Risk)
     renders byte-identical to before this step. The Progress tab's own
     big score tile passes color_fn=progress_color so its colour is
     driven by the SAME bands as its own verdict, never the generic
-    Health bands."""
+    Health bands.
+
+    none_label (TASK 17, 23 Oct 2026): what to show in place of the
+    number when score is None - defaults to "–", byte-identical to
+    every pre-existing caller. The live Evolution tile passes "Not
+    enough data yet" when compute_evolution() itself couldn't score a
+    holding - shown at a smaller font so a multi-word label doesn't
+    overflow the tile the way a bare dash never would."""
     color = color_fn(score)
-    value = f"{score:.0f}" if score is not None else "–"
+    value = f"{score:.0f}" if score is not None else none_label
+    value_font_size = "3.4rem" if (score is not None or len(none_label) <= 2) else "1.6rem"
     return (
         "<div style='margin:4px 0 10px;'>"
         f"<div style='color:#8aa0b8;font-size:13px;letter-spacing:.04em;"
         f"text-transform:uppercase;'>{label}</div>"
-        f"<div style='font-size:3.4rem;font-weight:800;line-height:1.05;color:{color};'>"
+        f"<div style='font-size:{value_font_size};font-weight:800;line-height:1.3;color:{color};'>"
         f"{value}<span style='font-size:1.3rem;color:#8aa0b8;font-weight:600;'>{suffix if score is not None else ''}</span>"
         "</div></div>"
     )
@@ -1436,7 +1459,11 @@ EVOLUTION_WEIGHTS_ETF = {"Price since purchase": 75.0, "Income Δ": 25.0}
 # a trailing-sum artifact) rather than a bare number.
 EVOLUTION_INCOME_SOURCE_NOTE = "dividendRate (Yahoo Finance's indicated annual $/share dividend rate)"
 
-EVOLUTION_ACTION_HOLD = 60
+# TASK 17 (Director-directed, 23 Oct 2026): HOLD threshold lowered
+# 60 -> 55 once the owner reviewed real-data numbers (23 Oct CSV: CSL
+# 52.2, OCL 58/57.7) - applies everywhere compute_evolution() is used,
+# shadow panel included, since both read this same constant.
+EVOLUTION_ACTION_HOLD = 55
 EVOLUTION_ACTION_WATCH = 45
 EVOLUTION_VALUATION_MOS_ADD = 30.0
 
@@ -2097,3 +2124,152 @@ def compute_evolution(snapshot, baseline, kind, buy_price, buy_date, ticker=None
         # anything already reading it keeps a stable key.
         "progress_source": "v2",
     }
+
+
+# ---------------------------------------------------------------------
+# TASK 17 (Director-directed, 23 Oct 2026): make the Evolution score
+# the LIVE Portfolio Health action, behind HEALTH_EVOLUTION_LIVE
+# (default OFF - is_health_evolution_live() above). Same "one switch,
+# one dispatch point" pattern as HEALTH_NEWS_V2_LIVE/PROGRESS_V2_LIVE:
+# apply_live_evolution_switch() is called ONCE, from each live
+# consumer's own _analyze_holding() (app.py, portfolio_watchdog_
+# engine.py), and every existing reader of health["overall"]/["action"]
+# downstream (Holdings table, Health & News tab, pulse band, holding
+# cards, the nightly watchdog's alerts/push/email) just consumes
+# whichever shape this produced, unchanged - no further edits needed at
+# any of those read sites. With the switch OFF, this function returns
+# `old_health` completely untouched and never calls compute_evolution()
+# at all - zero added cost, byte-identical to before this task.
+# ---------------------------------------------------------------------
+
+def evolution_action_tone(action):
+    """Maps compute_evolution()'s own action strings onto the SAME
+    tone vocabulary _recommend() already uses (good/warning/critical/
+    muted) - reused by action_badge_html(), never a new colour scheme."""
+    if action in ("HOLD", "HOLD / ADD"):
+        return "good"
+    if action == "HOLD & WATCH":
+        return "warning"
+    if action == "REVIEW":
+        return "critical"
+    return "muted"
+
+
+def apply_live_evolution_switch(old_health, snapshot, baseline, kind, buy_price, buy_date,
+                                 ticker=None, valuation_mos_pct=None):
+    """TASK 17's single dispatch point - see this section's own
+    module-level comment above. `old_health` is whatever compute_
+    health()/compute_health_v2() already produced (untouched, still
+    computed by the caller exactly as before this task).
+
+    Switch OFF (default): returns `old_health` unchanged, compute_
+    evolution() is never called - no added cost.
+
+    Switch ON: computes compute_evolution() and returns a NEW dict
+    where "overall"/"action"/"action_tone"/"score_label" are the
+    Evolution score/action instead, so every existing reader keeps
+    working with no changes of its own. The original absolute-levels
+    score/action survives under the returned dict's own "business_
+    quality_today" key (TASK 17 item 3: "information only, no action
+    attached" - callers that want to SHOW it do so explicitly; nothing
+    reads it unless it asks for it by name). "review_now" (the red
+    "Review now" badge) and the full "evolution" detail dict (for
+    evolution_plain_english() below) are attached too.
+
+    If compute_evolution()'s own overall is None (not enough data),
+    "overall" stays None and "action" becomes `old_health`'s own action
+    with a "(based on today's figures)" suffix - the Director's own
+    explicit fallback wording, so the action shown is never blank."""
+    if not is_health_evolution_live():
+        return old_health
+    evo = compute_evolution(snapshot, baseline, kind, buy_price, buy_date,
+                             ticker=ticker, valuation_mos_pct=valuation_mos_pct)
+    new_health = dict(old_health)
+    new_health["business_quality_today"] = {
+        "overall": old_health.get("overall"), "action": old_health.get("action"),
+        "action_tone": old_health.get("action_tone"),
+        "score_label": "Business quality today",
+    }
+    new_health["evolution"] = evo
+    new_health["review_now"] = bool(evo.get("review_now"))
+    new_health["score_label"] = "Evolution since purchase"
+    if evo.get("overall") is not None:
+        new_health["overall"] = evo["overall"]
+        new_health["action"] = evo["action"]
+        new_health["action_tone"] = evolution_action_tone(evo["action"])
+    else:
+        new_health["overall"] = None
+        new_health["action"] = f"{old_health.get('action')} (based on today's figures)"
+        new_health["action_tone"] = old_health.get("action_tone")
+    return new_health
+
+
+def evolution_plain_english(evo):
+    """TASK 17 item 5: one plain-English sentence per component, built
+    ONLY from fields compute_evolution()/evolution_fundamentals() (TASK
+    16c) already computed - fy_base/fy_now/base/now/unusual_items_* -
+    never a new data source. Returns an ordered list of strings; a
+    component with no score still gets a line (its own note), so the
+    owner always sees why something is missing rather than a silent gap."""
+    comps = evo.get("components", {})
+    lines = []
+
+    def _fy_label(fy_iso):
+        if not fy_iso:
+            return "?"
+        try:
+            yr = int(str(fy_iso)[:4])
+            return f"FY{yr % 100:02d}"
+        except Exception:
+            return str(fy_iso)
+
+    def _trend_word(base, now, higher_better=True):
+        if base is None or now is None:
+            return "unavailable"
+        diff = now - base
+        if abs(diff) < 1e-9:
+            return "steady"
+        return "improving" if ((diff > 0) == higher_better) else "weakening"
+
+    for name, label, higher_better, is_pct in (
+        ("Growth Δ", "Growth", True, True), ("Margins Δ", "Margins", True, True),
+        ("ROIC Δ", "ROIC", True, True), ("FCF Δ", "FCF margin", True, True),
+        ("Debt Δ", "Net debt/EBITDA", False, False),
+    ):
+        c = comps.get(name) or {}
+        if c.get("score") is None:
+            lines.append(f"{label}: {c.get('note') or 'not enough data'}")
+            continue
+        base, now = c.get("base"), c.get("now")
+        word = _trend_word(base, now, higher_better)
+        fy_base, fy_now = _fy_label(c.get("fy_base")), _fy_label(c.get("fy_now"))
+        if is_pct:
+            _b = f"{base * 100:.1f}%" if base is not None else "n/a"
+            _n = f"{now * 100:.1f}%" if now is not None else "n/a"
+        else:
+            _b = f"{base:.2f}x" if base is not None else "n/a"
+            _n = f"{now:.2f}x" if now is not None else "n/a"
+        lines.append(f"{label} {word}: {_b} -> {_n} ({fy_base} -> {fy_now}, one-offs excluded)")
+
+    _income = comps.get("Income Δ") or {}
+    if _income.get("score") is not None:
+        lines.append(
+            f"Dividends paid: ${_income.get('base'):.2f} -> ${_income.get('now'):.2f} (last 12 months)"
+        )
+    else:
+        lines.append(f"Dividends: {_income.get('note') or 'not enough data'}")
+
+    _price = comps.get("Price since purchase") or {}
+    if _price.get("score") is not None:
+        _line = f"Price since purchase: {_price.get('baseline')} -> {_price.get('current')}"
+        if _price.get("drawdown") is not None:
+            _line += f", {_price['drawdown'] * 100:.1f}% from the post-purchase peak"
+        lines.append(_line)
+
+    _news = comps.get("News since purchase") or {}
+    if _news.get("headlines"):
+        lines.append(
+            f"News since purchase: {len(_news['headlines'])} item(s) counted (score {_news.get('score')})."
+        )
+
+    return lines

@@ -455,12 +455,19 @@ def _action_for(overall, valuation_mos_pct=None):
     return "HOLD"
 
 
+# TASK 17 (Director-directed, 23 Oct 2026) lowered EVOLUTION_ACTION_HOLD
+# 60 -> 55 - these boundary checks are now driven off that constant
+# directly (never a hardcoded literal) so they can't go stale again if
+# the threshold moves a second time.
+_HOLD = phe.EVOLUTION_ACTION_HOLD
 check("overall=44.9 -> REVIEW (below the 45 watch floor)", _action_for(44.9) == "REVIEW")
-check("overall=45.0 -> HOLD & WATCH (45-60 band, inclusive low end)", _action_for(45.0) == "HOLD & WATCH")
-check("overall=59.9 -> HOLD & WATCH", _action_for(59.9) == "HOLD & WATCH")
-check("overall=60.0, no MOS data -> HOLD", _action_for(60.0) == "HOLD")
-check("overall=60.0, MOS=30.0 -> HOLD / ADD (>=30% margin of safety)", _action_for(60.0, 30.0) == "HOLD / ADD")
-check("overall=60.0, MOS=29.9 -> plain HOLD (just under the MOS floor)", _action_for(60.0, 29.9) == "HOLD")
+check("overall=45.0 -> HOLD & WATCH (45-HOLD band, inclusive low end)", _action_for(45.0) == "HOLD & WATCH")
+check(f"overall={_HOLD - 0.1} -> HOLD & WATCH", _action_for(_HOLD - 0.1) == "HOLD & WATCH")
+check(f"overall={_HOLD}, no MOS data -> HOLD", _action_for(_HOLD) == "HOLD")
+check(f"overall={_HOLD}, MOS=30.0 -> HOLD / ADD (>=30% margin of safety)",
+      _action_for(_HOLD, 30.0) == "HOLD / ADD")
+check(f"overall={_HOLD}, MOS=29.9 -> plain HOLD (just under the MOS floor)",
+      _action_for(_HOLD, 29.9) == "HOLD")
 
 _evo_action = phe.compute_evolution(_SNAPSHOT, _BASELINE, "STOCK", 95.0, "2025-01-01",
                                      ticker=None, valuation_mos_pct=35.0)
