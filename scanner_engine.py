@@ -77,6 +77,7 @@ shipped.
 """
 
 import concurrent.futures
+import html
 import io
 import json
 import logging
@@ -2571,7 +2572,8 @@ _JAPAN_FETCH_HEADERS = {
 
 
 def _log_japan_fetch_diagnostic(label, url, status=None, content_type=None,
-                                 tables_found=None, rows_parsed=None, body_preview=None):
+                                 tables_found=None, rows_parsed=None, body_preview=None,
+                                 extra=None):
     """Director addendum 2, Part 1, item A: every failure path in
     fetch_nikkei225()/fetch_topix500() below calls this (in addition to
     - never instead of - each function's own pre-existing required
@@ -2579,11 +2581,19 @@ def _log_japan_fetch_diagnostic(label, url, status=None, content_type=None,
     scanning"/no-tickers-resolved line) so the next real Railway log
     actually shows what the live response looked like, not just that it
     failed. `tables_found`/`rows_parsed` are None when the request
-    itself never completed (so there was nothing to parse at all)."""
+    itself never completed (so there was nothing to parse at all).
+
+    TASK 20 (Director-directed, 24 Oct 2026) added the optional `extra`
+    field - a short label-specific diagnostic string (fetch_nikkei225()
+    uses it for a 300-char plain-text window around the first "TYO"/
+    "TSE" occurrence, or "TYO/TSE not found") appended to the same log
+    line when given; omitted (None, the default), every pre-existing
+    caller's log line is byte-identical to before."""
     _log.warning(
         f"[universe] {label}: fetch diagnostic - url={url} status={status} "
         f"content_type={content_type} tables_found={tables_found} "
         f"rows_parsed={rows_parsed} first200={body_preview!r}"
+        + (f" extra={extra!r}" if extra is not None else "")
     )
 
 
@@ -2599,8 +2609,44 @@ NIKKEI225_WIKI_URL = "https://en.wikipedia.org/wiki/Nikkei_225"
 # entry reads like "Honda Motor Co., Ltd. (TYO: 7267)". The previous
 # _parse_table()-based implementation (a table scrape) could never
 # have worked against the real page at all.
-_NIKKEI225_TYO_CODE_RE = re.compile(r"\(TYO:\s*([0-9A-Za-z]{3,5})\)")
+#
+# TASK 20 (Director-directed, 24 Oct 2026) - root-caused from a real
+# Railway diagnostic (23 Oct 20:07 UTC: status=200, text/html, full
+# page, but rows_parsed=0): the OLD _NIKKEI225_TYO_CODE_RE above ran
+# over the RAW HTML, where Wikipedia renders each entry's exchange
+# code as separate links - "(<a ...>TYO</a>: <a ...>7267</a>)" - so
+# the literal "(TYO: 7267)" text the old regex needed never appears in
+# the source at all; it only exists in the page's rendered/visible
+# text. Fixed by matching against _html_to_visible_text(resp.text)
+# (tag-stripped, entity-unescaped, whitespace-collapsed) instead of
+# the raw response body, with a looser 4-char code shape
+# ([0-9]{3}[0-9A-Z]) that also covers TSE's newer alphanumeric codes
+# (e.g. "285A") and accepts "TSE:" as well as "TYO:" (Wikipedia is not
+# perfectly consistent about which label it uses).
+_NIKKEI225_CODE_RE = re.compile(r"\b(?:TYO|TSE)\s*:\s*([0-9]{3}[0-9A-Z])\b")
 _NIKKEI225_MIN_CODES = 200
+
+
+def _html_to_visible_text(raw_html):
+    """TASK 20 (Director-directed, 24 Oct 2026): strips `raw_html` down
+    to the same visible text a browser would show - tags removed,
+    entities unescaped (so "&nbsp;"/"&amp;" etc. read as plain text,
+    not literal entity text), all whitespace runs (including the
+    \xa0 non-breaking spaces Wikipedia's own sector-heading/infobox
+    markup uses) collapsed to a single regular space. Prefers
+    BeautifulSoup's own tag-aware get_text(" ") when bs4 is importable
+    (the more robust choice - it never merges two adjacent elements'
+    text without a separator); falls back to a plain
+    re.sub(r"<[^>]+>", " ", ...) tag-strip when bs4 isn't installed, so
+    this still works either way."""
+    try:
+        from bs4 import BeautifulSoup
+        text = BeautifulSoup(raw_html, "html.parser").get_text(" ")
+    except ImportError:
+        text = re.sub(r"<[^>]+>", " ", raw_html)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
 
 # TOPIX 500 = the Core30 + Large70 + Mid400 size groups of JPX's own
 # published "topixweight_j.csv" (構成銘柄別ウエイト一覧), linked from
@@ -2624,18 +2670,28 @@ def fetch_nikkei225():
     """Director addendum 2, Part 2, item 2 (3 Oct 2026): rewritten
     against the REAL page shape the Director verified directly -
     bulleted list items ("Honda Motor Co., Ltd. (TYO: 7267)"), not a
-    table (see this section's own module comment). Finds every "(TYO:
-    <code>)" occurrence anywhere in the page body (regex over the raw
-    HTML text - the list markup itself doesn't matter, only the
-    parenthesised exchange:code text each entry carries), de-duplicates
-    preserving first-seen order, and requires at least _NIKKEI225_MIN_
-    CODES (200) or treats the fetch as a failure - same "never build a
-    constituent list from memory, keep last known good instead" rule
-    as every other universe in this section. Keeps the Director
-    addendum 2 Part 1 item A failure diagnostics (URL/status/content-
-    type/rows found/first 200 chars) - `tables_found` stays None here
-    (this is no longer a table-based parse) rather than being repurposed
-    to mean something else.
+    table (see this section's own module comment).
+
+    TASK 20 (Director-directed, 24 Oct 2026): root-caused from a real
+    Railway diagnostic - the page fetches fine (status=200, text/html)
+    but the old regex ran over the RAW HTML, where each entry's
+    exchange code is rendered as separate links ("(<a ...>TYO</a>:
+    <a ...>7267</a>)"), so "(TYO: 7267)" never appears literally in the
+    source; rows_parsed was always 0 and Nikkei 225 has never scanned.
+    Now matches _NIKKEI225_CODE_RE against _html_to_visible_text(resp.
+    text) - the page's own rendered text, tags stripped - instead of
+    the raw body, de-duplicates preserving first-seen order, and still
+    requires at least _NIKKEI225_MIN_CODES (200) or treats the fetch as
+    a failure - same "never build a constituent list from memory, keep
+    last known good instead" rule as every other universe in this
+    section. Keeps the Director addendum 2 Part 1 item A failure
+    diagnostics (URL/status/content-type/rows found/first 200 chars) -
+    `tables_found` stays None here (this is no longer a table-based
+    parse) - and TASK 20 extends that same diagnostic with a 300-char
+    window of the visible text around the first "TYO" occurrence (or
+    "TYO not found") whenever rows_parsed comes in under the minimum,
+    so a failure is self-explaining straight from the Railway log
+    rather than needing a second round-trip to reproduce.
 
     ALL FIXTURES THIS IS TESTED AGAINST ARE SYNTHETIC - this sandbox
     still has no outbound network access to verify against the real
@@ -2644,15 +2700,17 @@ def fetch_nikkei225():
     url = NIKKEI225_WIKI_URL
     status, content_type, body_preview = None, None, None
     rows_parsed = None
+    extra = None
     try:
         resp = requests.get(url, headers=_JAPAN_FETCH_HEADERS, timeout=15)
         status = resp.status_code
         content_type = resp.headers.get("Content-Type")
         body_preview = resp.text[:200]
         resp.raise_for_status()
+        text = _html_to_visible_text(resp.text)
         seen = set()
         codes = []
-        for code in _NIKKEI225_TYO_CODE_RE.findall(resp.text):
+        for code in _NIKKEI225_CODE_RE.findall(text):
             if code not in seen:
                 seen.add(code)
                 codes.append(code)
@@ -2660,12 +2718,19 @@ def fetch_nikkei225():
         if rows_parsed >= _NIKKEI225_MIN_CODES:
             tickers = [symbol_mapping.to_yahoo_symbol(c, "TSE") for c in codes]
             return pd.DataFrame({"Ticker": tickers, "Sector": [None] * len(tickers)})
+        _tyo_idx = text.find("TYO")
+        if _tyo_idx == -1:
+            extra = f"rows_parsed={rows_parsed}; TYO not found"
+        else:
+            _window_start = max(0, _tyo_idx - 150)
+            extra = f"rows_parsed={rows_parsed}; around first TYO: {text[_window_start:_window_start + 300]!r}"
     except Exception as e:
         if status is None:
             status = f"{type(e).__name__}: {e}"
     _log_japan_fetch_diagnostic(
         "Nikkei 225", url, status=status, content_type=content_type,
         tables_found=None, rows_parsed=rows_parsed, body_preview=body_preview,
+        extra=extra,
     )
     return None
 
