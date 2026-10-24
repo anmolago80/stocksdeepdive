@@ -2221,13 +2221,33 @@ def apply_live_evolution_switch(old_health, snapshot, baseline, kind, buy_price,
     return new_health
 
 
+_EVOLUTION_NO_STATEMENTS_NOTE = "No annual income statement available"
+_EVOLUTION_FUND_NAMES = ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ")
+
+
 def evolution_plain_english(evo):
     """TASK 17 item 5: one plain-English sentence per component, built
     ONLY from fields compute_evolution()/evolution_fundamentals() (TASK
     16c) already computed - fy_base/fy_now/base/now/unusual_items_* -
     never a new data source. Returns an ordered list of strings; a
     component with no score still gets a line (its own note), so the
-    owner always sees why something is missing rather than a silent gap."""
+    owner always sees why something is missing rather than a silent gap.
+
+    TASK 18b item 1 (Director-directed, 24 Oct 2026): every "$" in a
+    line that goes on to be rendered with st.markdown()/st.write() is
+    escaped ("\\$") - Streamlit's markdown renderer treats a PAIR of
+    literal "$" on the same line as KaTeX math delimiters (the exact
+    same trap CLAUDE.md's own _fmt_aud_md() already documents for
+    app.py), which is what mangled the Dividends line.
+
+    TASK 18b item 3: a holding with NO annual statements at all (e.g.
+    GOLD.AX, stored as kind=STOCK but a commodity ETF in substance) has
+    the SAME _EVOLUTION_NO_STATEMENTS_NOTE on all five fundamentals
+    components - collapsed into ONE line instead of five identical
+    ones. A holding merely awaiting its next report (fy_base==fy_now,
+    e.g. OCL) gets a DIFFERENT note ("No new annual report since
+    purchase") and is deliberately left exactly as before - the
+    Director's own explicit "keep as-is"."""
     comps = evo.get("components", {})
     lines = []
 
@@ -2248,30 +2268,38 @@ def evolution_plain_english(evo):
             return "steady"
         return "improving" if ((diff > 0) == higher_better) else "weakening"
 
-    for name, label, higher_better, is_pct in (
-        ("Growth Δ", "Growth", True, True), ("Margins Δ", "Margins", True, True),
-        ("ROIC Δ", "ROIC", True, True), ("FCF Δ", "FCF margin", True, True),
-        ("Debt Δ", "Net debt/EBITDA", False, False),
-    ):
-        c = comps.get(name) or {}
-        if c.get("score") is None:
-            lines.append(f"{label}: {c.get('note') or 'not enough data'}")
-            continue
-        base, now = c.get("base"), c.get("now")
-        word = _trend_word(base, now, higher_better)
-        fy_base, fy_now = _fy_label(c.get("fy_base")), _fy_label(c.get("fy_now"))
-        if is_pct:
-            _b = f"{base * 100:.1f}%" if base is not None else "n/a"
-            _n = f"{now * 100:.1f}%" if now is not None else "n/a"
-        else:
-            _b = f"{base:.2f}x" if base is not None else "n/a"
-            _n = f"{now:.2f}x" if now is not None else "n/a"
-        lines.append(f"{label} {word}: {_b} -> {_n} ({fy_base} -> {fy_now}, one-offs excluded)")
+    _fund_comps = {name: (comps.get(name) or {}) for name in _EVOLUTION_FUND_NAMES}
+    _no_statements_at_all = (
+        all(c.get("score") is None for c in _fund_comps.values())
+        and all(c.get("note") == _EVOLUTION_NO_STATEMENTS_NOTE for c in _fund_comps.values())
+    )
+    if _no_statements_at_all:
+        lines.append("Company accounts: not available for this holding (fund/commodity).")
+    else:
+        for name, label, higher_better, is_pct in (
+            ("Growth Δ", "Growth", True, True), ("Margins Δ", "Margins", True, True),
+            ("ROIC Δ", "ROIC", True, True), ("FCF Δ", "FCF margin", True, True),
+            ("Debt Δ", "Net debt/EBITDA", False, False),
+        ):
+            c = _fund_comps[name]
+            if c.get("score") is None:
+                lines.append(f"{label}: {c.get('note') or 'not enough data'}")
+                continue
+            base, now = c.get("base"), c.get("now")
+            word = _trend_word(base, now, higher_better)
+            fy_base, fy_now = _fy_label(c.get("fy_base")), _fy_label(c.get("fy_now"))
+            if is_pct:
+                _b = f"{base * 100:.1f}%" if base is not None else "n/a"
+                _n = f"{now * 100:.1f}%" if now is not None else "n/a"
+            else:
+                _b = f"{base:.2f}x" if base is not None else "n/a"
+                _n = f"{now:.2f}x" if now is not None else "n/a"
+            lines.append(f"{label} {word}: {_b} -> {_n} ({fy_base} -> {fy_now}, one-offs excluded)")
 
     _income = comps.get("Income Δ") or {}
     if _income.get("score") is not None:
         lines.append(
-            f"Dividends paid: ${_income.get('base'):.2f} -> ${_income.get('now'):.2f} (last 12 months)"
+            f"Dividends paid: A\\${_income.get('base'):.2f} -> A\\${_income.get('now'):.2f} (last 12 months)"
         )
     else:
         lines.append(f"Dividends: {_income.get('note') or 'not enough data'}")

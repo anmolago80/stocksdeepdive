@@ -254,8 +254,9 @@ check("plain English includes a Margins line with a trend word and FY labels",
       any(_l.startswith("Margins") and "FY" in _l and "->" in _l for _l in _lines))
 check("plain English includes 'one-offs excluded' on the statement-based lines",
       "one-offs excluded" in _joined)
-check("plain English includes a Dividends line with $ TTM amounts",
-      any("Dividends paid: $" in _l and "last 12 months" in _l for _l in _lines))
+check("plain English includes a Dividends line with escaped $ TTM amounts "
+      "(TASK 18b: paired literal '$' triggers Streamlit's KaTeX, so every '$' is escaped '\\$')",
+      any("Dividends paid: A\\$" in _l and "last 12 months" in _l for _l in _lines))
 
 with mock.patch.object(fundamentals_data, "get_bundle", return_value=_SAME_FY_BUNDLE), \
      mock.patch.object(phe, "_evolution_report_dates", return_value=[]):

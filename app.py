@@ -22764,15 +22764,24 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                 f"<span style='color:#8aa0b8'>{html.escape(label)}</span>"
                 f"<span style='color:#e6edf5;font-family:ui-monospace,Menlo,monospace'>{html.escape(value)}</span></div>"
             )
+            # TASK 18b "grep the rest of the Portfolio page" (Director-
+            # directed, 24 Oct 2026): these 7 rows are joined into ONE
+            # combined HTML string below (one st.markdown() call) - per
+            # _render_ai_answer()'s own root-caused finding above,
+            # unsafe_allow_html=True does NOT stop Streamlit's remark-math
+            # pass from pairing up literal "$" across the whole raw
+            # string, tag boundaries or not - so every "A$" here is
+            # escaped "A\\$" the same way, not left as "safe because
+            # it's HTML".
             _bridge_pairs = [
-                (_sw("bridge_value"), f"A${_from_row['value_aud']:,.0f}"),
-                (_sw("bridge_cost_base"), f"A${_from_row['cost_aud']:,.0f}"),
-                (_sw("bridge_gain"), f"A${_toll['gain']:,.0f}"),
+                (_sw("bridge_value"), f"A\\${_from_row['value_aud']:,.0f}"),
+                (_sw("bridge_cost_base"), f"A\\${_from_row['cost_aud']:,.0f}"),
+                (_sw("bridge_gain"), f"A\\${_toll['gain']:,.0f}"),
                 ((_sw("bridge_discount_applied") if _toll["discount_applied"] else _sw("bridge_discount_not_applied")), ""),
-                (_sw("bridge_taxable_gain"), f"A${_toll['taxable_gain']:,.0f}"),
-                (_sw("bridge_tax", rate=f"{_tax_rate * 100:.0f}"), f"A${_toll['tax']:,.0f}"),
-                (_sw("bridge_brokerage", each=f"A${_brokerage:,.0f}"), f"A${_toll['brokerage_total']:,.0f}"),
-                (_sw("bridge_proceeds"), f"A${_toll['proceeds_after_toll']:,.0f}"),
+                (_sw("bridge_taxable_gain"), f"A\\${_toll['taxable_gain']:,.0f}"),
+                (_sw("bridge_tax", rate=f"{_tax_rate * 100:.0f}"), f"A\\${_toll['tax']:,.0f}"),
+                (_sw("bridge_brokerage", each=f"A\\${_brokerage:,.0f}"), f"A\\${_toll['brokerage_total']:,.0f}"),
+                (_sw("bridge_proceeds"), f"A\\${_toll['proceeds_after_toll']:,.0f}"),
             ]
             st.markdown("".join(_bridge_line(l, v) for l, v in _bridge_pairs), unsafe_allow_html=True)
             if _toll["toll_pct_of_value"] is not None:
@@ -25172,14 +25181,29 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         # showing the model's own figure on purpose (it's labelled
         # "Model" specifically); only the derived MOS% needs to track
         # whichever value (override or model) is actually being scored.
-        if _iv_override is not None and _iv_override > 0 and _cur_price is not None:
+        _model_mos = _snap.get("mos_pct")
+        _has_override = _iv_override is not None and _iv_override > 0
+        if _has_override and _cur_price is not None:
             _mos = ((_iv_override - _cur_price) / _iv_override) * 100
         else:
-            _mos = _snap.get("mos_pct")
+            _mos = _model_mos
         _vc1, _vc2, _vc3 = st.columns(3)
         _vc1.metric("Model intrinsic value", f"A${_model_iv:,.2f}" if _model_iv else "–")
         _vc2.metric("Current price", f"A${_cur_price:,.2f}" if _cur_price is not None else "–")
-        _vc3.metric("Margin of safety", f"{_mos:+.1f}%" if _mos is not None else "–")
+        # TASK 18b item 2 (Director-directed, 24 Oct 2026): with an
+        # override active, this MOS is vs the OWNER'S OWN value, not the
+        # model's - the label says so explicitly (a lone "$" in a
+        # st.metric label, never paired with a second one in the same
+        # string, so no KaTeX risk) rather than being silently read as
+        # the model's own MOS; the model's own MOS gets its own line
+        # below so neither number is lost.
+        if _has_override:
+            _vc3.metric(f"Margin of safety (vs your value A${_iv_override:,.2f})",
+                        f"{_mos:+.1f}%" if _mos is not None else "–")
+        else:
+            _vc3.metric("Margin of safety", f"{_mos:+.1f}%" if _mos is not None else "–")
+        if _has_override and _model_mos is not None:
+            st.caption(f"Model MOS: {_model_mos:+.1f}%")
         st.caption(
             f"Key inputs: revenue growth {_pf_pct_or_dash(_snap.get('revenue_growth'))} · "
             f"earnings growth {_pf_pct_or_dash(_snap.get('earnings_growth'))} · "
@@ -25188,10 +25212,16 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
             f"debt/equity {_snap.get('debt_to_equity'):.0f}" if _snap.get("debt_to_equity") is not None
             else "debt/equity n/a"
         )
-        if _iv_override is not None:
-            _badge = f"Using your manual override: A${_iv_override:,.2f}"
+        if _has_override:
+            # TASK 18b item 1 (Director-directed, 24 Oct 2026): TWO "A$"
+            # amounts on one st.success() line are parsed as a KaTeX
+            # math pair by Streamlit's markdown renderer (the exact same
+            # trap CLAUDE.md's own _fmt_aud_md() documents) - escaped here
+            # the same way, since _fmt_aud_md() itself is .0f-only and
+            # these need cents precision.
+            _badge = f"Using your manual override: A\\${_iv_override:,.2f}"
             if _model_iv:
-                _badge += f" (model says A${_model_iv:,.2f})"
+                _badge += f" (model says A\\${_model_iv:,.2f})"
             st.success(_badge)
         # TASK 18 item 4 (Director-directed, 24 Oct 2026): when the live
         # action is HOLD/ADD, state plainly which value drove it (the
@@ -25199,8 +25229,8 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         # the SAME _iv_override/_model_iv/_mos just computed above, never
         # a second valuation read.
         if _health.get("action") == "HOLD / ADD" and _mos is not None:
-            _driver = (f"your manual value A${_iv_override:,.2f}" if _iv_override is not None
-                       else (f"model value A${_model_iv:,.2f}" if _model_iv else "the model value"))
+            _driver = (f"your manual value A\\${_iv_override:,.2f}" if _has_override
+                       else (f"model value A\\${_model_iv:,.2f}" if _model_iv else "the model value"))
             st.caption(f"HOLD/ADD is driven by {_driver} - margin of safety {_mos:+.1f}%.")
         # iv_overrides is keyed by (email, ticker) only, deliberately shared
         # across every portfolio that holds this ticker (see
