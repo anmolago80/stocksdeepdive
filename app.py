@@ -24667,9 +24667,21 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
     def _score_color(vals):
         return [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
                 for v in vals]
+
+    # TASK 18 (Director-directed, 24 Oct 2026): with HEALTH_EVOLUTION_LIVE
+    # on, the "Health" column IS the Evolution score, so its colour
+    # follows the SAME thresholds as the action (45/55 - portfolio_
+    # health_engine.progress_color() already uses exactly those two
+    # constants) instead of the generic Health bands (50/70). "News
+    # Risk" is a completely different score, untouched either way.
+    def _health_score_color(vals):
+        _color_fn = (portfolio_health_engine.progress_color
+                     if portfolio_health_engine.is_health_evolution_live()
+                     else portfolio_health_engine.score_color)
+        return [(f"color: {_color_fn(v)}; font-weight:700" if v is not None else "") for v in vals]
     st.dataframe(
         _df.style
-        .apply(lambda col: _score_color(_raw_health), subset=["Health"])
+        .apply(lambda col: _health_score_color(_raw_health), subset=["Health"])
         .apply(lambda col: _score_color(_raw_news_risk), subset=["News Risk"])
         .apply(lambda col: _pf_pl_color(_raw_pl), subset=["Unrealised P/L (AUD)"])
         .apply(lambda col: _pf_moat_color(_raw_moat, _moat_flagged), subset=["Moat"])
@@ -24790,6 +24802,66 @@ def _pf_moat_color(vals, erosion_flags):
 
 
 def _render_portfolio_health_scoring_expander():
+    # TASK 18 (Director-directed, 24 Oct 2026): with HEALTH_EVOLUTION_LIVE
+    # on, this REPLACES the explainer below entirely (never appended
+    # alongside it) - the whole scoring model has changed, so the old
+    # text would actively mislead rather than just be incomplete. Off:
+    # byte-identical to before this task.
+    if portfolio_health_engine.is_health_evolution_live():
+        with st.expander("How this score works"):
+            st.markdown("##### Evolution since purchase - is the business's fix working?")
+            st.caption(
+                "Change since purchase, measured from the company's reported "
+                "annual accounts (one-offs excluded) and dividends actually "
+                "paid - not today's absolute levels, and not news the market "
+                "had already priced in at purchase. 50 = unchanged."
+            )
+            st.markdown("**What's measured**")
+            st.markdown(
+                "- **Fundamentals since purchase** (Growth, Margins, ROIC, FCF, "
+                "Debt) - from the company's reported annual accounts, comparing "
+                "the fiscal year known at purchase (FY_base) against the latest "
+                "one available now (FY_now). One-off items (impairments, "
+                "restructuring charges) are excluded via Normalized Income.\n"
+                "- **Price since purchase** - return vs buy price and drawdown "
+                "from the post-purchase peak.\n"
+                "- **Dividends paid** - the actual trailing-12-month total as of "
+                "purchase vs today (never Yahoo's live indicated rate).\n"
+                "- **News since purchase** - only events dated strictly after "
+                "your buy date, in three tiers (thesis-breaking, material-"
+                "negative, review-only for leadership/restructuring/class-action "
+                "news) plus positive news."
+            )
+            st.dataframe(
+                pd.DataFrame({
+                    "Component": list(portfolio_health_engine.EVOLUTION_WEIGHTS.keys()),
+                    "Weight": [f"{w:.0f}%" for w in portfolio_health_engine.EVOLUTION_WEIGHTS.values()],
+                }),
+                width='stretch', hide_index=True,
+            )
+            st.caption(
+                "ETFs/funds use Price since purchase "
+                f"({portfolio_health_engine.EVOLUTION_WEIGHTS_ETF['Price since purchase']:.0f}%) and "
+                f"Income Δ ({portfolio_health_engine.EVOLUTION_WEIGHTS_ETF['Income Δ']:.0f}%) only - "
+                "no company fundamentals, thesis, or news for a fund."
+            )
+            st.caption(
+                f"Action: {portfolio_health_engine.EVOLUTION_ACTION_HOLD}+ = HOLD (or HOLD/ADD if "
+                "Valuation margin of safety is "
+                f"{portfolio_health_engine.EVOLUTION_VALUATION_MOS_ADD:.0f}% or more), "
+                f"{portfolio_health_engine.EVOLUTION_ACTION_WATCH}-"
+                f"{portfolio_health_engine.EVOLUTION_ACTION_HOLD} = HOLD & WATCH, below "
+                f"{portfolio_health_engine.EVOLUTION_ACTION_WATCH} = REVIEW. A live thesis-breaking "
+                "item since purchase adds a red 'Review now' flag but doesn't by "
+                "itself change the action."
+            )
+            st.caption(
+                "'Business quality today' (shown separately, no action attached) "
+                "is the old absolute-levels Health score - information only, "
+                "since it measures today's levels rather than whether the "
+                "business has improved since you bought."
+            )
+        return
     with st.expander("How this score works"):
         st.markdown("##### Health Score - how healthy the holding looks right now")
         st.caption(
@@ -24894,11 +24966,24 @@ def _render_portfolio_health_scoring_expander():
 
 def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analyses):
     _is_combined = active_portfolio is None
-    st.caption(
-        "How healthy each holding looks right now - fundamentals blended with "
-        "purchase-relative price action, Valuation/DCF, and News Intelligence "
-        "for companies; a dedicated price-based blend for ETFs/funds."
-    )
+    # TASK 18 (Director-directed, 24 Oct 2026): with HEALTH_EVOLUTION_LIVE
+    # on, the Health score IS the Evolution score - the old "how healthy
+    # right now" intro line would misdescribe what's actually running.
+    if portfolio_health_engine.is_health_evolution_live():
+        st.caption(
+            "Whether each holding is IMPROVING since you bought it - "
+            "fundamentals since purchase from the company's reported "
+            "annual accounts, price since purchase, dividends actually "
+            "paid, and news dated strictly after your buy date. "
+            "'Business quality today' (shown separately) is today's "
+            "absolute levels - information only, no action attached."
+        )
+    else:
+        st.caption(
+            "How healthy each holding looks right now - fundamentals blended with "
+            "purchase-relative price action, Valuation/DCF, and News Intelligence "
+            "for companies; a dedicated price-based blend for ETFs/funds."
+        )
     _render_portfolio_health_scoring_expander()
 
     if not _holdings:
@@ -24941,10 +25026,16 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         _rows.append(_row)
         _raw_health_summary.append(_health_val)
 
+    # TASK 18 (Director-directed, 24 Oct 2026): with the switch on, this
+    # column IS the Evolution score - colour it by the same 45/55 action
+    # thresholds (progress_color()) rather than the generic Health bands.
+    _health_color_fn = (portfolio_health_engine.progress_color
+                         if portfolio_health_engine.is_health_evolution_live()
+                         else portfolio_health_engine.score_color)
     _df = pd.DataFrame(_rows)
     st.dataframe(
         _df.style
-        .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
+        .apply(lambda col: [(f"color: {_health_color_fn(v)}; font-weight:700" if v is not None else "")
                              for v in _raw_health_summary], subset=["Health"]),
         width='stretch', hide_index=True,
     )
@@ -24978,6 +25069,12 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
     # of its own (the dict shape already tells us which mode we're in).
     _is_evolution_live = (_score_label == "Evolution since purchase")
     _none_label = "Not enough data yet" if _is_evolution_live else "–"
+    # TASK 18 (Director-directed, 24 Oct 2026): the big score tile's own
+    # colour follows the same 45/55 action thresholds as the rest of the
+    # page when Evolution is live - progress_color() already uses those
+    # exact two constants.
+    _score_color_fn = (portfolio_health_engine.progress_color if _is_evolution_live
+                        else portfolio_health_engine.score_color)
     if _is_etf:
         st.info(
             f"**{_score_label}** - this is a fund, so Health blends Price "
@@ -24989,7 +25086,8 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         _sc1, _sc2 = st.columns([1, 2])
         with _sc1:
             st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"],
-                                                                  none_label=_none_label),
+                                                                  none_label=_none_label,
+                                                                  color_fn=_score_color_fn),
                          unsafe_allow_html=True)
             st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
                          unsafe_allow_html=True)
@@ -25010,7 +25108,8 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         _sc1, _sc2 = st.columns([1, 2])
         with _sc1:
             st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"],
-                                                                  none_label=_none_label),
+                                                                  none_label=_none_label,
+                                                                  color_fn=_score_color_fn),
                          unsafe_allow_html=True)
             st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
                          unsafe_allow_html=True)
@@ -25094,6 +25193,15 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
             if _model_iv:
                 _badge += f" (model says A${_model_iv:,.2f})"
             st.success(_badge)
+        # TASK 18 item 4 (Director-directed, 24 Oct 2026): when the live
+        # action is HOLD/ADD, state plainly which value drove it (the
+        # owner's own manual override, or the model's) and the MOS% -
+        # the SAME _iv_override/_model_iv/_mos just computed above, never
+        # a second valuation read.
+        if _health.get("action") == "HOLD / ADD" and _mos is not None:
+            _driver = (f"your manual value A${_iv_override:,.2f}" if _iv_override is not None
+                       else (f"model value A${_model_iv:,.2f}" if _model_iv else "the model value"))
+            st.caption(f"HOLD/ADD is driven by {_driver} - margin of safety {_mos:+.1f}%.")
         # iv_overrides is keyed by (email, ticker) only, deliberately shared
         # across every portfolio that holds this ticker (see
         # portfolio_store's module docstring) - so the store calls below use
@@ -25159,6 +25267,100 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
 
 def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
     _is_combined = active_portfolio is None
+
+    # TASK 18 (Director-directed, 24 Oct 2026): with HEALTH_EVOLUTION_LIVE
+    # on, this tab shows the EXACT SAME compute_evolution() result the
+    # Health & News tab already computed (via _a["health"]["evolution"] -
+    # never a second, independently-called compute_evolution()), so
+    # Progress and Health can never disagree for the same holding the
+    # way the old compute_progress()/compute_progress_v2() table could
+    # (OCL: Progress 41 "Deteriorated" vs Health 58 - the exact baseline/
+    # dividendRate problem TASK 16c fixed, that this table alone had kept
+    # running on). Off: the rest of this function, byte-identical.
+    if portfolio_health_engine.is_health_evolution_live():
+        st.caption(
+            "Change since purchase, measured from the company's reported "
+            "annual accounts (one-offs excluded) and dividends actually "
+            "paid. 50 = unchanged."
+        )
+        with st.expander("How this score works"):
+            st.markdown("##### Evolution since purchase - is the business's fix working?")
+            st.caption(
+                "The SAME Evolution score shown on the Health & News tab - "
+                "Progress and Health never disagree for the same holding "
+                "while this switch is on. See the Health & News tab's own "
+                "'How this score works' for the full weights and what's measured."
+            )
+            st.caption(
+                f"Verdict: {portfolio_health_engine.EVOLUTION_ACTION_HOLD}+ = improved since "
+                f"purchase, below {portfolio_health_engine.EVOLUTION_ACTION_WATCH} = deteriorated, "
+                "in between = roughly flat."
+            )
+
+        if not _holdings:
+            st.info("Add a holding on the Holdings tab to see its Evolution score.")
+            return
+
+        _labels = _hlabels(_holdings)
+        _rows = []
+        _raw_progress_summary = []
+        for h in _holdings:
+            _evo = (_analyses[_hkey(h)]["health"].get("evolution") or {})
+            _overall = _evo.get("overall")
+            _fy_base = _fy_now = None
+            for _name in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ"):
+                _c = (_evo.get("components") or {}).get(_name) or {}
+                if _c.get("fy_base") or _c.get("fy_now"):
+                    _fy_base, _fy_now = _c.get("fy_base"), _c.get("fy_now")
+                    break
+            _row = {"Ticker": h["ticker"]}
+            if _is_combined:
+                _row["Portfolio"] = h.get("portfolio")
+            _row.update({
+                "Name": h.get("name") or h["ticker"],
+                "Evolution score": _pf_cell(_overall, "{:.0f}"),
+                "Verdict": portfolio_health_engine.evolution_verdict(_overall),
+                "FY_base -> FY_now": (f"{_fy_base} -> {_fy_now}" if (_fy_base or _fy_now) else "n/a"),
+                "Buy date": h.get("buy_date"),
+            })
+            _rows.append(_row)
+            _raw_progress_summary.append(_overall)
+
+        _df = pd.DataFrame(_rows)
+        st.dataframe(
+            _df.style
+            .apply(lambda col: [(f"color: {portfolio_health_engine.progress_color(v)}; font-weight:700"
+                                   if v is not None else "") for v in _raw_progress_summary],
+                   subset=["Evolution score"]),
+            width='stretch', hide_index=True,
+        )
+
+        st.markdown("##### Holding detail")
+        _tk = st.selectbox(
+            "Choose a holding", [_hkey(h) for h in _holdings], format_func=lambda k: _labels[k],
+            key=_pf_key(active_portfolio, "pf_progress_ticker"),
+        )
+        _h = next(h for h in _holdings if _hkey(h) == _tk)
+        _evo = _analyses[_tk]["health"].get("evolution") or {}
+
+        _sc1, _sc2 = st.columns([1, 2])
+        with _sc1:
+            st.markdown(portfolio_health_engine.big_score_html(
+                "Evolution since purchase", _evo.get("overall"), none_label="Not enough data yet",
+                color_fn=portfolio_health_engine.progress_color),
+                         unsafe_allow_html=True)
+            st.caption(portfolio_health_engine.evolution_verdict(_evo.get("overall")))
+        with _sc2:
+            for _line in portfolio_health_engine.evolution_plain_english(_evo):
+                st.markdown(f"- {_line}")
+
+        _detail_rows = [
+            {"Component": name, "Score": (c or {}).get("score")}
+            for name, c in (_evo.get("components") or {}).items()
+        ]
+        st.dataframe(pd.DataFrame(_detail_rows), width='stretch', hide_index=True)
+        return
+
     st.caption(
         "How each tracked metric has moved since the locked baseline snapshot "
         "taken the day a holding was added. 50 = unchanged, 100 = doubled, "

@@ -2155,6 +2155,23 @@ def evolution_action_tone(action):
     return "muted"
 
 
+def evolution_verdict(overall):
+    """TASK 18 (Director-directed, 24 Oct 2026): the Progress tab's own
+    verdict wording for an Evolution score - the SAME four strings
+    compute_progress()'s own verdict already uses (never a fifth,
+    independently-worded one), driven by EVOLUTION_ACTION_WATCH/HOLD
+    (45/55) - the Director's own explicit boundary for this verdict,
+    not PROGRESS_VERDICT_DOWN/UP (a different, v1-Progress-specific
+    pair that happens to currently equal the same two numbers)."""
+    if overall is None:
+        return "Not enough data yet"
+    if overall < EVOLUTION_ACTION_WATCH:
+        return "Deteriorated since purchase"
+    if overall >= EVOLUTION_ACTION_HOLD:
+        return "Improved since purchase"
+    return "Roughly flat since purchase"
+
+
 def apply_live_evolution_switch(old_health, snapshot, baseline, kind, buy_price, buy_date,
                                  ticker=None, valuation_mos_pct=None):
     """TASK 17's single dispatch point - see this section's own
