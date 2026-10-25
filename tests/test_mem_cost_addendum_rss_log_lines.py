@@ -19,6 +19,17 @@ loop, right after each universe's scan (success or failure) - and
 inside _run_top100_poll(), right after poll_and_ingest_batch() returns
 a non-None result (an actual batch event, not every empty hourly poll).
 
+TASK 21 (Director-directed, 25 Oct 2026, memory): _run_nightly() now
+also logs a [mem] line after every post-scan stage (sector top-up,
+each attention top-up universe, the alert extra pass, send_batched_
+notifications, each reprice-pass universe, and the end-of-run nightly-
+only cache clear) - see scheduler_engine.py's own TASK 21 comments at
+each of those call sites. The "_run_nightly() on a successful/failed
+scan writes exactly one [mem] line" checks below were updated to count
+the stages this test's own mocked single-universe scenario actually
+exercises (5, not 1 - see each check's own comment for the exact list)
+rather than continuing to assert the pre-TASK-21 total.
+
 Run: python3 tests/test_mem_cost_addendum_rss_log_lines.py
 """
 import os
@@ -94,8 +105,16 @@ with mock.patch.object(nightly_scan, "run_universe_scan", return_value=_fake_pay
         sched._run_nightly({"universes": ["ASX 200"]}, log=_capture_log, run_night="2026-10-09")
 
 _mem_lines = [m for m in _log_capture if m.startswith("[mem] rss=")]
-check("_run_nightly() on a successful scan writes exactly one [mem] line", len(_mem_lines) == 1)
-check("that [mem] line names the universe it ran for", "ASX 200" in _mem_lines[0] if _mem_lines else False)
+# TASK 21 (25 Oct 2026): this single-universe scenario (no attention-
+# lite flag, no other universe left to reprice, no breaker trip) now
+# also exercises sector top-up, the alert extra pass, send_batched_
+# notifications, and the end-of-run nightly-only cache clear - 5 total,
+# not just the original per-universe-scan line.
+check("_run_nightly() on a successful scan writes the per-universe [mem] line, plus one "
+      "for each post-scan stage this scenario exercises (5 total: scan, sector top-up, "
+      "alert extra pass, send_batched_notifications, nightly-only cache clear)",
+      len(_mem_lines) == 5)
+check("the first [mem] line names the universe it ran for", "ASX 200" in _mem_lines[0] if _mem_lines else False)
 check("_run_nightly()'s existing side effects are untouched by the [mem] addition "
       "(snapshot=1, alert=1, insider=1, same as before this commit)",
       _calls == {"snapshot": 1, "alert": 1, "insider": 1})
@@ -111,8 +130,17 @@ with mock.patch.object(nightly_scan, "run_universe_scan", side_effect=RuntimeErr
                         run_night="2026-10-09")
 
 _mem_lines2 = [m for m in _log_capture2 if m.startswith("[mem] rss=")]
-check("_run_nightly() on a FAILED scan still writes exactly one [mem] line", len(_mem_lines2) == 1)
-check("the failed-scan [mem] line says '(failed)'", "(failed)" in _mem_lines2[0] if _mem_lines2 else False)
+# TASK 21 (25 Oct 2026): a failed scan does NOT trip the rate-limit
+# breaker (a plain RuntimeError, not nightly_scan.RateLimitCircuitBreaker)
+# and isn't cancelled either, so _skip_post_scan_stages stays False -
+# every post-scan stage still runs, same 5-line total as the success
+# case above.
+check("_run_nightly() on a FAILED scan writes the per-universe [mem] line, plus one for "
+      "each post-scan stage this scenario exercises (5 total, same stages as the "
+      "successful-scan case above - a failed scan doesn't skip them)",
+      len(_mem_lines2) == 5)
+check("the first [mem] line (the failed scan itself) says '(failed)'",
+      "(failed)" in _mem_lines2[0] if _mem_lines2 else False)
 
 # ---------------------------------------------------------------------
 # _run_top100_poll(): a [mem] line only when poll_and_ingest_batch()

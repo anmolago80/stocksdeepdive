@@ -1,15 +1,29 @@
 """Memory addendum, round 2 (9 Oct 2026, Director-directed, build go),
 item (b): max_entries=2000 on app.get_ticker_info and
 app.get_price_history ONLY - option A from the Director's review of
-MEMORY_COST_ADDENDUM_REPORT.md. No other cache changes this round
+MEMORY_COST_ADDENDUM_REPORT.md. No other cache changes THAT round
 (options B/C/D/E - a blanket sweep, process restart, subprocess split -
-explicitly NOT built, per the Director's own instruction).
+explicitly NOT built THEN, per the Director's own instruction at the
+time).
+
+SUPERSEDED (TASK 21, Director-directed, 25 Oct 2026, memory): the
+Director's own later task explicitly ordered the blanket sweep round 2
+deliberately deferred - "add max_entries to every uncapped @st.cache_
+data" app-wide, sized to each function's own key shape - so this file's
+own two checks below were updated to assert THAT new state (every
+cache_data decorator, in every .py file, now carries max_entries) rather
+than continuing to assert the old "these two only" restriction, which
+this later task intentionally lifted. The behavioural check (max_
+entries actually evicts) is untouched - that mechanism never changed.
 
 Two checks:
   1. Source-level: the @st.cache_data decorator immediately above
-     get_ticker_info()/get_price_history() carries max_entries=2000,
-     and no OTHER @st.cache_data call site in app.py (or anywhere else
-     in the repo) was touched - proving the "these two only" scope.
+     get_ticker_info()/get_price_history() still carries max_entries=
+     2000 specifically (unchanged by TASK 21), and - per TASK 21 - every
+     OTHER @st.cache_data call site in app.py (and every other .py file
+     in the repo) now ALSO carries its own max_entries (see tests/
+     test_director_task21_memory_fixes.py for the per-function values
+     and reasoning).
   2. Behavioural: st.cache_data's own max_entries mechanism actually
      evicts past the cap (proven against a throwaway function using
      the identical decorator arguments - calling the real get_ticker_
@@ -69,31 +83,48 @@ for _decorator, _name in _all_cache_data_defs:
         check(f"{_name}()'s own @st.cache_data decorator carries max_entries=2000",
               "max_entries=2000" in _decorator)
     else:
-        check(f"{_name}()'s own @st.cache_data decorator was NOT touched this round "
-              "(no max_entries at all - option A only, not a blanket sweep)",
-              "max_entries" not in _decorator)
+        # TASK 21 (25 Oct 2026): every other cache_data decorator in
+        # app.py now carries ITS OWN max_entries too - the blanket sweep
+        # this file's docstring explains was deferred, then later
+        # ordered, by the Director.
+        check(f"{_name}()'s own @st.cache_data decorator carries its own max_entries "
+              "(TASK 21's later blanket sweep, superseding this round's 'option A only')",
+              "max_entries" in _decorator)
 
-# Same check across every OTHER .py file in the repo - an actual
-# @st.cache_data(...max_entries=...) decorator must appear nowhere
-# except app.py's two targeted functions. A plain prose mention (e.g.
-# scheduler_engine._malloc_trim_and_log()'s own docstring, which
-# references get_ticker_info's new cap for context) is not a decorator
-# and must not be flagged.
-_other_hits = []
+# TASK 21 (25 Oct 2026): the INVERSE of this file's original check -
+# every .py file in the repo with an @st.cache_data(...) decorator now
+# has max_entries on EVERY one of them, not just app.py's original two.
+# @st.cache_resource is deliberately OUT OF SCOPE here (and was never
+# in scope for TASK 21's own instruction, which names "@st.cache_data"
+# specifically) - every real cache_resource call site in this repo
+# (paywall_engine.py x2, app.py x2) caches a process-wide SINGLETON
+# resource (a DB handle, the background scheduler thread), not a
+# growing per-key cache, so there is nothing for max_entries to bound.
+# A plain prose mention (e.g. scheduler_engine._malloc_trim_and_log()'s
+# own docstring, which references get_ticker_info's cap for context) is
+# not a decorator and must not be flagged either way - the regex below
+# only matches an actual decorator line, same as the app.py check above.
+_bare_decorator_re = re.compile(r"^\s*@st\.cache_data\(([^)]*)\)\s*$", re.MULTILINE)
+_bare_no_args_re = re.compile(r"^\s*@st\.cache_data\s*$", re.MULTILINE)
+_missing_max_entries = []
 for _root, _dirs, _files in os.walk(REPO_ROOT):
     if "/.git" in _root or "/tests" in _root:
         continue
     for _fn in _files:
-        if not _fn.endswith(".py") or _fn == "app.py":
+        if not _fn.endswith(".py"):
             continue
         _path = os.path.join(_root, _fn)
         with open(_path, encoding="utf-8", errors="ignore") as _fh:
             _src = _fh.read()
-        if re.search(r"@st\.cache_(data|resource)\([^)]*max_entries", _src):
-            _other_hits.append(_path)
-check("no other .py file in the repo has an actual @st.cache_data(...max_entries=...) "
-      "decorator - this round touched exactly get_ticker_info/get_price_history, nothing else",
-      _other_hits == [])
+        for _args in _bare_decorator_re.findall(_src):
+            if "max_entries" not in _args:
+                _missing_max_entries.append((_path, _args))
+        if _bare_no_args_re.search(_src):
+            _missing_max_entries.append((_path, "<bare @st.cache_data, no args at all>"))
+check("TASK 21: every @st.cache_data decorator in every .py file in the repo now "
+      "carries its own max_entries - no blanket-sweep stragglers left "
+      "(@st.cache_resource is out of scope - see comment above)",
+      _missing_max_entries == [])
 
 # ---------------------------------------------------------------------
 # Behavioural proof that max_entries actually evicts, using the exact

@@ -224,7 +224,7 @@ def _row_from_income_df(income_df, row_names):
     return None
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False, max_entries=400)
 def _fetch_diluted_shares(ticker):
     """Tier 3's own targeted, single-ticker fetch - ONLY ever called for
     a ticker in SHARE_CLASS_PAIRS (see whole_company_shares() below),

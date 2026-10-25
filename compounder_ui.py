@@ -1375,7 +1375,7 @@ def _news_company_name(ticker):
         return None
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=400)
 def _news_tab_fetch(ticker, name):
     """Cached (30-min TTL, same convention as app.py's get_price_history
     / get_ticker_info / get_cashflow_df) per-ticker news fetch for the

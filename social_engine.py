@@ -99,7 +99,7 @@ def fetch_x(ticker):
     )
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=400)
 def get_social_score(ticker, provider="stocktwits"):
     """
     Returns (social_score, detail_dict).

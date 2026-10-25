@@ -202,7 +202,7 @@ def _dividend_yield_unit_uncertain(v):
     return v is not None and 0 < v <= 1
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=500)
 def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None,
                     valuation_hash=auto_compounder_engine.VALUATION_SOURCE_HASH):
     """Live fundamentals + price snapshot for one ticker: whatever
@@ -467,7 +467,7 @@ def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=
     }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=20)
 def fx_to_aud(currency):
     """Best-effort live FX rate to AUD, for combining holdings priced in
     different currencies into one total without silently pretending
@@ -1660,7 +1660,7 @@ def _evolution_series_by_date(df, key):
     return {d: v for d, v in pairs if d is not None}
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=500)
 def _evolution_report_dates(ticker):
     """Best-effort list of past earnings/announcement dates for `ticker`
     (ISO date strings) - reuses results_engine._parse_earnings_dates_df()

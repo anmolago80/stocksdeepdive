@@ -46,7 +46,7 @@ def _get_client():
     return _client
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=400)
 def get_google_trend_score(keyword):
     """Google Trends interest-over-time value (0-100 scale) for `keyword`,
     most recent point in the last 3 months. Returns (0, False) when the
@@ -72,7 +72,7 @@ def get_google_trend_score(keyword):
         return 0, True
 
 
-@st.cache_data(ttl=10800, show_spinner=False)
+@st.cache_data(ttl=10800, show_spinner=False, max_entries=400)
 def get_news_trend_score(keyword, api_key=None):
     """Count of NewsAPI articles mentioning `keyword`, strictly in the last 7
     days - the crowd-attention signal that used to come from Reddit mentions

@@ -1200,6 +1200,15 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
             nightly_scan.run_sector_topup(_tickers_scanned_tonight, log=log)
         except Exception as e:
             log(f"[scheduler] sector top-up failed: {e}")
+        # TASK 21 (Director-directed, 25 Oct 2026, memory): every post-
+        # scan stage below used to run with no [mem]/trim call at all -
+        # a real Railway diagnostic showed fastapi climbing 0.31GB ->
+        # 1.19GB across exactly these stages, held until the 23:00
+        # selection trim. Logged/trimmed regardless of success/failure
+        # above, same "always log this stage's own memory" shape the
+        # main scan loop already uses per universe.
+        _log_mem(log, "after sector top-up")
+        _malloc_trim_and_log(log, "after sector top-up")
 
     # Discovery drop-and-reweight fix, Part 2 (18 Sep 2026): attention
     # top-up, once per universe that was scanned attention_lite=True
@@ -1220,6 +1229,14 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                 nightly_scan.run_attention_topup(_universe, log=log)
             except Exception as e:
                 log(f"[scheduler] attention top-up {_universe} failed: {e}")
+            # TASK 21 (Director-directed, 25 Oct 2026, memory): per
+            # universe, not just once for the whole top-up pass - same
+            # "process per universe, trim between each" fix as the main
+            # scan loop and the reprice pass below, so this loop never
+            # accumulates several universes' worth of unfreed memory
+            # before the first trim gets a chance to run.
+            _log_mem(log, f"after attention top-up {_universe}")
+            _malloc_trim_and_log(log, f"after attention top-up {_universe}")
 
     # Services batch, Part 1: tickers with an active alert that weren't
     # covered by any universe/imported scan above get one lightweight
@@ -1234,11 +1251,18 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
         alert_engine.run_extra_ticker_pass(alert_prev_map, log=log)
     except Exception as e:
         log(f"[scheduler] alert extra pass failed: {e}")
+    # TASK 21 (Director-directed, 25 Oct 2026, memory): see the sector
+    # top-up comment above for why every post-scan stage now gets its
+    # own [mem]/trim line.
+    _log_mem(log, "after alert extra pass")
+    _malloc_trim_and_log(log, "after alert extra pass")
     try:
         import alert_engine
         alert_engine.send_batched_notifications(log=log)
     except Exception as e:
         log(f"[scheduler] alert notifications failed: {e}")
+    _log_mem(log, "after send_batched_notifications")
+    _malloc_trim_and_log(log, "after send_batched_notifications")
 
     # Services batch, Part 4: results-day re-analysis. Runs every night
     # (cheap - a small local table scan, one live re-score only for a
@@ -1301,6 +1325,25 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                         nightly_scan.reprice_universe(universe, log=log, run_night=run_night)
                     except Exception as e:
                         log(f"[scheduler] reprice {universe} failed: {e}")
+                    # TASK 21 (Director-directed, 25 Oct 2026, memory):
+                    # per universe, not just once for the whole reprice
+                    # pass - this is the STAGE the Railway [mem]
+                    # diagnostic root-caused as the largest single
+                    # jump (0.31GB -> 1.19GB): reprice_universe() is the
+                    # only post-scan stage that downloads full price
+                    # history (yf.download(), up to REPRICE_CHUNK_SIZE
+                    # tickers/chunk) rather than a small per-ticker
+                    # .info dict, and this loop can call it 20+ times
+                    # in a row for every real universe not scanned
+                    # tonight. reprice_universe() itself now frees each
+                    # chunk's downloaded history explicitly (del +
+                    # gc.collect(), see its own comment) - trimming
+                    # after each universe here is what actually
+                    # returns that freed memory to the OS between
+                    # universes, instead of letting it pile up for
+                    # the whole pass before the first trim.
+                    _log_mem(log, f"after reprice {universe}")
+                    _malloc_trim_and_log(log, f"after reprice {universe}")
             else:
                 log("[scheduler] reprice pass: every real universe was scanned tonight, nothing to reprice")
         except Exception as e:
@@ -1322,6 +1365,15 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
             _build_derived_universes(log)
         except Exception as e:
             log(f"[scheduler] derived universes build failed: {e}")
+
+    # TASK 21 (Director-directed, 25 Oct 2026, memory, "DAILY RETENTION"):
+    # end of the nightly job - clear every constituent/attention-top-up
+    # cache this run (and tonight's attention top-up loop above) just
+    # filled, then trim, so that memory doesn't sit resident all the way
+    # to tomorrow night.
+    _clear_nightly_only_caches(log)
+    _log_mem(log, "after nightly-only cache clear")
+    _malloc_trim_and_log(log, "after nightly-only cache clear")
 
 
 # Fix 8c, AI fixes round 2 (2026-08-31): derived universes (no scan slot
@@ -1700,6 +1752,16 @@ def _run_top100(log, scan_day=None):
     taken after this job has already been running for a while."""
     import top100_engine
     top100_engine.run_nightly(log=log, scan_day=scan_day)
+    # TASK 21 (Director-directed, 25 Oct 2026, memory, "DAILY RETENTION"):
+    # end of the 23:00 Top 200 selection job - run_nightly() above calls
+    # select_top100_pool(), which re-fetches every real universe's
+    # constituent list (the SAME scanner_engine.fetch_<universe>() caches
+    # tonight's earlier scan already filled) - cleared again here so this
+    # job's own pool re-selection doesn't leave a second day's worth of
+    # those caches resident past the 20:00 nightly job's own clear above.
+    _clear_nightly_only_caches(log)
+    _log_mem(log, "after top100 nightly-only cache clear")
+    _malloc_trim_and_log(log, "after top100 nightly-only cache clear")
 
 
 def _run_top100_poll(log):
@@ -1792,6 +1854,14 @@ def _run_top100_poll(log):
     result = top100_engine.poll_and_ingest_batch(log=log)
     if result is None:
         return
+    # TASK 21 (Director-directed, 25 Oct 2026, memory, "DAILY RETENTION"):
+    # the ~00:00 ingest job - this poll doesn't itself call any
+    # constituent/attention-top-up fetcher, but clearing (a harmless
+    # no-op if already empty) and trimming here too is the third of the
+    # "nightly + 23:00/00:00" clear points this task names explicitly,
+    # and it's the checkpoint the Director's own goal is measured
+    # against ("fastapi back to <=0.35GB after the 00:00 ingest").
+    _clear_nightly_only_caches(log)
     _log_mem(log, "after Top 200 batch ingest")
     _malloc_trim_and_log(log, "after Top 200 batch ingest")
     if top100_engine.top100_store.get_batch_state() is not None:
@@ -2338,6 +2408,23 @@ _streamlit_subprocess_pid = None
 _last_process_mem_log_at = None
 _PROCESS_MEM_LOG_INTERVAL_SECONDS = 30 * 60
 
+# TASK 21 (Director-directed, 25 Oct 2026, memory, item 5): updated by
+# EVERY _log_mem() call anywhere in this process (nightly per-stage
+# samples, the 30-min heartbeat tick, the Streamlit idle-trim thread's
+# own samples - whichever process is running this code), so the daily
+# peak reflects the finest sampling granularity this process already
+# does, not a separate coarser poll of its own. _daily_peak_self_gb is
+# THIS process's own peak (pid=None calls - "fastapi" when read from
+# server.py's process, "streamlit" when read from app.py's); _daily_
+# peak_child_gb is keyed by pid, for a call that read a DIFFERENT
+# process's RSS (today, only ever the Streamlit child, read from the
+# FastAPI side - see set_streamlit_pid()). Reset explicitly by the
+# 00:05 UTC summary line in _loop() below, never by _log_mem() itself -
+# see that call site's own comment for why the reset has to be there.
+_daily_peak_self_gb = None
+_daily_peak_child_gb = {}
+_last_daily_peak_summary_date = None
+
 
 def set_streamlit_pid(pid):
     """Called once by server.py's lifespan(), immediately after it
@@ -2354,6 +2441,92 @@ def set_streamlit_pid(pid):
     read")."""
     global _streamlit_subprocess_pid
     _streamlit_subprocess_pid = pid
+
+
+# TASK 21 (Director-directed, 25 Oct 2026, memory, "STREAMLIT GROWTH"):
+# the FastAPI process's own periodic [mem] tick above (_PROCESS_MEM_LOG_
+# INTERVAL_SECONDS) reads the Streamlit child's RSS over /proc, but a
+# malloc_trim(0) call only ever returns memory to the OS for the CALLING
+# process's own heap - it cannot trim a different process's heap from
+# across a process boundary. Streamlit (app.py) never has a periodic
+# background tick of its own at all (it's a script that only re-runs on
+# a page view/interaction), so this gives it one: a single daemon thread,
+# started once per process the first time any session renders a page
+# (see note_streamlit_activity()/_maybe_start_streamlit_idle_trim_thread()
+# below), sleeping the SAME 30-minute interval as the FastAPI side for
+# consistency, trimming only when no session has touched this process
+# for at least _STREAMLIT_IDLE_TRIM_AFTER_SECONDS (10 minutes) - an
+# active session is left completely alone, never trimmed mid-use.
+_streamlit_last_activity_at = None
+_streamlit_idle_trim_thread_started = False
+_STREAMLIT_IDLE_TRIM_AFTER_SECONDS = 10 * 60
+
+
+def note_streamlit_activity():
+    """Called once per script rerun from app.py's own top level (right
+    after st.set_page_config() - every page view/interaction, in every
+    session, re-runs app.py top-to-bottom, so this fires on every one of
+    them). Deliberately a plain module-level global, not st.session_
+    state, specifically so "last activity" is shared across every
+    session in this process rather than scoped to one visitor - the
+    whole point is "has ANY session touched this process recently", not
+    "has THIS session". Cheap (one timestamp write) so calling it on
+    every single rerun costs nothing worth guarding against. Also makes
+    sure the idle-trim thread itself is running (see below) - the first
+    rerun in this process's lifetime is what starts it."""
+    global _streamlit_last_activity_at
+    _streamlit_last_activity_at = time.time()
+    _maybe_start_streamlit_idle_trim_thread()
+
+
+def _maybe_start_streamlit_idle_trim_thread():
+    """Starts _streamlit_idle_trim_loop() below exactly once per
+    process, guarded by _streamlit_idle_trim_thread_started - without
+    this guard, calling this from note_streamlit_activity() (itself
+    called on every single rerun) would spawn a new thread on every
+    single page view. Daemon thread, so it never blocks process
+    shutdown and needs no explicit stop signal."""
+    global _streamlit_idle_trim_thread_started
+    if _streamlit_idle_trim_thread_started:
+        return
+    _streamlit_idle_trim_thread_started = True
+    threading.Thread(target=_streamlit_idle_trim_loop, daemon=True,
+                      name="streamlit-idle-trim").start()
+
+
+def _streamlit_idle_trim_tick():
+    """One tick's worth of _streamlit_idle_trim_loop()'s own body -
+    extracted so it's directly testable (same "extract the inline block
+    so it's testable" pattern this module already uses for _run_top100_
+    job_if_due() - see that function's own docstring), with no change
+    in behaviour from the extraction itself. Trims only when a session
+    has touched this process before (last is not None) AND it's been
+    idle for at least _STREAMLIT_IDLE_TRIM_AFTER_SECONDS - an active
+    session (idle_for below the threshold) is left alone. Returns the
+    idle duration in seconds when a trim was attempted, else None, so a
+    test can assert on it without parsing the log line."""
+    last = _streamlit_last_activity_at
+    idle_for = (time.time() - last) if last is not None else None
+    if idle_for is not None and idle_for >= _STREAMLIT_IDLE_TRIM_AFTER_SECONDS:
+        _label = f"streamlit idle {idle_for / 60:.0f}m"
+        _log_mem(print, _label)
+        _malloc_trim_and_log(print, _label)
+        return idle_for
+    return None
+
+
+def _streamlit_idle_trim_loop():
+    """Runs for the lifetime of the Streamlit process. NEVER raises out
+    of its own try/except per tick - this is an unsupervised daemon
+    thread, so an uncaught exception here would silently kill the loop
+    forever with nothing to notice or restart it."""
+    while True:
+        time.sleep(_PROCESS_MEM_LOG_INTERVAL_SECONDS)
+        try:
+            _streamlit_idle_trim_tick()
+        except Exception:
+            pass
+
 
 # Audit fixes Commit 3 (30 Sep 2026, owner-directed): abandoned-worker
 # tracking. Problem (a6323ee + 24de00e): on a hard timeout, _record_job
@@ -2677,9 +2850,23 @@ def _log_mem(log, label, pid=None):
     process's memory (via _rss_gb_for_pid()) instead of this one's own,
     e.g. the FastAPI process reading its Streamlit child's RSS. Every
     pre-existing call site omits this and keeps logging its own
-    process's memory, exactly as before."""
+    process's memory, exactly as before.
+
+    TASK 21 (25 Oct 2026, memory, item 5): also feeds _daily_peak_
+    self_gb/_daily_peak_child_gb above - every call site in this
+    process, existing or new, now contributes a sample to the running
+    daily peak the 00:05 UTC summary line reads, with no call site
+    needing to know that tracking exists."""
+    global _daily_peak_self_gb
     rss = _rss_gb_for_pid(pid) if pid is not None else _rss_gb()
     log(f"[mem] rss={rss:.2f}GB {label}" if rss is not None else f"[mem] rss=unavailable {label}")
+    if rss is not None:
+        if pid is None:
+            _daily_peak_self_gb = rss if _daily_peak_self_gb is None else max(_daily_peak_self_gb, rss)
+        else:
+            _daily_peak_child_gb[pid] = (
+                rss if pid not in _daily_peak_child_gb else max(_daily_peak_child_gb[pid], rss)
+            )
 
 
 def _malloc_trim_and_log(log, label):
@@ -2719,6 +2906,67 @@ def _malloc_trim_and_log(log, label):
             log(f"[mem] trimmed: rss unavailable {label}")
     except Exception:
         pass
+
+
+# TASK 21 (Director-directed, 25 Oct 2026, memory, "DAILY RETENTION"):
+# every function below is a @st.cache_data(ttl=86400) that only the
+# scheduler's own overnight sequence calls with any real frequency - the
+# scanner_engine.py universe-constituent fetchers (used to build tonight's
+# scan pool AND the Top 200 pool re-selection) and the attention-top-up
+# signal fetchers (trends_engine/news_engine/social_engine - used only
+# inside nightly_scan.run_attention_topup()). A live visitor CAN reach
+# the same functions (e.g. opening the Scanner page, or Deep Dive's
+# attention signals), but that's rare next to how often the nightly
+# sequence itself calls them, and clearing a 24h cache the day's own
+# refresh has already made stale costs that next, rare visitor at most
+# one extra fetch (1-2s) - the same one-time-re-fetch cost the module
+# docstrings on those caches already accept. NOT included: get_ticker_
+# info/get_price_history (app.py, Streamlit-only, already max_entries=
+# 2000 and genuinely shared with every live visitor all day) and
+# fetch_snapshot/portfolio_charts_engine's per-ticker caches (owner-
+# portfolio-specific, not nightly-only). Clearing an already-empty or
+# already-expired cache is a harmless no-op either way.
+_NIGHTLY_ONLY_CACHE_OWNERS = (
+    ("scanner_engine", (
+        "fetch_sp500", "fetch_sp600", "fetch_nasdaq100", "fetch_nasdaq100_invesco",
+        "fetch_russell2000", "fetch_asx200", "fetch_asx_listed_companies", "fetch_asx300",
+        "fetch_dow30", "fetch_dividend_aristocrats", "fetch_sp400", "fetch_russell1000",
+        "fetch_russell1000_wikipedia", "fetch_allords", "fetch_asx20", "fetch_asx50",
+        "fetch_asx100", "fetch_ftse100", "fetch_ftse250", "fetch_tsx60", "fetch_tsxcomposite",
+        "fetch_ftse100_ishares", "fetch_ftse250_ishares", "fetch_tsx60_ishares",
+        "fetch_tsxcomposite_ishares", "fetch_nikkei225", "fetch_topix500", "fetch_dax",
+        "fetch_cac40", "fetch_aex", "fetch_smi", "fetch_omxs30", "compute_sector_heat",
+    )),
+    ("trends_engine", ("get_google_trend_score", "get_news_trend_score")),
+    ("news_engine", ("get_news_score", "get_yahoo_news_score")),
+    ("social_engine", ("get_social_score",)),
+)
+
+
+def _clear_nightly_only_caches(log):
+    """TASK 21: called at the END of the nightly job, the 23:00 Top 200
+    selection job, and the 00:00-ish batch-ingest poll (see each call
+    site's own comment) - clears every cache in _NIGHTLY_ONLY_CACHE_
+    OWNERS above, then trims, so the memory those caches were holding
+    is actually returned to the OS before the long idle stretch until
+    tomorrow night, instead of sitting there all day (the "~0.4-0.45GB
+    all day in fastapi" this task's own evidence measured). Each
+    module's import and each individual .clear() call is independently
+    try/excepted - a missing/renamed function on either end degrades to
+    "that one cache wasn't cleared tonight", never an exception that
+    could take down the job calling this."""
+    import importlib
+    for module_name, fn_names in _NIGHTLY_ONLY_CACHE_OWNERS:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as e:
+            log(f"[scheduler] nightly-only cache clear: import {module_name} failed: {e}")
+            continue
+        for fn_name in fn_names:
+            try:
+                getattr(module, fn_name).clear()
+            except Exception as e:
+                log(f"[scheduler] nightly-only cache clear: {module_name}.{fn_name} failed: {e}")
 
 
 def _process_role():
@@ -3053,6 +3301,46 @@ def _run_top100_job_if_due(state, now, cfg, log, log_error=None):
         _release_job_lock("top100")
 
 
+def _maybe_log_daily_peak_summary(log, now=None):
+    """TASK 21 (Director-directed, 25 Oct 2026, memory, item 5):
+    extracted from _loop()'s own inline block purely so it's directly
+    testable (same "extract so it's testable" pattern this module
+    already uses for _run_top100_job_if_due() above), no behaviour
+    change from the extraction itself.
+
+    Logs one "[mem] daily peak fastapi=X streamlit=Y" line per UTC day,
+    once the clock reaches 00:05 (a 5-minute window, not an exact
+    instant, since _loop() only ticks once a minute - any minute inside
+    that window still logs exactly once, guarded by _last_daily_peak_
+    summary_date). 00:05 rather than 00:00 sharp so the nightly job's
+    own post-midnight tail (it commonly runs past 00:00 UTC - see
+    _run_nightly()'s own run_night comment) has already contributed its
+    last few samples before this reads the peak. Deliberately only
+    fires when _streamlit_subprocess_pid is set (the FastAPI process is
+    the only one that ever knows BOTH numbers); resets both trackers
+    right after logging, so tomorrow's own sampling starts clean rather
+    than carrying today's peak forward.
+
+    `now` (test seam): defaults to the real current UTC time; a test
+    passes a fixed datetime instead of needing to control the wall
+    clock."""
+    global _daily_peak_self_gb, _daily_peak_child_gb, _last_daily_peak_summary_date
+    if _streamlit_subprocess_pid is None:
+        return
+    now = now if now is not None else datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if not (now.hour == 0 and now.minute >= 5 and _last_daily_peak_summary_date != today):
+        return
+    _last_daily_peak_summary_date = today
+    _fastapi_peak = _daily_peak_self_gb
+    _streamlit_peak = _daily_peak_child_gb.get(_streamlit_subprocess_pid)
+    _fastapi_str = f"{_fastapi_peak:.2f}GB" if _fastapi_peak is not None else "unavailable"
+    _streamlit_str = f"{_streamlit_peak:.2f}GB" if _streamlit_peak is not None else "unavailable"
+    log(f"[mem] daily peak fastapi={_fastapi_str} streamlit={_streamlit_str}")
+    _daily_peak_self_gb = None
+    _daily_peak_child_gb = {}
+
+
 def _loop(log):
     global _last_heartbeat, _top100_boot_poll_attempted, _last_heartbeat_log_at
     global _last_process_mem_log_at
@@ -3107,6 +3395,12 @@ def _loop(log):
             _last_process_mem_log_at = _last_heartbeat
             _log_mem(log, f"streamlit (pid {_streamlit_subprocess_pid})", pid=_streamlit_subprocess_pid)
             _log_mem(log, "fastapi")
+        # TASK 21 (Director-directed, 25 Oct 2026, memory, item 5): see
+        # _maybe_log_daily_peak_summary()'s own docstring below - extracted
+        # from this inline block purely so it's directly testable, same
+        # "extract so it's testable" pattern this module already uses
+        # for _run_top100_job_if_due().
+        _maybe_log_daily_peak_summary(log)
         try:
             cfg = _cfg()
             if cfg["enabled"]:

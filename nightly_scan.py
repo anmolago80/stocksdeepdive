@@ -28,6 +28,7 @@ Yahoo Finance etiquette: one ticker at a time with a small sleep - the
 whole point of running overnight is that nobody is waiting.
 """
 
+import gc
 import math
 import os
 import re
@@ -2606,6 +2607,23 @@ def reprice_universe(universe, log=print, run_night=None):
             else:
                 new_rows.append(row)  # kept exactly as-is - never blanked
                 kept_stale_count += 1
+        # TASK 21 (Director-directed, 25 Oct 2026, memory): hist_by_ticker
+        # holds a yf.download() 6-month OHLCV frame per ticker in this
+        # chunk (up to REPRICE_CHUNK_SIZE=175 of them) - this pass is the
+        # single largest post-scan memory driver (a real Railway [mem]
+        # diagnostic showed fastapi climbing 0.31GB -> 1.19GB across the
+        # post-scan stages, and this is the only one of them downloading
+        # full price history rather than a small .info dict), because the
+        # scheduler calls reprice_universe() back-to-back for every real
+        # universe NOT scanned tonight (commonly 20+) with nothing freeing
+        # each one's chunk data before the next starts. Every field this
+        # loop still needs from a chunk's history is already folded into
+        # `new_rows` (plain scalars) by this point, so the chunk's own
+        # DataFrames are explicitly dropped and collected here - BEFORE
+        # the next chunk's download allocates fresh memory - rather than
+        # left for the next scheduled gc cycle to notice.
+        del hist_by_ticker
+        gc.collect()
         if i + REPRICE_CHUNK_SIZE < len(ordered_tickers):
             time.sleep(REPRICE_CHUNK_SLEEP)
 

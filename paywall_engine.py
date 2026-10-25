@@ -487,7 +487,7 @@ def _render_signin_control_inline(key, lang="en"):
 # STRIPE SUBSCRIPTION CHECK
 # -----------------------------------
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=2000)
 def is_subscribed(email):
     """
     True only if `email` has an active Stripe subscription on the
@@ -515,7 +515,7 @@ def is_subscribed(email):
         return False
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=4)
 def subscriber_count():
     """Total ACTIVE subscriptions on the configured price - the Admin
     Dashboard's "Subscribers" tile (Mega-batch Part 35.2). Same cache/

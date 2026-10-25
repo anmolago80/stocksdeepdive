@@ -485,6 +485,27 @@ def _call_with_recent_failure_memo(key, cached_fn, ticker, fallback):
 # hit - a failure is never cached, see raise_on_failure above).
 _ticker_info_failure_kind = {}
 
+# TASK 21 (Director-directed, 25 Oct 2026, memory, "STREAMLIT GROWTH"):
+# every OTHER @st.cache_data in this file (there were 16 left, besides
+# this one and get_price_history()'s own below) gets the same
+# eviction-not-correctness treatment this round, sized to its own key
+# shape rather than a single blanket number: a per-ticker/per-portfolio
+# cache (_get_cashflow_df_cached/_featured_analysis/_cached_peer_context/
+# _etf_benchmark_history) gets 400 (smaller than 2000 above - none of
+# these are hit on every single page view the way ticker info/price
+# history are, so the common-pages-never-evict margin doesn't need to be
+# as wide); a cache keyed by something with no real argument at all
+# (e.g. _load_compounder_data, the five _home_*() home-page stats,
+# _stress_index_histories, _switch_universe_options) gets max_entries=4 -
+# a small constant, not a meaningful "N entries" bound, since a function
+# with no arguments only ever has ONE possible cache key regardless of
+# the cap (same reasoning as scanner_engine.py's own fetch_<universe>()
+# fetchers - see that module's comment). The few with their own real,
+# small key space get a tailored number at their own decorator
+# (get_country_mood: currency-sized; _tape_quotes: a handful of days;
+# _stress_history_bundle: ~50 per the Director's own instruction;
+# _optimize_rebalance_weights: 100 distinct portfolio signatures).
+
 
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=2000)
 def _get_ticker_info_cached(ticker):
@@ -628,7 +649,7 @@ def _price_history_rows_for_trading_cost(ticker):
         return []
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=400)
 def _get_cashflow_df_cached(ticker):
     """
     Annual cash-flow statement, cached. Used to derive each stock's OWN
@@ -700,7 +721,7 @@ def _prefetch_scan_data(tickers, live_data, enable_social, news_api_key):
         list(_executor.map(_warm_one, tickers))
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=20)
 def get_country_mood(country, api_key=None):
     """
     Cached wrapper around mood_engine.compute_country_mood() - a rolling
@@ -870,6 +891,20 @@ def _start_background_scheduler():
 
 
 _start_background_scheduler()
+
+# TASK 21 (Director-directed, 25 Oct 2026, memory, "STREAMLIT GROWTH"):
+# UNLIKE _start_background_scheduler() above, this call is NOT wrapped in
+# @st.cache_resource - it has to run on every single rerun (every page
+# view/interaction, in every session) to keep the process-wide "last
+# activity" timestamp current; see scheduler_engine.note_streamlit_
+# activity()'s own docstring for why a plain module-level global (not
+# st.session_state) is exactly right here, and for how it starts this
+# process's one idle-trim background thread the first time it's ever
+# called. `import scheduler_engine` is cheap on every rerun - it's
+# already imported into sys.modules after the very first rerun, so this
+# is just a dict lookup, never a re-execution of that module's own code.
+import scheduler_engine
+scheduler_engine.note_streamlit_activity()
 
 
 # -----------------------------------
@@ -3091,7 +3126,7 @@ _EXAMPLE_CHIPS = [
 _FEATURED_ROTATION = ["CSL.AX", "AAPL", "BHP.AX", "RMD.AX", "MSFT", "WES.AX", "GOOGL"]
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=10)
 def _tape_quotes(day_key):
     """(label, last, pct_change) for the tape - cached 30 min; `day_key`
     keeps the cache honest across day boundaries. Any symbol that fails is
@@ -3616,7 +3651,7 @@ def _render_results_day_card(ticker):
         st.caption(i18n.t("dd.results.footer_caption", _rd_card_lang))
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False, max_entries=400)
 def _featured_analysis(ticker, day_key, valuation_hash=None):
     """Attention-lite Deep Dive for the landing page's featured card -
     cached 6h. live_data/social off keeps it fast and quota-free; the card
@@ -5076,7 +5111,7 @@ def _dd_drivers_text_numeric(contributions, lang, exclude_keys=(), base_key=None
 # -----------------------------------
 
 
-@st.cache_data
+@st.cache_data(max_entries=4)
 def _load_compounder_data():
     # _cp_data_dir() resolves to the attached Railway Volume when one
     # exists (so a prior admin rebuild's output is still here after a
@@ -7891,7 +7926,7 @@ def page_research():
     _render_email_capture_box("research", _rc_lang)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=4)
 def _home_top5_by_country():
     """Home page "Tonight's top 5" data (top5_au_us instruction): top 5
     tickers by Value Score for Australia and for the USA, each drawn from
@@ -7987,7 +8022,7 @@ def _home_top5_by_country():
     return by_country
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=4)
 def _home_featured_top10_by_country():
     """Mega-batch Part 8: top 10 (not 5) tickers by Value Score per
     country, for the featured-analysis picker below - same source and
@@ -8079,7 +8114,7 @@ def _home_featured_pick():
     return top10[turn_index % len(top10)], country
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=4)
 def _home_research_stat():
     """Part 5 home tile (Option C): live "{count} companies · latest:
     {ticker}" stat for the Hand-built Research tile. Source: the same
@@ -8101,7 +8136,7 @@ def _home_research_stat():
     return {"count": len(tickers), "latest": latest}
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=4)
 def _home_scanner_stat():
     """Part 5 home tile (Option C): live "{count} stocks · {universes}
     universes" stat for the Stock Scanner tile. Universe count is a
@@ -8123,7 +8158,7 @@ def _home_scanner_stat():
     return {"count": f"{_rounded:,}+" if _rounded else "0", "universes": _n_universes}
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=4)
 def _home_deepdive_stat():
     """Second amendment to Part 5: live "{count} tickers covered" stat for
     the new Deep Dive tile - the exact same snapshot_store.all_public_
@@ -10005,7 +10040,7 @@ def _render_reverse_dcf_card(dd):
 # (peer_context.py) - no live network call, no engine touched.
 # ---------------------------------------------------------------------
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=400)
 def _cached_peer_context(ticker):
     """A short-TTL cache around peer_context.compute() - that function
     itself is already pure local file reads (no network), but re-reading
@@ -18870,7 +18905,7 @@ def _pf_first_visit_html(lang):
 # Next-batch instruction, Part 2 - "My ETFs" tab.
 # -----------------------------------------------------------------
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=400)
 def _etf_benchmark_history(ticker):
     """Cached ~2y price history for a benchmark index (^GSPC / ^AXJO).
 
@@ -19283,7 +19318,7 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
 # Next-batch instruction, Part 3 - "Stress Test" tab.
 # -----------------------------------------------------------------
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=50)
 def _stress_history_bundle(tickers):
     """Cached bundle of each ticker's own long price history.
     stress_engine.get_long_history() already caches each ticker 24h on
@@ -19295,7 +19330,7 @@ def _stress_history_bundle(tickers):
     return {t: stress_engine.get_long_history(t) for t in tickers}
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=4)
 def _stress_index_histories():
     return {"^GSPC": stress_engine.get_long_history("^GSPC"),
             "^AXJO": stress_engine.get_long_history("^AXJO")}
@@ -19588,7 +19623,7 @@ def _largest_remainder_round(pct_dict, decimals=1, target=100.0):
     return {k: v / scale for k, v in result.items()}
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=100)
 def _optimize_rebalance_weights(tickers_sig, _histories, n_samples=3000, seed=0):
     """Real (non-synthetic) search for three reference points over the
     tickers in `tickers_sig`, using the exact same historical-replay
@@ -21558,7 +21593,7 @@ def _switch_correlation_vs_rest(candidate_ticker, exclude_hkey, _holdings, _anal
         return None
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=4)
 def _switch_universe_options():
     """Fix #3b, 2nd addendum ("easy input"): the searchable "New
     opportunity" picker's option list - ticker + company name, straight

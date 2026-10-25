@@ -86,6 +86,14 @@ check("a libc object with no malloc_trim attribute never raises either", _raised
 # ---------------------------------------------------------------------
 # Call-site wiring: once per universe in _run_nightly() (success AND
 # failure paths), never inside the per-ticker loop itself.
+#
+# TASK 21 (Director-directed, 25 Oct 2026, memory): _run_nightly() now
+# also trims after every post-scan stage (sector top-up, each attention
+# top-up universe, the alert extra pass, send_batched_notifications,
+# each reprice-pass universe, and the end-of-run nightly-only cache
+# clear). This single-universe scenario (no attention-lite flag set,
+# nothing left to reprice, no breaker trip) exercises exactly 5 of
+# those labels - see each check below for the full expected list.
 # ---------------------------------------------------------------------
 _fake_payload = {"rows": [{"Ticker": "TEST.AX", "Sector": "Industrials"}], "attention_lite": False}
 _trim_calls = []
@@ -105,8 +113,12 @@ with mock.patch.object(nightly_scan, "run_universe_scan", return_value=_fake_pay
          mock.patch.object(insider_engine, "refresh_universe", return_value=None):
         sched._run_nightly({"universes": ["ASX 200"]}, log=lambda *a, **k: None, run_night="2026-10-10")
 
-check("_run_nightly() on a successful scan calls _malloc_trim_and_log() exactly once "
-      "(once per universe, not once per ticker)", _trim_calls == ["after scan ASX 200"])
+check("_run_nightly() on a successful scan calls _malloc_trim_and_log() once per universe "
+      "scanned, plus once per post-scan stage this scenario exercises (TASK 21)",
+      _trim_calls == [
+          "after scan ASX 200", "after sector top-up", "after alert extra pass",
+          "after send_batched_notifications", "after nightly-only cache clear",
+      ])
 
 _trim_calls_fail = []
 with mock.patch.object(nightly_scan, "run_universe_scan", side_effect=RuntimeError("boom")), \
@@ -116,8 +128,12 @@ with mock.patch.object(nightly_scan, "run_universe_scan", side_effect=RuntimeErr
      mock.patch.object(sched, "_malloc_trim_and_log",
                         side_effect=lambda log, label: _trim_calls_fail.append(label)):
     sched._run_nightly({"universes": ["ASX 200"]}, log=lambda *a, **k: None, run_night="2026-10-10")
-check("_run_nightly() on a FAILED scan also calls _malloc_trim_and_log() exactly once",
-      _trim_calls_fail == ["after scan ASX 200 (failed)"])
+check("_run_nightly() on a FAILED scan also trims once per post-scan stage this "
+      "scenario exercises (TASK 21) - a failed scan doesn't skip them",
+      _trim_calls_fail == [
+          "after scan ASX 200 (failed)", "after sector top-up", "after alert extra pass",
+          "after send_batched_notifications", "after nightly-only cache clear",
+      ])
 
 # ---------------------------------------------------------------------
 # Call-site wiring: after Top 200 batch ingest, and after submit.

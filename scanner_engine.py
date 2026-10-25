@@ -440,7 +440,16 @@ def _get(url):
     return resp.text
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+# TASK 21 (Director-directed, 25 Oct 2026, memory): every fetch_<universe>()
+# constituent fetcher below takes NO arguments, so each one's own
+# st.cache_data store only ever has exactly ONE possible key - max_entries=4
+# (a small constant, not "one per universe" - that would only matter for a
+# single function keyed BY universe, which none of these are) just gives a
+# tiny buffer for Streamlit's own cache-key bookkeeping, not because more
+# than one entry is ever reachable. None of these had a cap before this task
+# (70 app-wide uncapped @st.cache_data(ttl=86400) functions, per the
+# Director's own count); this round caps every one of them.
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_sp500():
     try:
         html = _get(SP500_WIKI_URL)
@@ -449,7 +458,7 @@ def fetch_sp500():
     return _parse_table(html, ["symbol", "ticker"], ["gics sector", "sector"], _normalize_us_ticker, min_rows=400)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_sp600():
     try:
         html = _get(SP600_WIKI_URL)
@@ -521,7 +530,7 @@ def _safe_read_html(html_text):
         return []
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_nasdaq100():
     try:
         html = _get(NASDAQ100_WIKI_URL)
@@ -545,7 +554,7 @@ NASDAQ100_INVESCO_CSV_URL = (
 )
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_nasdaq100_invesco():
     """Fix 10 fallback #2 for Nasdaq 100 - see NASDAQ100_INVESCO_CSV_URL's
     comment for the live-verification caveat. Because the exact header
@@ -719,7 +728,7 @@ def _clean_ishares_holdings_df(raw, min_rows=1, max_rows=None, normalize_fn=None
     return df[["Ticker", "Sector"]].drop_duplicates(subset="Ticker").reset_index(drop=True)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_russell2000():
     """Best-effort LIVE attempt only. iShares publishes IWM's full holdings
     as a downloadable CSV; the export has several metadata rows before
@@ -919,7 +928,7 @@ def _check_asx200(df):
     return checks
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_asx200():
     """Public wrapper - every OTHER function in this module (and
     _AU_CONTAINMENT_CHAIN below) calls this, never _fetch_asx200_raw()
@@ -1430,7 +1439,7 @@ def _check_asx_listed_companies(df, df200):
     return checks
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_asx_listed_companies():
     """Public wrapper around _fetch_asx_listed_companies_raw() - every
     OTHER function in this module calls this, never the raw fetcher
@@ -1849,7 +1858,7 @@ _ASX300_TAIL_SIZE = 100
 _ALLORDS_TAIL_SIZE = 200
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_asx300():
     """
     Rebuilt (20 Sep 2026) as a nested slice of ONE ranking, not a
@@ -1898,7 +1907,7 @@ def fetch_asx300():
 # caveat that applies to every fetcher below.
 # -----------------------------------------------------------------
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_dow30():
     """Dow Jones Industrial Average's own Wikipedia article carries the
     30-component table directly (no separate "List of..." page exists
@@ -1917,7 +1926,7 @@ def fetch_dow30():
                          _normalize_us_ticker, min_rows=25, max_rows=35)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_dividend_aristocrats():
     """Part 34.4: S&P 500 Dividend Aristocrats' own Wikipedia article -
     "Ticker symbol / Company / Sector" table, same _parse_table() pattern
@@ -1933,7 +1942,7 @@ def fetch_dividend_aristocrats():
                          _normalize_us_ticker, min_rows=55, max_rows=85)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_sp400():
     try:
         html = _get(SP400_WIKI_URL)
@@ -1997,7 +2006,7 @@ def _r1k_from_disk_cache():
     return None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_russell1000():
     """Best-effort LIVE attempt only - mirrors fetch_russell2000() exactly
     (same iShares CSV-export mechanism, same browser-like headers + one
@@ -2021,7 +2030,7 @@ def fetch_russell1000():
     return out
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_russell1000_wikipedia():
     """Part 52.1 fallback #2 for Russell 1000, tried after the live iShares
     IWB export fails: Wikipedia's dedicated "List of Russell 1000
@@ -2079,7 +2088,7 @@ def _resolve_russell1000():
     return None, "Web scrape unavailable"
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_allords():
     """All Ordinaries (~500 names, effectively "every ASX company big
     enough to be liquid"). Rebuilt (20 Sep 2026) the same way
@@ -2115,7 +2124,7 @@ def fetch_allords():
     return _asx_backfill_missing_subset_tickers(df, df300, "All Ordinaries", "ASX 300")
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_asx20():
     try:
         html = _get(ASX20_WIKI_URL)
@@ -2125,7 +2134,7 @@ def fetch_asx20():
                          _normalize_asx_ticker, min_rows=15, max_rows=25)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_asx50():
     try:
         html = _get(ASX50_WIKI_URL)
@@ -2136,7 +2145,7 @@ def fetch_asx50():
     return _asx_backfill_missing_subset_tickers(df, fetch_asx20(), "ASX 50", "ASX 20")
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_asx100():
     """No dedicated live constituent-table source could be confirmed for
     this one (see ASX100_WIKI_URL's comment) - tried anyway since it's
@@ -2194,7 +2203,7 @@ TSX60_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_60"
 TSX_COMPOSITE_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_Composite_Index"
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_ftse100():
     try:
         html = _get(FTSE100_WIKI_URL)
@@ -2204,7 +2213,7 @@ def fetch_ftse100():
                         _normalize_lse_ticker, min_rows=80, max_rows=110)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_ftse250():
     try:
         html = _get(FTSE250_WIKI_URL)
@@ -2214,7 +2223,7 @@ def fetch_ftse250():
                         _normalize_lse_ticker, min_rows=200, max_rows=280)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_tsx60():
     try:
         html = _get(TSX60_WIKI_URL)
@@ -2224,7 +2233,7 @@ def fetch_tsx60():
                         _normalize_tsx_ticker, min_rows=45, max_rows=65)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_tsxcomposite():
     """No dedicated live constituent-TABLE source could be confirmed for
     the full ~230-name TSX Composite from this sandbox (same "tried
@@ -2491,22 +2500,22 @@ def _fetch_ishares_fund_holdings(url, normalize_fn, min_rows=1, max_rows=None):
     return _clean_ishares_holdings_df(raw, min_rows=min_rows, max_rows=max_rows, normalize_fn=normalize_fn)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_ftse100_ishares():
     return _fetch_ishares_fund_holdings(ISF_HOLDINGS_CSV_URL, _normalize_lse_ticker, min_rows=1, max_rows=200)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_ftse250_ishares():
     return _fetch_ishares_fund_holdings(MIDD_HOLDINGS_CSV_URL, _normalize_lse_ticker, min_rows=1, max_rows=400)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_tsx60_ishares():
     return _fetch_ishares_fund_holdings(XIU_HOLDINGS_CSV_URL, _normalize_tsx_ticker, min_rows=1, max_rows=120)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_tsxcomposite_ishares():
     return _fetch_ishares_fund_holdings(XIC_HOLDINGS_CSV_URL, _normalize_tsx_ticker, min_rows=1, max_rows=400)
 
@@ -2665,7 +2674,7 @@ _TOPIX_CODE_COLUMN_HINTS = ("コード", "code", "ticker", "symbol")
 _TOPIX_MIN_ROWS = 400
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_nikkei225():
     """Director addendum 2, Part 2, item 2 (3 Oct 2026): rewritten
     against the REAL page shape the Director verified directly -
@@ -2749,7 +2758,7 @@ def _topix_size_group(cell):
     return None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_topix500():
     """Director addendum 2, Part 2, item 2 (3 Oct 2026): rewritten
     against the REAL discovery mechanism the Director verified directly
@@ -3450,7 +3459,7 @@ def _normalize_nasdaq_stockholm_ticker(ticker):
     return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "NASDAQ_STOCKHOLM")
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_dax():
     """DAX (Germany, 40 constituents since the 2021 expansion) -
     Wikipedia's own constituents table. UNVERIFIED against a real
@@ -3463,7 +3472,7 @@ def fetch_dax():
                         _normalize_xetra_ticker, min_rows=35, max_rows=45)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_cac40():
     """CAC 40 (France, 40 constituents) - Wikipedia's own constituents
     table. UNVERIFIED against a real response - see this section's own
@@ -3476,7 +3485,7 @@ def fetch_cac40():
                         _normalize_euronext_paris_ticker, min_rows=35, max_rows=45)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_aex():
     """AEX (Netherlands, 25 constituents) - Wikipedia's own
     constituents table. UNVERIFIED against a real response - see this
@@ -3489,7 +3498,7 @@ def fetch_aex():
                         _normalize_euronext_amsterdam_ticker, min_rows=20, max_rows=30)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_smi():
     """SMI (Switzerland, 20 constituents) - Wikipedia's own
     constituents table. UNVERIFIED against a real response - see this
@@ -3502,7 +3511,7 @@ def fetch_smi():
                         _normalize_six_ticker, min_rows=18, max_rows=22)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_omxs30():
     """OMX Stockholm 30 (Sweden, 30 constituents) - Wikipedia's own
     constituents table. UNVERIFIED against a real response - see this
@@ -4059,7 +4068,13 @@ def _heat_download_ticker_data(tickers):
     return out
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+#  TASK 21 (Director-directed, 25 Oct 2026, memory): this one IS keyed by
+# its own argument (ticker_sector_pairs - effectively "which universe"),
+# unlike the zero-arg fetchers above, so max_entries=50 is a real per-
+# universe bound (comfortably over every real universe this app has, with
+# room for the occasional distinct max_per_sector variant), not a cosmetic
+# constant.
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=50)
 def compute_sector_heat(ticker_sector_pairs, max_per_sector=25):
     """
     ticker_sector_pairs: a hashable tuple of (ticker, sector) pairs (so the

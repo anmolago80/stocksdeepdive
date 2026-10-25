@@ -38,7 +38,7 @@ import portfolio_health_engine as phe
 # Shared long-range history fetch
 # ---------------------------------------------------------------------
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=500)
 def fetch_history_from(ticker, start_date_iso):
     """Daily OHLCV for `ticker` from start_date_iso to today. Separate
     from portfolio_health_engine.fetch_snapshot()'s own history (a fixed
@@ -211,7 +211,7 @@ def compute_value_vs_index_series(holdings):
 # 3. Dividends - actually received vs potential
 # ---------------------------------------------------------------------
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=500)
 def fetch_dividend_history(ticker):
     """Per-share dividend payment history (ex-dividend date -> amount),
     same source (`yf.Ticker(...).dividends`) fundamentals_data.py already
@@ -240,7 +240,7 @@ def fetch_dividend_history(ticker):
     return d
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=500)
 def fetch_next_ex_dividend(ticker):
     """Next ex-dividend date if Yahoo has one on file AND it's in the
     future - a past exDividendDate (Yahoo keeps the most recent one on

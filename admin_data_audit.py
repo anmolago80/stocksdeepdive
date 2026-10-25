@@ -689,7 +689,7 @@ def check_mer(tickers=None):
     return out
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=10)
 def run_all_checks(_cache_bust=0):
     """Runs every check once, paced, and caches the combined result for
     30 minutes so a re-click within that window costs zero new Yahoo

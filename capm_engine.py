@@ -200,7 +200,11 @@ UK_CA_RISK_FREE_MIN = 0.005
 UK_CA_RISK_FREE_MAX = 0.12
 
 
-@st.cache_data(ttl=10800, show_spinner=False)
+#  TASK 21 (Director-directed, 25 Oct 2026, memory): keyed by `currency` -
+# a small, fixed set of real-world currency codes this app ever passes
+# (AUD/USD/GBP/CAD/JPY/EUR/CHF/SEK/...) - max_entries=20 comfortably covers
+# every one with room to spare, never evicting a currency still in use.
+@st.cache_data(ttl=10800, show_spinner=False, max_entries=20)
 def get_risk_free_rate(currency):
     """Live 10-year government bond yield for a currency, for use as the
     CAPM risk-free rate. Returns (rate, source) where source is "live" or
@@ -668,7 +672,7 @@ def _log_au_risk_free_metadata_rows_once(rows):
         pass
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def get_au_risk_free_rate_live():
     """Best-effort live AU 10-year government bond yield from the RBA's
     own published table F2, cached once a day (a daily series - no
@@ -840,7 +844,7 @@ _BOE_REQUEST_HEADERS = {
 }
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def get_uk_risk_free_rate_live():
     """Best-effort live UK 10-year gilt yield from the Bank of England's
     own IADB CSV export (series IUDMNZC), cached once a day (a daily
@@ -982,7 +986,7 @@ def _fetch_boc_valet_once():
     return best_rate, best_date, None, False
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def get_ca_risk_free_rate_live():
     """Best-effort live Canada 10-year government bond yield from the
     Bank of Canada's own Valet API (series BD.CDN.10YR.DQ.YLD), cached
@@ -1111,7 +1115,7 @@ JP_RISK_FREE_MAX = 0.08
 JP_RISK_FREE_FALLBACK = {"JPY": 0.017}
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def get_jp_risk_free_rate_live():
     """Best-effort live Japan 10-year government bond yield from the
     Ministry of Finance's own published JGB CSV, cached once a day (a
@@ -1348,7 +1352,7 @@ def reset_eu_risk_free_run_cache():
     _EU_RISK_FREE_RUN_CACHE["value"] = None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def get_eu_risk_free_rate_live():
     """Best-effort live euro-area 10-year government bond yield proxy
     from the ECB's own SDW (see this section's own module comment for
@@ -1628,7 +1632,7 @@ def reset_chf_risk_free_run_cache():
     _CHF_RISK_FREE_RUN_CACHE["value"] = None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def get_chf_risk_free_rate_live():
     """Best-effort live Swiss 10-year Confederation bond yield from
     the SNB data portal (see this section's own module comment for
@@ -1799,7 +1803,7 @@ def reset_sek_risk_free_run_cache():
     _SEK_RISK_FREE_RUN_CACHE["value"] = None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def get_sek_risk_free_rate_live():
     """Best-effort live Swedish 10-year government bond yield from the
     Riksbank's own SWEA API (see this section's own module comment for

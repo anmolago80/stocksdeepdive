@@ -27,7 +27,7 @@ def _get_api_key():
 API_KEY = _get_api_key()
 
 
-@st.cache_data(ttl=10800, show_spinner=False)
+@st.cache_data(ttl=10800, show_spinner=False, max_entries=400)
 def get_news_score(keyword, api_key=None):
     """
     Article count from NewsAPI for a free-text keyword search - `keyword`
@@ -79,7 +79,7 @@ def get_news_score(keyword, api_key=None):
         return 0
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=400)
 def get_yahoo_news_score(ticker):
     """
     Article count from Yahoo Finance via yfinance (already a dependency of
