@@ -1320,6 +1320,11 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
             if to_reprice:
                 log(f"[scheduler] reprice pass: {len(to_reprice)} universe(s) not scanned "
                     f"tonight ({', '.join(to_reprice)})")
+                # TASK 21b (Director-directed, 26 Oct 2026, DIAGNOSE
+                # ONLY): MEM_DIAG=1 only - see _memdiag_snapshot_and_
+                # log()'s own docstring. A no-op (not even a function
+                # call cost worth noting) with the switch off.
+                _memdiag_snapshot_and_log(log, "before reprice pass")
                 for universe in to_reprice:
                     try:
                         nightly_scan.reprice_universe(universe, log=log, run_night=run_night)
@@ -1344,6 +1349,9 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                     # the whole pass before the first trim.
                     _log_mem(log, f"after reprice {universe}")
                     _malloc_trim_and_log(log, f"after reprice {universe}")
+                    # TASK 21b (DIAGNOSE ONLY, MEM_DIAG=1 only): one of
+                    # the Director's own 3 named checkpoints.
+                    _memdiag_snapshot_and_log(log, f"after reprice {universe}")
             else:
                 log("[scheduler] reprice pass: every real universe was scanned tonight, nothing to reprice")
         except Exception as e:
@@ -1374,6 +1382,9 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
     _clear_nightly_only_caches(log)
     _log_mem(log, "after nightly-only cache clear")
     _malloc_trim_and_log(log, "after nightly-only cache clear")
+    # TASK 21b (Director-directed, 26 Oct 2026, DIAGNOSE ONLY): the
+    # third of the Director's own 3 named checkpoints, MEM_DIAG=1 only.
+    _memdiag_snapshot_and_log(log, "after nightly-only cache clear")
 
 
 # Fix 8c, AI fixes round 2 (2026-08-31): derived universes (no scan slot
@@ -2967,6 +2978,157 @@ def _clear_nightly_only_caches(log):
                 getattr(module, fn_name).clear()
             except Exception as e:
                 log(f"[scheduler] nightly-only cache clear: {module_name}.{fn_name} failed: {e}")
+
+
+# ======================================================================
+# TASK 21b (Director-directed, 26 Oct 2026) - DIAGNOSE ONLY, no
+# behaviour change. TASK 21's own per-universe trims (above) work - the
+# Railway evidence shows them succeeding - but the post-trim FLOOR still
+# ratchets up universe by universe during the reprice pass specifically
+# (0.41 -> 0.50 -> ... -> 0.68GB), then fastapi holds ~0.70GB all day.
+# malloc_trim(0) can only return heap arenas the process has already
+# FREED (no live Python reference left) back to the OS - it does
+# nothing for memory still genuinely REFERENCED by some live object
+# somewhere. This instrumentation exists to find THAT object: who is
+# still holding a reference, and from where, after TASK 21's own del +
+# gc.collect() + trim have already run.
+#
+# Gated entirely on MEM_DIAG=1 (default off) - _memdiag_enabled() is
+# checked FIRST in every function below, before tracemalloc is ever
+# imported or started, so with the switch off this section has exactly
+# zero effect: no import, no tracemalloc.start(), no snapshot, no
+# [memdiag] line, nothing. The owner sets MEM_DIAG=1 for one night; the
+# Director reads the [memdiag] lines from that run and decides the fix
+# - no fix is implemented by this task itself.
+# ======================================================================
+_MEMDIAG_TOP_N = 15
+_memdiag_started = False
+_memdiag_last_snapshot = None
+
+
+def _memdiag_enabled():
+    """Re-read every call (not cached at import time) - a container
+    env var can change between a redeploy and this process's next
+    nightly run, and re-reading costs nothing."""
+    return os.environ.get("MEM_DIAG", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _memdiag_start():
+    """Idempotent per process. tracemalloc.start(25) captures 25 frames
+    per traceback (the stdlib default is 1) - deep enough to see past
+    this module's own call sites and nightly_scan's into the real
+    allocating frame inside pandas/yfinance, which is usually where the
+    interesting answer is. A no-op if MEM_DIAG isn't set, or if this
+    process already started tracemalloc."""
+    global _memdiag_started
+    if not _memdiag_enabled() or _memdiag_started:
+        return
+    import tracemalloc
+    tracemalloc.start(25)
+    _memdiag_started = True
+
+
+def _memdiag_container_sizes(log, label):
+    """Logs len() + a shallow sys.getsizeof() estimate for every
+    module-level dict/list/set found in nightly_scan/scan_store/
+    snapshot_store/scheduler_engine (found by introspection - dir() +
+    isinstance - rather than a hardcoded list, so a container added to
+    any of these modules later is picked up automatically, with no
+    second edit needed here) - the Director's own named target modules.
+    Also inspects yfinance's own process-wide state: the shared module's
+    four dicts (_DFS/_ERRORS/_TRACEBACKS/_ISINS - populated by download()
+    in some yfinance versions, never cleared by this codebase) and the
+    YfData singleton's cache_get() lru_cache stats (bounded at maxsize=
+    64, but every entry holds a full cached requests.Response this
+    codebase never evicts early - currsize/maxsize shows how full it
+    runs). sys.getsizeof() is intentionally SHALLOW (the size of the
+    container itself, not what it holds) - exactly what the Director's
+    own instruction asked for; a shallow len() + getsizeof() is enough
+    to show WHICH container is growing, even though it understates a
+    dict-of-DataFrames' true retained size (tracemalloc's own traceback-
+    based numbers above are what actually quantifies that)."""
+    import sys
+    import nightly_scan
+    import scan_store
+    import snapshot_store
+
+    for mod_name, mod in (
+        ("nightly_scan", nightly_scan), ("scan_store", scan_store),
+        ("snapshot_store", snapshot_store), ("scheduler_engine", sys.modules[__name__]),
+    ):
+        for attr_name in dir(mod):
+            if attr_name.startswith("__"):
+                continue
+            try:
+                val = getattr(mod, attr_name)
+            except Exception:
+                continue
+            if isinstance(val, (dict, list, set)):
+                try:
+                    log(f"[memdiag] {label}: {mod_name}.{attr_name} len={len(val)} "
+                        f"getsizeof~{sys.getsizeof(val)}B")
+                except Exception:
+                    pass
+
+    try:
+        import yfinance.shared as _yf_shared
+        for attr_name in ("_DFS", "_ERRORS", "_TRACEBACKS", "_ISINS"):
+            val = getattr(_yf_shared, attr_name, None)
+            if val is not None:
+                log(f"[memdiag] {label}: yfinance.shared.{attr_name} len={len(val)} "
+                    f"getsizeof~{sys.getsizeof(val)}B")
+    except Exception as e:
+        log(f"[memdiag] {label}: yfinance.shared inspection failed: {e}")
+
+    try:
+        import yfinance.data as _yf_data
+        _info = _yf_data.YfData.cache_get.cache_info()
+        log(f"[memdiag] {label}: yfinance.data.YfData.cache_get lru_cache "
+            f"hits={_info.hits} misses={_info.misses} "
+            f"currsize={_info.currsize} maxsize={_info.maxsize}")
+    except Exception as e:
+        log(f"[memdiag] {label}: yfinance.data.YfData.cache_get inspection failed: {e}")
+
+
+def _memdiag_snapshot_and_log(log, label):
+    """MEM_DIAG=1 only (checked first - every other line in this
+    function is unreachable with the switch off). Takes a tracemalloc
+    snapshot and diffs it against the LAST snapshot THIS PROCESS took
+    (module-level _memdiag_last_snapshot), so each call's own [memdiag]
+    lines show what grew SINCE the previous checkpoint (the Director's
+    own "before the reprice pass / after each reprice universe / after
+    the nightly-only cache clear" checkpoints), not since process boot.
+    Logs the top _MEMDIAG_TOP_N allocation sites by retained-size
+    growth (tracemalloc.Snapshot.compare_to() already sorts descending
+    by size_diff - verified directly, not assumed), each as one
+    "[memdiag] <label>: <file>:<line> size=X (+Y) count=N (+M)" line.
+    The very first call in a process has no prior snapshot to diff
+    against, so it logs the top N by absolute size instead, labelled
+    "(baseline)". Also logs tracemalloc's own current/peak traced-
+    memory totals (lets the Director tell apart "real growing Python
+    objects" - what tracemalloc sees - from pure C-allocator/glibc
+    arena fragmentation that malloc_trim can't reclaim and tracemalloc
+    can't see either, since that's memory Python itself already
+    considers freed)."""
+    global _memdiag_last_snapshot
+    if not _memdiag_enabled():
+        return
+    _memdiag_start()
+    import tracemalloc
+    current, peak = tracemalloc.get_traced_memory()
+    log(f"[memdiag] {label}: tracemalloc current={current / 1e6:.1f}MB peak={peak / 1e6:.1f}MB")
+    snapshot = tracemalloc.take_snapshot()
+    if _memdiag_last_snapshot is not None:
+        diffs = snapshot.compare_to(_memdiag_last_snapshot, "lineno")
+        for stat in diffs[:_MEMDIAG_TOP_N]:
+            log(f"[memdiag] {label}: {stat.traceback} size={stat.size} "
+                f"(+{stat.size_diff}) count={stat.count} (+{stat.count_diff})")
+    else:
+        for stat in snapshot.statistics("lineno")[:_MEMDIAG_TOP_N]:
+            log(f"[memdiag] {label} (baseline, no prior snapshot to diff): "
+                f"{stat.traceback} size={stat.size} count={stat.count}")
+    _memdiag_last_snapshot = snapshot
+    _memdiag_container_sizes(log, label)
 
 
 def _process_role():
