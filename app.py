@@ -15114,6 +15114,13 @@ def page_scanner():
             st.session_state["scan_stocks"] = _tickers
             st.session_state["scan_universe_source"] = f"{universe} - {_source}"
             st.session_state["scan_scan_country"] = universe_country
+            # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-
+            # listed"): the bare universe NAME, separate from the
+            # human-readable "{universe} - {source}" label above - lets
+            # _render_scan_results() look up this universe's own saved
+            # scan for its "Home Country" field (see that function's
+            # own comment) without parsing a free-text label back apart.
+            st.session_state["scan_universe_name"] = universe
             st.session_state["scan_fresh"] = True
             # A manual Run Scan is a deliberate, distinct action - clear
             # any earlier natural-language translation caption so it never
@@ -15471,6 +15478,10 @@ def _comparison_row_from_saved_scan(ticker):
 
     return {
         "Ticker": ticker,
+        # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-listed"):
+        # same passthrough as every other field in this dict - None for
+        # every ticker outside that one universe's own saved scan.
+        "Home Country": row.get("Home Country"),
         "Type": stock_type or "-",
         "Type Source": "-",
         "Holding Period": get_holding_period(stock_type) if stock_type else "-",
@@ -15868,6 +15879,28 @@ def _render_scan_results(page_label, state_prefix, empty_message,
     _scan_show_ccy = _scanner_presentation_visible()
     _fresh_scan = st.session_state.pop(f"{state_prefix}_fresh", False)
     stocks = st.session_state.get(f"{state_prefix}_stocks")
+    # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-listed"): a
+    # cheap disk read (scan_store.load_scan_raw(), same mechanism the
+    # Comparison tool's own saved-scan fallback already uses) of
+    # whichever universe was last Run-Scan'ned, if any - builds a
+    # ticker -> Home Country lookup so the live per-ticker loop below
+    # can label a non-US-domiciled company's row, same "Home Country"
+    # field nightly_scan.run_universe_scan() stores on the raw scan
+    # row for exactly one universe today (every other universe's scan
+    # has nothing here, so this dict is simply empty for them - no
+    # behaviour change for anything but that one universe). Comparison
+    # (state_prefix == "cmp") has no universe at all, so this key is
+    # always absent there and the lookup is always empty - unaffected.
+    _scan_universe_name = st.session_state.get(f"{state_prefix}_universe_name")
+    _home_country_by_ticker = {}
+    if _scan_universe_name:
+        try:
+            _scan_payload = scan_store.load_scan_raw(_scan_universe_name, allow_private=True)
+            for _hc_row in (_scan_payload or {}).get("rows") or []:
+                if _hc_row.get("Home Country"):
+                    _home_country_by_ticker[_hc_row.get("Ticker")] = _hc_row["Home Country"]
+        except Exception:
+            pass
     universe_source = st.session_state.get(f"{state_prefix}_universe_source", "")
     scan_country = st.session_state.get(f"{state_prefix}_scan_country", default_country)
 
@@ -16410,6 +16443,12 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 data.append({
 
                     "Ticker": ticker,
+                    # TASK 22 (Director-directed, 27 Oct 2026, "Foreign
+                    # US-listed"): None for every ticker outside that
+                    # one universe's own saved scan (_home_country_by_
+                    # ticker is built empty otherwise - see this
+                    # function's own top-of-function comment).
+                    "Home Country": _home_country_by_ticker.get(ticker),
                     "Type": stock_type,
                     "Type Source": stock_type_src,
                     "Holding Period": holding_period,
@@ -16907,6 +16946,19 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                             when=r.get("_saved_scan_as_of") or "-",
                         ))
                         + "</div>"
+                    )
+                # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-
+                # listed"): a small label under the ticker showing the
+                # company's home country, for a non-US-domiciled company
+                # listed on NYSE/Nasdaq/NYSE American - exactly the one
+                # universe that carries a "Home Country" row field at
+                # all (nightly_scan.run_universe_scan()'s own passthrough
+                # - see that function's own comment); every other row,
+                # every other universe, has nothing here, same as today.
+                if r.get("Home Country"):
+                    _cmp_tk_cell += (
+                        "<div style='font-size:11px;color:#8aa0b8;font-weight:400;'>"
+                        + html.escape(r["Home Country"]) + "</div>"
                     )
                 _cmp_ccy = fcf_valuation_engine.trading_currency_for(_cmp_tk) if _scan_show_ccy else None
                 _row_html = (

@@ -64,7 +64,27 @@ from datetime import datetime, timezone
 # stay Top-200-EXCLUDED regardless - is_top200_excluded()'s own non-
 # US/non-AU derivation is completely untouched by this commit, exactly
 # as it already was for FTSE/TSX above.
-_DEFAULT_PRIVATE_UNIVERSES = "Nikkei 225, TOPIX 500"
+# TASK 22 (Director-directed, 27 Oct 2026): "Foreign US-listed" added
+# private from the start - TEST STAGE ONLY, per this task's own item 3
+# ("add to _DEFAULT_PRIVATE_UNIVERSES AND to the TOP200_EXCLUDED_
+# UNIVERSES defaults... going live later = the owner edits those two
+# env vars only, after approval - no code change"). UNLIKE Japan/the
+# five European markets above, this one is also a USA_UNIVERSES member
+# (country USA, for scan-table/currency purposes), so it needs its own
+# explicit exclusion in top100_engine.is_top200_excluded() too - that
+# function's own non-US/non-AU derivation would NOT exclude a USA_
+# UNIVERSES member on its own; see that function's own comment.
+#
+# IMPORTANT for whoever edits PRIVATE_UNIVERSES/TOP200_EXCLUDED_
+# UNIVERSES on Railway: both are ALREADY set as explicit environment
+# variables there (not unset), which means a set value OVERRIDES this
+# code default entirely, in both directions - setting either env var
+# at all means this default never applies. Going live (or keeping this
+# private during the test stage) therefore needs an explicit edit to
+# BOTH live Railway values, appending "Foreign US-listed" to each
+# one's current comma-separated list - this code default alone is not
+# sufficient while either env var stays set to something else.
+_DEFAULT_PRIVATE_UNIVERSES = "Nikkei 225, TOPIX 500, Foreign US-listed"
 
 
 def _private_universe_set():

@@ -169,10 +169,18 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
     if exchange in _EUROPEAN_EXCHANGE_SUFFIX:
         suffix = _EUROPEAN_EXCHANGE_SUFFIX[exchange]
         return f"{_lse_stem(raw)}{suffix}"
+    # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-listed"): a
+    # foreign-domiciled company listed directly on NYSE/Nasdaq/NYSE
+    # American carries no Yahoo COUNTRY suffix at all (unlike every
+    # exchange above) - its Yahoo symbol is just the US ticker itself,
+    # dots hyphenated the same way every other exchange's own stem rule
+    # already does (e.g. "BRK.B" -> "BRK-B").
+    if exchange == "US":
+        return raw.replace(".", "-")
 
     raise ValueError(
         f"to_yahoo_symbol: unknown exchange {exchange!r} - expected 'LSE', 'TSX', 'TSE', "
-        "'XETRA', 'EURONEXT_PARIS', 'EURONEXT_AMSTERDAM', 'SIX' or 'NASDAQ_STOCKHOLM'"
+        "'XETRA', 'EURONEXT_PARIS', 'EURONEXT_AMSTERDAM', 'SIX', 'NASDAQ_STOCKHOLM' or 'US'"
     )
 
 

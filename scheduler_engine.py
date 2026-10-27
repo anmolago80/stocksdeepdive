@@ -453,7 +453,15 @@ _DEFAULT_NIGHTLY_UNIVERSES = (
     "FTSE 100:sun, FTSE 250:sun, TSX 60:tue, TSX Composite:tue, "
     # Stage 1 Japan, Commit B - also private. Every entry above
     # (Stage 1b's own included) is unchanged.
-    "Nikkei 225:mon, TOPIX 500:fri"
+    "Nikkei 225:mon, TOPIX 500:fri, "
+    # TASK 22 (Director-directed, 27 Oct 2026): "Foreign US-listed" -
+    # also private (scan_store._DEFAULT_PRIVATE_UNIVERSES) and Top-200-
+    # excluded (top100_engine._TOP200_EXTRA_EXCLUDED_WHEN_UNSET) by
+    # default, TEST STAGE ONLY. Weekly, Wednesday - same cadence
+    # tier/day as Small Caps (S&P 600) above; sharing a weekday slot
+    # with another universe is normal (both are simply due that night,
+    # scanned in sequence - see _scan_priority_key()'s own docstring).
+    "Foreign US-listed:wed"
 )
 
 _WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}

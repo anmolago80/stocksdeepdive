@@ -1481,6 +1481,17 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
         for _tk, _sec in zip(pool_df["Ticker"], pool_df["Sector"]):
             if isinstance(_sec, str) and _sec.strip():
                 _sector_by_ticker[_tk] = _sec.strip()
+    # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-listed"):
+    # same pattern as _sector_by_ticker above - scanner_engine.
+    # fetch_foreign_us_listed() is the only fetcher whose pool_df
+    # carries a "Home Country" column at all, so this is an empty dict
+    # (and row["Home Country"] stays unset, exactly as it already is
+    # for every other universe) for every universe except this one.
+    _home_country_by_ticker = {}
+    if "Home Country" in pool_df.columns:
+        for _tk, _hc in zip(pool_df["Ticker"], pool_df["Home Country"]):
+            if isinstance(_hc, str) and _hc.strip():
+                _home_country_by_ticker[_tk] = _hc.strip()
     if not tickers:
         log(f"[nightly_scan] {universe}: no tickers resolved ({source})")
         return None
@@ -1688,6 +1699,15 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                         row["Sector"] = _yahoo_sector_fallback or _sector_by_ticker.get(t)
                     else:
                         row["Sector"] = _sector_by_ticker.get(t) or _yahoo_sector_fallback
+                    # TASK 22 (Director-directed, 27 Oct 2026, "Foreign
+                    # US-listed"): same passthrough as Sector above, but
+                    # with no Yahoo-info fallback - a company's country
+                    # of domicile isn't something yfinance's own .info
+                    # reliably carries the way sector/industry do, so
+                    # this is None for every ticker outside this one
+                    # universe (_home_country_by_ticker is an empty dict
+                    # for everything else), never a guess.
+                    row["Home Country"] = _home_country_by_ticker.get(t)
 
                     # TASK 2 of instruction_scanner_chips_trusts_japan_
                     # sectors.md (9 Oct 2026, Director-directed, build

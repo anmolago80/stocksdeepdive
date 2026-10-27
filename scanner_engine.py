@@ -3360,6 +3360,21 @@ USA_UNIVERSES = [
     # see _US_SECTOR_UNIVERSE_MAP's own comment above for the mapping.
     "US Technology", "US Healthcare", "US Financials", "US Energy",
     "US Industrials", "US Consumer",
+    # TASK 22 (Director-directed, 27 Oct 2026): "Foreign US-listed" -
+    # non-US-domiciled companies listed directly on NYSE/Nasdaq/NYSE
+    # American (country USA for scan-table/currency purposes - see
+    # nightly_scan.run_universe_scan()'s own country derivation and
+    # fcf_valuation_engine.trading_currency_for()'s existing USD
+    # fallback, neither of which needed a code change for this). TEST
+    # STAGE ONLY: private + Top-200-excluded by default (see scan_
+    # store._DEFAULT_PRIVATE_UNIVERSES and top100_engine.
+    # is_top200_excluded()'s own extra-exclusion set) - listing it here
+    # is what makes it appear in the Scanner picker (owner-only, while
+    # private) and resolvable by every downstream consumer, exactly
+    # like any other universe; it is NOT, by itself, what makes it
+    # private or Top-200-excluded - those are the two separate levers
+    # named above.
+    "Foreign US-listed",
 ]
 # 9 Sep 2026 (owner-reported bug): "Dow Jones 30" was removed from this
 # list because fetch_dow30()'s Wikipedia scrape never resolved any
@@ -3522,6 +3537,264 @@ def fetch_omxs30():
         return None
     return _parse_table(html, ["ticker", "symbol"], ["sector", "industry"],
                         _normalize_nasdaq_stockholm_ticker, min_rows=28, max_rows=32)
+
+
+# -----------------------------------------------------------------
+# TASK 22 (Director-directed, 27 Oct 2026) - "Foreign US-listed": every
+# non-US-domiciled company listed directly on NYSE, Nasdaq or NYSE
+# American. WHY: Nu Holdings (NU), MercadoLibre (MELI), TSMC (TSM),
+# ASML etc. can never be a Top 200 candidate today - every existing US
+# universe (S&P 500/400/600, Nasdaq 100, Dow 30, Russell 1000/2000,
+# Dividend Aristocrats) excludes non-US-domiciled companies outright
+# (Nasdaq-100 also excludes NYSE listings and financials), so a
+# foreign-domiciled company has no scanned universe to ever appear in,
+# regardless of size or quality.
+#
+# SOURCE: Nasdaq's own public screener, covering exactly NYSE, Nasdaq
+# and NYSE American (it carries no OTC listings at all, by design - no
+# separate exchange filter is needed for that half of the task's own
+# instruction). Never a hand-typed list, same rule as every other
+# universe in this module. UNVERIFIED against a live response - this
+# sandbox has no outbound network access; the shape below (a "data.
+# rows" list of dicts with "symbol"/"name"/"country"/"marketCap"/
+# "lastsale"/"volume"/"sector"/"industry" string fields) is Nasdaq's
+# well-documented public screener API shape, taken on the Director's
+# own word per this task's instruction - the real proof is the first
+# live scan, exactly like every other fetcher in this file.
+#
+# TEST STAGE ONLY (this task's own item 3): added to scan_store.
+# _DEFAULT_PRIVATE_UNIVERSES and to top100_engine.is_top200_excluded()'s
+# own explicit extra-exclusion set below - see each one's own comment.
+# Going live is an env-var-only change the owner makes after reviewing
+# the test-stage results; no code change.
+FOREIGN_US_LISTED_UNIVERSE = "Foreign US-listed"
+FOREIGN_US_LISTED_SCREENER_URL = (
+    "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&download=true"
+)
+_FOREIGN_US_LISTED_MIN_ROWS = 100
+_FOREIGN_US_LISTED_MIN_MARKET_CAP_USD = 1_000_000_000.0
+_FOREIGN_US_LISTED_MIN_ADV_USD = 5_000_000.0
+
+# Nasdaq's own API 403s a bare-Python UA the same way iShares does (see
+# _ISHARES_BROWSER_HEADERS' own comment) - a real Chrome UA + JSON
+# Accept + a nasdaq.com Referer, same browser-impersonation shape, just
+# for a JSON endpoint instead of a CSV export.
+_NASDAQ_SCREENER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nasdaq.com/",
+    "Origin": "https://www.nasdaq.com",
+}
+
+# Name-based exclusion (the task's own "existing Is Fund logic + name/
+# symbol filters" - moat_engine._is_fund() itself is quoteType/yfinance-
+# info-based and has nothing to read at the screener stage, before any
+# per-ticker info exists, so this is the SAME keyword-matching PRINCIPLE
+# applied to the one field the screener actually offers: "name"). Word-
+# boundary anchored so it never fires on a legitimate name that merely
+# contains one of these as a substring (e.g. "United" never matches
+# "\bUNIT\b"). Deliberately does NOT include "TRUST" - a foreign REIT
+# genuinely operates real property (meaningful FCF/ROIC, unlike a fund)
+# and the task's own exclusion list never names REITs.
+_FOREIGN_US_LISTED_FUND_NAME_RE = re.compile(
+    r"\b(ETF|EXCHANGE[- ]TRADED FUND|CLOSED[- ]END FUND|FUND|ACQUISITION CORP"
+    r"(?:ORATION)?|ACQUISITION CO|ACQUISITION HOLDINGS|SPAC|PREFERRED|PFD|"
+    r"WARRANTS?|UNITS?|RIGHTS?)\b",
+    re.IGNORECASE,
+)
+
+
+def _foreign_us_listed_parse_market_cap(raw):
+    """Nasdaq's own screener serves marketCap as a plain numeric string
+    (e.g. "1234567890") in the documented shape - tolerant of a leading
+    "$"/thousands-comma or a trailing "B"/"M" abbreviation too, in case
+    a future response shape differs, same defensive parsing style as
+    _foreign_us_listed_parse_price() below. Returns None (never 0) on
+    anything unparseable, so a missing market cap fails the >= floor
+    rather than silently passing it as "$0 >= floor is False" would
+    already do correctly - but this is more honest about why."""
+    if raw is None:
+        return None
+    s = str(raw).strip().upper().replace("$", "").replace(",", "")
+    if not s:
+        return None
+    multiplier = 1.0
+    if s.endswith("B"):
+        multiplier, s = 1_000_000_000.0, s[:-1]
+    elif s.endswith("M"):
+        multiplier, s = 1_000_000.0, s[:-1]
+    elif s.endswith("K"):
+        multiplier, s = 1_000.0, s[:-1]
+    try:
+        return float(s) * multiplier
+    except ValueError:
+        return None
+
+
+def _foreign_us_listed_parse_price(raw):
+    """"$12.34" -> 12.34; None on anything unparseable (no price ->
+    average daily traded value can't be computed -> fails the liquidity
+    floor below, never a fabricated 0)."""
+    if raw is None:
+        return None
+    s = str(raw).strip().replace("$", "").replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _foreign_us_listed_parse_volume(raw):
+    """A plain integer string (possibly comma-thousands) - None on
+    anything unparseable."""
+    if raw is None:
+        return None
+    s = str(raw).strip().replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _foreign_us_listed_parse_rows(raw_rows, log=print):
+    """Pure function (no network) - takes the screener's own "data.rows"
+    list of dicts and returns (DataFrame['Ticker','Sector','Home
+    Country'] or None, filter_counts dict). Separated from fetch_
+    foreign_us_listed() below so this - the actual filtering logic the
+    task's own tests exercise - is testable against a synthetic fixture
+    with no HTTP call at all.
+
+    Filter order (each stage's surviving count recorded in
+    filter_counts, in this order, for the diagnostic log line):
+      1. "raw" - every row the screener returned.
+      2. "after_country_filter" - country present and != "United
+         States" (blank/missing country is excluded, never assumed
+         foreign).
+      3. "after_fund_exclusion" - name doesn't match _FOREIGN_US_
+         LISTED_FUND_NAME_RE (funds/ETFs/closed-end/SPACs/preferreds/
+         warrants/units/rights).
+      4. "after_market_cap_filter" - market cap >= _FOREIGN_US_LISTED_
+         MIN_MARKET_CAP_USD.
+      5. "after_liquidity_filter" - price x volume (average daily
+         traded value - "average" here is Nasdaq's own single most
+         recent trading day's volume, the only such figure this
+         screener's own documented shape carries; a true rolling
+         average isn't available from this source) >= _FOREIGN_US_
+         LISTED_MIN_ADV_USD.
+      6. "after_dedupe" - one row per symbol (the screener can carry a
+         duplicate row for the same symbol across its own paginated
+         internals; keeps the first occurrence).
+
+    Returns (None, filter_counts) if fewer than _FOREIGN_US_LISTED_
+    MIN_ROWS rows survive stage 6 - the task's own ">= 100 rows or
+    treat as failure" rule, so get_universe_pool() falls back to the
+    last-known-good list on disk exactly like a genuine fetch failure
+    would."""
+    filter_counts = {"raw": len(raw_rows)}
+
+    stage2 = [
+        r for r in raw_rows
+        if (r.get("country") or "").strip() and (r.get("country") or "").strip() != "United States"
+    ]
+    filter_counts["after_country_filter"] = len(stage2)
+
+    stage3 = [
+        r for r in stage2
+        if not _FOREIGN_US_LISTED_FUND_NAME_RE.search((r.get("name") or ""))
+    ]
+    filter_counts["after_fund_exclusion"] = len(stage3)
+
+    stage4 = []
+    for r in stage3:
+        cap = _foreign_us_listed_parse_market_cap(r.get("marketCap"))
+        if cap is not None and cap >= _FOREIGN_US_LISTED_MIN_MARKET_CAP_USD:
+            stage4.append(r)
+    filter_counts["after_market_cap_filter"] = len(stage4)
+
+    stage5 = []
+    for r in stage4:
+        price = _foreign_us_listed_parse_price(r.get("lastsale"))
+        volume = _foreign_us_listed_parse_volume(r.get("volume"))
+        if price is not None and volume is not None and price * volume >= _FOREIGN_US_LISTED_MIN_ADV_USD:
+            stage5.append(r)
+    filter_counts["after_liquidity_filter"] = len(stage5)
+
+    seen_symbols = set()
+    stage6 = []
+    for r in stage5:
+        sym = (r.get("symbol") or "").strip().upper()
+        if sym and sym not in seen_symbols:
+            seen_symbols.add(sym)
+            stage6.append(r)
+    filter_counts["after_dedupe"] = len(stage6)
+
+    if len(stage6) < _FOREIGN_US_LISTED_MIN_ROWS:
+        return None, filter_counts
+
+    out_tickers, out_sectors, out_countries = [], [], []
+    for r in stage6:
+        sym = (r.get("symbol") or "").strip().upper()
+        out_tickers.append(symbol_mapping.to_yahoo_symbol(sym, "US"))
+        out_sectors.append((r.get("sector") or "").strip() or None)
+        out_countries.append((r.get("country") or "").strip() or None)
+    df = pd.DataFrame({"Ticker": out_tickers, "Sector": out_sectors, "Home Country": out_countries})
+    return df, filter_counts
+
+
+def _log_foreign_us_listed_diagnostic(status=None, content_type=None,
+                                       filter_counts=None, body_preview=None, log=None):
+    """Same "never skip a required line, add a diagnostic in addition
+    to it" convention as scheduler_engine._log_japan_fetch_diagnostic()
+    (TASK 20) - url/status/content_type are always present; filter_
+    counts (this fetcher's own per-stage survivor counts, see _foreign_
+    us_listed_parse_rows()'s own docstring) replaces that function's
+    single tables_found/rows_parsed pair, since this fetcher's own
+    failure mode ("fewer than 100 rows") is much more informative shown
+    as a pipeline than as one final number."""
+    log = log or _log.warning
+    log(f"[universe] Foreign US-listed: fetch diagnostic - "
+        f"url={FOREIGN_US_LISTED_SCREENER_URL} status={status} content_type={content_type} "
+        f"filter_counts={filter_counts} first200={body_preview!r}")
+
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
+def fetch_foreign_us_listed():
+    """Fetch + parse only - no last-known-good fallback here (that
+    lives in get_universe_pool()'s own dispatch, same split as fetch_
+    nikkei225()/fetch_topix500() - TASK 20's own precedent). Returns
+    (DataFrame['Ticker','Sector','Home Country'], filter_counts) on
+    success, or (None, filter_counts) on any failure - filter_counts is
+    always returned (even on an HTTP-level failure, as {"raw": 0} or
+    similar) so the caller can always log a diagnostic, never just a
+    bare None."""
+    status, content_type, body_preview = None, None, None
+    try:
+        resp = requests.get(FOREIGN_US_LISTED_SCREENER_URL, headers=_NASDAQ_SCREENER_HEADERS, timeout=20)
+        status = resp.status_code
+        content_type = resp.headers.get("Content-Type")
+        body_preview = resp.text[:200]
+        resp.raise_for_status()
+        payload = resp.json()
+        raw_rows = ((payload or {}).get("data") or {}).get("rows") or []
+    except Exception as e:
+        _log_foreign_us_listed_diagnostic(
+            status=status or f"{type(e).__name__}: {e}", content_type=content_type,
+            filter_counts={"raw": 0}, body_preview=body_preview,
+        )
+        return None
+
+    df, filter_counts = _foreign_us_listed_parse_rows(raw_rows)
+    if df is None:
+        _log_foreign_us_listed_diagnostic(
+            status=status, content_type=content_type,
+            filter_counts=filter_counts, body_preview=body_preview,
+        )
+        return None
+    return df
 
 
 def get_universes(country):
@@ -3856,6 +4129,25 @@ def get_universe_pool(country, universe):
         if last_good is not None:
             return _last_good_universe_df_and_label(universe, last_good)
         return None, f"Wikipedia {universe} scrape unavailable - not scanning"
+
+    # TASK 22 (Director-directed, 27 Oct 2026): same "live fetch ->
+    # last-known-good disk fallback -> not scanning" pattern as Nikkei
+    # 225/TOPIX 500/the five European markets above - no fund-file
+    # cross-check source exists for a Nasdaq-screener-derived list, and
+    # a last-good fallback only ever carries Ticker (never Sector/Home
+    # Country - same pre-existing limitation of _save_last_good_
+    # universe_list()/_last_good_universe_df_and_label() every universe
+    # using this fallback already has).
+    if universe == FOREIGN_US_LISTED_UNIVERSE:
+        df = fetch_foreign_us_listed()
+        _label = "Nasdaq screener, non-US-domiciled NYSE/Nasdaq/NYSE American listings (live)"
+        if df is not None:
+            _save_last_good_universe_list("foreign_us_listed", list(df["Ticker"]), _label)
+            return df, _label
+        last_good = _load_last_good_universe_list("foreign_us_listed")
+        if last_good is not None:
+            return _last_good_universe_df_and_label(universe, last_good)
+        return None, "Nasdaq screener unavailable - not scanning"
 
     return None, "Unknown universe"
 

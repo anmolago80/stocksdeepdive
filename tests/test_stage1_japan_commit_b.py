@@ -371,10 +371,18 @@ for u, cadence in _before_map.items():
 _new_entries = {u: c for u, c in _after_map.items() if u not in _before_map}
 for u, cadence in _new_entries.items():
     print(f"    {u:28s} {'(new)':8s} {cadence}")
-assert _new_entries == {"Nikkei 225": "mon", "TOPIX 500": "fri"}, _new_entries
+# TASK 22 (Director-directed, 27 Oct 2026) added "Foreign US-listed:wed"
+# to _DEFAULT_NIGHTLY_UNIVERSES, AFTER this Stage 1b test's own
+# baseline - a genuinely new entry, not a regression in this one. The
+# Nikkei 225 (mon)/TOPIX 500 (fri) pair this test's own task originally
+# added is still exactly as specified, unchanged.
+assert _new_entries == {
+    "Nikkei 225": "mon", "TOPIX 500": "fri", "Foreign US-listed": "wed",
+}, _new_entries
 assert len(_before_map) == 16, _before_map
 print("[T5_schedule] all 16 pre-existing entries unchanged; Nikkei 225 lands on mon, "
-      "TOPIX 500 on fri, exactly as specified OK")
+      "TOPIX 500 on fri, exactly as specified (Foreign US-listed:wed, added later "
+      "by TASK 22, is the one other expected new entry) OK")
 
 
 # ======================================================================

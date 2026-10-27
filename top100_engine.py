@@ -537,6 +537,21 @@ def _report_undocumented_same_name_duplicates(best_by_ticker, log=print):
                 f"by hand if genuine: {sorted(tickers)} all show company_name={name!r}")
 
 
+# TASK 22 (Director-directed, 27 Oct 2026): "Foreign US-listed" is a
+# scanner_engine.USA_UNIVERSES member (country USA, for scan-table/
+# currency purposes - see that list's own comment), so is_top200_
+# excluded()'s derived "non-US, non-Australian" default below would
+# NOT exclude it on its own - it needs its own explicit extra entry
+# here, UNLIKE Nikkei 225/the five European markets (none of which are
+# in AUSTRALIA_UNIVERSES or USA_UNIVERSES at all, so the derived rule
+# already covers them). TEST STAGE ONLY, per this task's own item 3;
+# removing this entry is a one-line code change, but going live is
+# meant to be an ENV-VAR-ONLY change instead - see is_top200_excluded()
+# itself for why this set is only even consulted when TOP200_EXCLUDED_
+# UNIVERSES is unset.
+_TOP200_EXTRA_EXCLUDED_WHEN_UNSET = frozenset({"Foreign US-listed"})
+
+
 def is_top200_excluded(universe):
     """Director's next round, item 3 (8 Oct 2026, instruction_health_
     fixes_chart_and_new_markets.md): "a Top 200 exclusion separate
@@ -552,18 +567,24 @@ def is_top200_excluded(universe):
     every call (same convention as every other switch in this
     module), overrides the code default entirely when SET (even to
     an empty string - "nothing is excluded" is a valid explicit
-    choice). Unset: the code default is DERIVED, not a hand-
-    maintained name list - "every non-US, non-Australian universe"
-    (the Director's own words), i.e. not in scanner_engine.
-    AUSTRALIA_UNIVERSES or scanner_engine.USA_UNIVERSES. Deriving it
-    this way (rather than hand-listing FTSE 100/TSX 60/.../DAX/...)
-    means a BRAND NEW non-US/non-AU universe a future part adds is
-    automatically Top-200-excluded from day one, with no name to
-    remember to add anywhere."""
+    choice) - including _TOP200_EXTRA_EXCLUDED_WHEN_UNSET above: a set
+    env var that omits "Foreign US-listed" means it is NOT excluded,
+    full stop, exactly like any other universe. Unset: the code
+    default is DERIVED, not a hand-maintained name list - "every non-
+    US, non-Australian universe" (the Director's own words), i.e. not
+    in scanner_engine.AUSTRALIA_UNIVERSES or scanner_engine.
+    USA_UNIVERSES - PLUS _TOP200_EXTRA_EXCLUDED_WHEN_UNSET above (TASK
+    22's own one addition to an otherwise still-fully-derived rule).
+    Deriving the non-US/non-AU half this way (rather than hand-listing
+    FTSE 100/TSX 60/.../DAX/...) means a BRAND NEW non-US/non-AU
+    universe a future part adds is automatically Top-200-excluded from
+    day one, with no name to remember to add anywhere."""
     raw = os.environ.get("TOP200_EXCLUDED_UNIVERSES")
     if raw is not None:
         excluded = {u.strip() for u in raw.split(",") if u.strip()}
         return universe in excluded
+    if universe in _TOP200_EXTRA_EXCLUDED_WHEN_UNSET:
+        return True
     return universe not in scanner_engine.AUSTRALIA_UNIVERSES and universe not in scanner_engine.USA_UNIVERSES
 
 
@@ -1212,6 +1233,13 @@ def select_top100_pool(log=print, scan_day=None):
     # (fires whether or not TOP200_PREVIEW_UNIVERSES is set) - see
     # _log_preview_universe_cost_estimate()'s own docstring.
     _log_preview_universe_cost_estimate(log=log)
+    # TASK 22 (Director-directed, 27 Oct 2026): item 7's own exact
+    # "N candidates would enter, M would be displaced, cutoff X -> Y"
+    # log line, one per universe actually in TOP200_PREVIEW_UNIVERSES -
+    # see _log_preview_country_summary()'s own docstring. A no-op when
+    # that env var is unset/empty, same as the cost-estimate line
+    # above being a no-op for every non-private universe.
+    _log_preview_country_summary(log=log)
     return pool
 
 
@@ -4926,6 +4954,87 @@ def _log_preview_universe_cost_estimate(log=print):
         log(f"[top200-preview] cost-estimate logging failed (non-fatal): {e}")
 
 
+def _log_preview_country_summary(log=print):
+    """TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-listed"),
+    item 7's own exact log format: "[top200-preview] '<universe>': N
+    candidates would enter, M would be displaced, cutoff X -> Y, est.
+    one-time cost $Z" - one line per universe ACTUALLY named in
+    preview_universes() (TOP200_PREVIEW_UNIVERSES), unlike _log_
+    preview_universe_cost_estimate() above, which logs every private
+    universe with a saved scan regardless of whether it's previewed at
+    all. Calls preview_candidates_by_country() ONCE (never a second,
+    independent computation of "would enter"/"would displace" - this
+    reuses exactly what the owner-only preview panel itself already
+    shows) plus market_readiness_engine.top200_dry_run() for the same
+    cost figure _log_preview_universe_cost_estimate() already uses.
+
+    N: entrant rows (this universe's own "universe" field, "enters_
+    pool" True) across every market bucket that universe's rows landed
+    in (ordinarily exactly one - peer_context.market_for() on a plain
+    US ticker always resolves to "USA" - but this stays general rather
+    than assuming "Foreign US-listed" specifically).
+
+    M ("would be displaced"): would_displace[market] for every market
+    bucket this universe's entrants appeared in, summed - would_
+    displace is itself a PER-MARKET scenario (every candidate from
+    that market bucket that clears the cutoff, not just this one
+    universe's own), so M can overcount if another universe is ALSO
+    being previewed into the SAME market bucket at the same time; this
+    is disclosed in the log line itself via "(market: <bucket>)" so
+    the Director can tell a mixed scenario apart from a clean one.
+
+    Y ("new cutoff"): an APPROXIMATION, not a true re-ranked pool
+    simulation (which would mean actually rebuilding the pool) - the
+    LOWEST recomputed_value_score among this universe's own entrants,
+    i.e. the weakest accepted newcomer becomes the new effective floor
+    IF exactly its own entrants filled the vacated slots one-for-one.
+    Unchanged (== the current cutoff X) when N is 0. Labelled "approx."
+    in the log line itself so this is never mistaken for an exact
+    figure.
+
+    Never raises - a reporting side effect, same posture as _log_
+    preview_universe_cost_estimate() above; any failure degrades to
+    one "(non-fatal)" log line, never breaks the nightly selection this
+    rides on."""
+    try:
+        universes = preview_universes()
+        if not universes:
+            return
+        preview = preview_candidates_by_country()
+        by_country = preview.get("by_country") or {}
+        would_displace = preview.get("would_displace") or {}
+        cutoff = preview.get("pool_cutoff")
+        for universe in universes:
+            entrants = []
+            markets_touched = set()
+            for market, rows in by_country.items():
+                for r in rows:
+                    if r.get("universe") == universe:
+                        markets_touched.add(market)
+                        if r.get("enters_pool"):
+                            entrants.append(r)
+            n_enter = len(entrants)
+            m_displaced = sum(len(would_displace.get(m) or []) for m in markets_touched)
+            new_cutoff_scores = [
+                r["recomputed_value_score"] for r in entrants
+                if r.get("recomputed_value_score") is not None
+            ]
+            new_cutoff = min(new_cutoff_scores) if new_cutoff_scores else cutoff
+            payload = scan_store.load_scan_raw(universe, allow_private=True)
+            rows = (payload or {}).get("rows") or []
+            dry = market_readiness_engine.top200_dry_run(rows) if rows else {"estimated_cost_usd": 0.0}
+            _cutoff_str = (
+                f"{cutoff:.1f} -> {new_cutoff:.1f} (approx.)" if cutoff is not None and new_cutoff is not None
+                else "no pool yet"
+            )
+            _market_str = ", ".join(sorted(markets_touched)) or "n/a"
+            log(f"[top200-preview] {universe!r}: {n_enter} candidate(s) would enter, "
+                f"{m_displaced} would be displaced (market: {_market_str}), "
+                f"cutoff {_cutoff_str}, est. one-time cost ${dry['estimated_cost_usd']:.2f}")
+    except Exception as e:
+        log(f"[top200-preview] country-summary logging failed (non-fatal): {e}")
+
+
 def preview_candidates_by_country():
     """PART 5 STEP 5.2, reworked by the Director's work queue TASK 1
     (13 Oct 2026, "make it a real would-be view"): {"by_country":
@@ -5077,6 +5186,17 @@ def preview_candidates_by_country():
             "pool_rank_if_added": _preview_rank_against_pool(composite, rated_composites),
             "recomputed_value_score": recomputed_value_score,
             "enters_pool": (recomputed_value_score > cutoff) if cutoff is not None else None,
+            # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-
+            # listed"): "market" above (peer_context.market_for()) is
+            # the Top 200 BUCKET a ticker competes in (plain-ticker ->
+            # "USA", same bucket as any domestic US stock) - a company
+            # incorporated abroad but listed on NYSE/Nasdaq needs its
+            # OWN home country shown too, so the owner isn't misled
+            # into thinking a Brazilian bank is a US company. r.get()
+            # (not a KeyError) so every OTHER universe's row - which
+            # never carries "Home Country" at all - gets None here,
+            # never a fabricated "USA".
+            "home_country": r.get("Home Country"),
         })
     for market, rows in by_country.items():
         rows.sort(key=lambda r: (r["value_score"] is None, -(r["value_score"] or 0)))
