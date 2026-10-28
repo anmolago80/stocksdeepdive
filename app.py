@@ -14480,6 +14480,14 @@ _SCANNER_PICKER_BANDS = [
         (None, "Russell 3000", "Russell 3000"),
         (None, "Dow 30", "Dow Jones 30"),
         (None, "Dividend Aristocrats", "S&P 500 Dividend Aristocrats"),
+        # TASK 22b (Director-directed, 28 Oct 2026): TASK 22 added
+        # "Foreign US-listed" to scanner_engine.USA_UNIVERSES but never
+        # here, so the picker had no button for it at all - only
+        # reachable via a deep link. Private by default (scan_store.
+        # is_private_universe()) - same per-pill private filtering
+        # every other pill in this band already goes through in
+        # _render_scanner_universe_picker(), nothing special-cased here.
+        (None, "Foreign US-listed", "Foreign US-listed"),
         None,
         ("scanner.sector_pill_technology", None, "US Technology"),
         ("scanner.sector_pill_healthcare", None, "US Healthcare"),
@@ -15029,6 +15037,18 @@ def page_scanner():
             _universe_options += scanner_engine.get_universes("Australia")
         if _want_us:
             _universe_options += scanner_engine.get_universes("USA")
+
+        # TASK 22b (Director-directed, 28 Oct 2026): scanner_engine.
+        # get_universes() has no notion of privacy at all (that's a
+        # scan_store-only concept) - so without this filter, a private
+        # universe like "Foreign US-listed" was a selectable option
+        # here for ANY visitor, not just the owner, with Run Scan then
+        # triggering a real live fetch for it. Same owner/private check
+        # the picker pills above already use via is_private_universe().
+        if not _is_scanner_picker_owner:
+            _universe_options = [
+                _u for _u in _universe_options if not scan_store.is_private_universe(_u)
+            ]
 
         if not _universe_options:
             st.info(i18n.t("scanner.pick_country_info", _scan_lang))

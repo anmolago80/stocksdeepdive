@@ -54,6 +54,7 @@ os.environ.pop("TOP200_PREVIEW_UNIVERSES", None)
 import scanner_engine as se
 import scan_store
 import symbol_mapping
+import app
 
 passed = 0
 failed = 0
@@ -197,19 +198,29 @@ print("[task22_c4_private_and_excluded_by_default] private=True, Top-200-exclude
       "default entirely, in both directions OK")
 
 # ======================================================================
-# CHECK 5: scanner picker visibility - USA_UNIVERSES membership is
-# exactly what the real picker code (app.py) reads generically for
-# every universe, with no per-universe special-casing; is_private_
+# CHECK 5: scanner picker visibility - TASK 22b (Director-directed, 28
+# Oct 2026) found that TASK 22's own version of this check asserted
+# membership in scanner_engine.USA_UNIVERSES/get_universes("USA"),
+# which only proves the DATA LAYER (scan resolution, currency
+# handling) knows about this universe - NOT that the Scanner page's
+# picker actually renders a button for it. The real picker is built
+# from app._SCANNER_PICKER_BANDS and its own derived
+# app._all_scanner_picker_universes() - TASK 22 never added a pill
+# there, so this check passed wrongly while the picker had no button
+# at all (fixed in TASK 22b by adding the missing pill). is_private_
 # universe() is what the SAME generic picker code already gates owner-
 # only visibility on. Both already independently confirmed above
 # (check 4) - this check just states the conclusion explicitly as its
 # own named assertion, matching the task's own numbered list.
 # ======================================================================
-check("'Foreign US-listed' resolves via scanner_engine.get_universes('USA') - the "
-      "exact list app.py's Scanner picker iterates for the USA country tab",
-      "Foreign US-listed" in se.get_universes("USA"))
-print("[task22_c5_picker_visibility] listed in get_universes('USA'); private-by-"
-      "default (check 4) is what keeps it owner-only in the picker OK")
+check("'Foreign US-listed' is in app._all_scanner_picker_universes() - the "
+      "Scanner picker's OWN derived universe set, proving a real pill/button "
+      "exists for it (TASK 22b fix; TASK 22 itself only checked USA_UNIVERSES, "
+      "which passed wrongly with no button at all)",
+      "Foreign US-listed" in app._all_scanner_picker_universes())
+print("[task22_c5_picker_visibility] has a real picker pill via "
+      "_all_scanner_picker_universes(); private-by-default (check 4) is what "
+      "keeps it owner-only in the picker OK")
 
 # ======================================================================
 # CHECK 6: ADR vs home-listing dedupe - confirms the EXISTING, unmodified
