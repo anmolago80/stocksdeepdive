@@ -738,6 +738,32 @@ def _new_lock_payload():
     }
 
 
+def _atomic_write_json(path, payload):
+    """Writes `payload` as JSON to `path` without any reader ever being
+    able to observe a truncated/partial file. TASK 23 (Director-
+    directed, 29 Oct 2026, real incident): _refresh_job_lock_heartbeat()
+    used to open(path, "w") the LIVE lock file directly - that call
+    truncates the file to 0 bytes BEFORE the new bytes are written, so a
+    reader's _read_lock_payload() racing that exact window got an empty
+    file, which json.loads() can't parse, which _read_lock_payload()
+    returns None for - indistinguishable from a genuine old-format
+    lock. _acquire_job_lock() then reclaimed it immediately (pre-fix
+    reclaim rule), stealing a lock its holder was actively refreshing.
+    The real incident this closes: two concurrent ASX 200 scans, both
+    hitting Yahoo's rate limit, "ABORTING after 105/200". A temp file in
+    the SAME directory (so os.replace() is same-filesystem, hence
+    atomic - never a cross-device rename) with a unique suffix (pid +
+    a random hex, so two processes racing this helper - even for the
+    SAME lock path - never collide on the tmp name itself) means the
+    only two states a reader can ever observe at `path` are "the
+    previous complete payload" or "the new complete payload", never
+    anything in between."""
+    tmp = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(payload))
+    os.replace(tmp, path)
+
+
 def _read_lock_payload(path):
     """The lock file's parsed {"pid", "boot_id", "started", "heartbeat"}
     dict, or None if the file doesn't exist, can't be read, isn't valid
@@ -776,10 +802,40 @@ def _acquire_job_lock(job_name, log):
             payload = _read_lock_payload(path)
             reclaim_msg = None
             if payload is None:
-                reclaim_msg = (
-                    f"[scheduler] reclaimed stale scan lock for '{job_name}' "
-                    f"(legacy lock format, no heartbeat/holder fields)"
-                )
+                # TASK 23 (Director-directed, 29 Oct 2026, real
+                # incident): an unreadable/None payload used to be
+                # reclaimed immediately, no matter how the lock file
+                # got into that state - including a holder's own
+                # heartbeat refresh momentarily truncating it (see
+                # _atomic_write_json's own docstring for that race).
+                # Falling back to the lock FILE's own mtime - the one
+                # thing true of both a genuinely-ancient legacy lock
+                # (written once, never touched again, so its mtime
+                # really is old) AND a live lock an active holder keeps
+                # touching (so its mtime is always fresh, even in the
+                # split-second it's unreadable) - means an unreadable
+                # payload is only ever treated as abandoned once it's
+                # been sitting untouched for the SAME
+                # _JOB_LOCK_HEARTBEAT_STALE_SECONDS bound every other
+                # reclaim path here already uses, never on the mere
+                # fact that this one read happened to race a write.
+                try:
+                    mtime_age = time.time() - os.path.getmtime(path)
+                except OSError:
+                    # Vanished between the exists() check and here -
+                    # nothing left to reclaim OR hold; fall through to
+                    # the create attempt below exactly as if
+                    # os.path.exists(path) had been False from the start.
+                    mtime_age = None
+                if mtime_age is None:
+                    pass
+                elif mtime_age > _JOB_LOCK_HEARTBEAT_STALE_SECONDS:
+                    reclaim_msg = (
+                        f"[scheduler] reclaimed stale scan lock for '{job_name}' "
+                        f"(legacy lock format, no heartbeat/holder fields)"
+                    )
+                else:
+                    return False
             else:
                 age = time.time() - float(payload["heartbeat"])
                 holder_boot_id = payload.get("boot_id")
@@ -800,8 +856,15 @@ def _acquire_job_lock(job_name, log):
                 except OSError:
                     pass
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(_new_lock_payload()))
+        os.close(fd)
+        # TASK 23: the O_EXCL open above still only decides WHO wins the
+        # race to create the file - it says nothing about the content
+        # landing atomically. Populating it via _atomic_write_json (temp
+        # file + os.replace(), same guarantee _refresh_job_lock_
+        # heartbeat now uses) means a reader can only ever see this
+        # brand-new lock as fully-written JSON, never as the 0 bytes
+        # os.open() alone would leave visible in between.
+        _atomic_write_json(path, _new_lock_payload())
         return True
     except FileExistsError:
         return False
@@ -825,8 +888,7 @@ def _refresh_job_lock_heartbeat(job_name):
         return
     payload["heartbeat"] = time.time()
     try:
-        with open(path, "w") as f:
-            f.write(json.dumps(payload))
+        _atomic_write_json(path, payload)
     except OSError:
         pass
 
