@@ -4108,6 +4108,10 @@ EN = {
     "top100.tab_mixed": "Top 20 · Mixed",
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · USA",
+    # TASK 24 (Director-directed, 29 Oct 2026, test stage behind
+    # TOP20_FOREIGN_TAB_LIVE): placed right after "Top 20 · USA" by
+    # render_top100_page() itself - see that function's own comment.
+    "top100.tab_us_foreign": "Top 20 · Foreign US-listed",
     "top100.tab_full": "Full 200",
     # Director's TASK 7, final version (14 Oct 2026): one "Top 20" tab
     # per new market in the pool, after "Top 20 · USA" - see top100_
@@ -7910,6 +7914,7 @@ ES = {
     "top100.tab_mixed": "Top 20 · Mixto",
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · EE. UU.",
+    "top100.tab_us_foreign": "Top 20 · Extranjeras en EE. UU.",
     "top100.tab_full": "Las 200",
     "top100.tab_market": "Top 20 · {country}",
     "top100.country_canada": "Canadá",

@@ -21,6 +21,7 @@ import i18n
 import peer_context
 import quote_snapshot_store
 import resolver_engine
+import scan_store
 import snapshot_store
 import top100_engine
 import top100_store
@@ -861,7 +862,7 @@ def _row_edge_accent_style(score_row):
 
 
 def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=None,
-                 country_badge_html=None):
+                 country_badge_html=None, home_country_html=None):
     """One RATED company row - rank/ticker(linked), the leading number
     for the active sort (task's own "the leading number on each row is
     the one doing the sorting"), the other stats next to it, the ten
@@ -905,7 +906,16 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     practice (only Australia passes one, only Europe the other), so
     there's no ordering rule between them beyond both landing right
     after the "also trades as" chip, same slot origin_badge_html
-    already used alone."""
+    already used alone.
+
+    `home_country_html` (TASK 24, Director-directed, 29 Oct 2026, the
+    new "Top 20 · Foreign US-listed" tab): None everywhere else,
+    unaffected. When set, rendered as its own line right under the
+    header row (ticker/company name/badges/metrics), before the
+    dimension chips - same small plain-text style as the Scanner
+    page's own "Home Country" label (see _home_country_label_html()'s
+    own docstring), never the bordered chip style `country_badge_html`
+    uses."""
     ticker = row["ticker"]
     score_row = row["score_row"]
 
@@ -968,6 +978,7 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
         "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:12px;'>"
         + "".join(header_bits) + tradable_chip + sentiment_chip +
         "</div>"
+        + (home_country_html or "") +
         "<div style='margin-top:8px;'>"
         + "".join(
             _score_chip_html(key, (score_row["dims"].get(key) or {}).get("score"),
@@ -1116,7 +1127,55 @@ def _enriched_asx_extension():
     return _enrich_rows(extension, scores, failures)
 
 
-def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, filters=None):
+def _foreign_us_listed_home_country_by_ticker():
+    """{ticker: home_country} for every row of the latest saved "Foreign
+    US-listed" scan (TASK 24, Director-directed, 29 Oct 2026) whose own
+    "Home Country" field is not "United States". allow_private=True on
+    the scan_store read: this universe ships private by default (TASK
+    22), and this classification needs to see its rows to even build
+    the USA-only split/new tab - it is scan_store.is_private_universe()
+    gating a DIFFERENT reader (the Scanner picker/deep link) that keeps
+    the underlying universe non-public, not this one; the TOP20_
+    FOREIGN_TAB_LIVE gate below is what keeps this page's OWN result
+    owner-only until the owner flips it on.
+
+    Classification is keyed off THIS universe's own saved rows, never a
+    pool row's own "universe" field - top100_store's freshest-row-wins
+    pool construction can file the same ticker under a completely
+    different universe (e.g. "S&P 400") if that happens to be the most
+    recent scan to touch it, so a pool row's current "universe" string
+    alone is not a reliable "is this a foreign US-listed company"
+    signal.
+
+    Loaded ONCE per page render by the caller (render_top100_page()),
+    not once per row - a single JSON file read, same "load once, look
+    up per row" convention _finer_industry_by_ticker() already uses."""
+    payload = scan_store.load_scan_raw("Foreign US-listed", allow_private=True)
+    if not payload:
+        return {}
+    out = {}
+    for row in payload.get("rows") or []:
+        ticker = row.get("Ticker")
+        home_country = row.get("Home Country")
+        if ticker and home_country and home_country != "United States":
+            out[ticker] = home_country
+    return out
+
+
+def _home_country_label_html(home_country):
+    """Same small, plain (non-chip) text style as the Scanner page's
+    own "Home Country" label (app.py, TASK 22/22b) - deliberately NOT
+    the bordered/background chip style _market_tab_country_badge_html()
+    above uses for the Europe tab, which is a tab-wide grouping badge,
+    not this per-company metadata line."""
+    return (
+        "<div style='font-size:11px;color:#8aa0b8;font-weight:400;'>"
+        + html.escape(home_country) + "</div>"
+    )
+
+
+def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, filters=None,
+                       exclude_tickers=None, only_tickers=None, home_country_by_ticker=None):
     """Top 20 by the active sort (point 2, "applying to every tab
     including Full 100"). Point 3: unrated companies are excluded from
     the Top 20 tabs entirely - never shown here, not even in a shelf -
@@ -1128,10 +1187,25 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
     filters() - a row the filter hides never shifts a later row's rank
     up, and this tab's "20" ceiling itself is untouched (the filter
     only ever hides rows already inside the top 20, never reaches
-    further down the list to replace one)."""
+    further down the list to replace one).
+
+    `exclude_tickers`/`only_tickers` (TASK 24, Director-directed, 29
+    Oct 2026, both optional sets, mutually exclusive in practice - only
+    the USA tab passes the former, only the new "Top 20 · Foreign US-
+    listed" tab passes the latter): narrow `rows` by ticker right after
+    the currency filter, same place in the pipeline. `None` (the
+    default for both) skips that narrowing entirely - every other
+    caller is unaffected. `home_country_by_ticker` (optional dict) is
+    forwarded to _render_row() as a small label for any row whose
+    ticker is a key in it; omitted or a miss, no label - every other
+    caller is unaffected."""
     rows = _sort_and_gate_rated(enriched, sort_mode)
     if currency:
         rows = [r for r in rows if r["currency"] == currency]
+    if exclude_tickers is not None:
+        rows = [r for r in rows if r["ticker"] not in exclude_tickers]
+    if only_tickers is not None:
+        rows = [r for r in rows if r["ticker"] in only_tickers]
     rows = rows[:20]
     if not rows:
         st.caption(_t("empty_tab", lang))
@@ -1141,7 +1215,13 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
         st.caption(_t("filter_no_matches", lang))
         return
     for i, row in ranked:
-        _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
+        home_country_html = None
+        if home_country_by_ticker:
+            _hc = home_country_by_ticker.get(row["ticker"])
+            if _hc:
+                home_country_html = _home_country_label_html(_hc)
+        _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
+                    home_country_html=home_country_html)
 
 
 def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None):
@@ -1891,8 +1971,34 @@ def render_top100_page(lang="en"):
     # what order (rules 2-4), so this function never hand-lists a
     # country name.
     market_plan = _new_market_tab_plan(enriched)
+
+    # TASK 24 (Director-directed, 29 Oct 2026, test stage): foreign-US-
+    # listed classification, loaded ONCE per render - see _foreign_us_
+    # listed_home_country_by_ticker()'s own docstring. Gated behind
+    # TOP20_FOREIGN_TAB_LIVE (unset/"0" - only the owner sees the new
+    # tab and the USA-only split, every other viewer sees today's page
+    # exactly as before this task; "1" - live for everyone). The owner
+    # flips this on Railway by hand after reviewing test-stage results
+    # - this task never touches it.
+    _foreign_home_country = _foreign_us_listed_home_country_by_ticker()
+    _foreign_tab_live = os.environ.get("TOP20_FOREIGN_TAB_LIVE", "0").strip() == "1"
+    _show_foreign_tab = _foreign_tab_live or _is_owner_for_refresh()
+    _foreign_tickers = set(_foreign_home_country) if _show_foreign_tab else None
+
+    # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
+    # Mixed/Australia/USA/Full 200 exactly as they were (same four
+    # render calls, same positions relative to each other); rule 2
+    # inserts one tab per OTHER market actually present in the pool
+    # AFTER "Top 20 · USA" and BEFORE "Full 200" - _new_market_tab_plan()
+    # is the one place that decides which markets get a tab and in
+    # what order (rules 2-4), so this function never hand-lists a
+    # country name. TASK 24 inserts the new "Top 20 · Foreign US-
+    # listed" tab right after "Top 20 · USA" too, but ONLY while
+    # _show_foreign_tab is True - a gated-off viewer gets the exact
+    # same tab_labels list (and tab count) as before this task.
     tab_labels = (
         [_t("tab_mixed", lang), _t("tab_au", lang), _t("tab_us", lang)]
+        + ([_t("tab_us_foreign", lang)] if _show_foreign_tab else [])
         + [_market_tab_label(group_key, lang) for group_key, _rows in market_plan]
         + [_t("tab_full", lang)]
     )
@@ -1902,10 +2008,17 @@ def render_top100_page(lang="en"):
     with tabs[1]:
         _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
     with tabs[2]:
-        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters)
+        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
+                           exclude_tickers=_foreign_tickers)
+    _next_tab = 3
+    if _show_foreign_tab:
+        with tabs[_next_tab]:
+            _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
+                               only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country)
+        _next_tab += 1
     for offset, (group_key, market_rows) in enumerate(market_plan):
-        with tabs[3 + offset]:
+        with tabs[_next_tab + offset]:
             _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows,
                                       group_key, filters=filters)
-    with tabs[3 + len(market_plan)]:
+    with tabs[_next_tab + len(market_plan)]:
         _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
