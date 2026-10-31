@@ -129,12 +129,21 @@ check("switch OFF: no '[memdiag]' line appears anywhere in _run_nightly()'s own 
 _mem_lines = [m for m in _log_capture if m.startswith("[mem] rss=")]
 _expected_labels = [
     "after scan ASX 200", "after sector top-up", "after alert extra pass",
-    "after send_batched_notifications", "after reprice S&P 500",
+    "after send_batched_notifications",
+    # TASK 25 (31 Oct 2026, part A): the reprice pass now brackets
+    # whichever path ran (child process or in-process fallback) with
+    # one parent-side "[mem]" line before and after - see scheduler_
+    # engine._run_nightly()'s own reprice-pass call site comment.
+    "before reprice pass (parent)",
+    "after reprice S&P 500",
+    "after reprice pass (parent)",
     "after nightly-only cache clear",
 ]
-check("switch OFF: the [mem] line count/labels are exactly TASK 21's own set - "
-      "scan, sector top-up, alert extra pass, send_batched_notifications, one "
-      "reprice universe, nightly-only cache clear (6, not 7 - no [memdiag] mixed in)",
+check("switch OFF: the [mem] line count/labels are exactly TASK 21's own set plus "
+      "TASK 25's own parent-side before/after bracket - scan, sector top-up, "
+      "alert extra pass, send_batched_notifications, before reprice pass "
+      "(parent), one reprice universe, after reprice pass (parent), nightly-"
+      "only cache clear (8, not 9 - no [memdiag] mixed in)",
       len(_mem_lines) == len(_expected_labels)
       and all(_mem_lines[i].endswith(_expected_labels[i]) for i in range(len(_expected_labels))))
 print("[task21b_c3_run_nightly_byte_identical] switch OFF: _run_nightly()'s own "

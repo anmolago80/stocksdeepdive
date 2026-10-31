@@ -241,40 +241,43 @@ print("[task23_c6c7c8_atomic_write_json_direct] writes/replaces cleanly, no "
       "leftover temp files OK")
 
 # ======================================================================
-# CHECK 9 (item 4 - INVESTIGATE ONLY, per the task's own instruction:
-# "Report findings; do not change it unless proven"): reproduces the
-# EXACT single-process sequence the Railway evidence describes -
-# fastapi's own due-scan block tripping the rate-limit circuit breaker
-# mid-run, then its own catch-up block (same tick, ~1 min later once
-# the due-scan call returns) starting attempt 3/3 anyway.
+# CHECK 9 (item 4 - originally INVESTIGATE ONLY; FIXED by TASK 25,
+# part B, 31 Oct 2026 - this test's own assertions were updated at that
+# point to match the corrected behaviour, per this session's "update a
+# stale pre-existing test when a later task legitimately changes
+# behaviour it pinned down" convention): reproduces the EXACT single-
+# process sequence the Railway evidence described - fastapi's own due-
+# scan block tripping the rate-limit circuit breaker mid-run, then its
+# own catch-up block (same tick, ~1 min later once the due-scan call
+# returns) used to start attempt 3/3 anyway.
 #
-# _loop() computes `_rl_cooldown_active`/`_rl_cooldown_until` exactly
-# ONCE per tick (from state loaded BEFORE the due-scan block runs), and
-# reuses that same snapshot to gate BOTH the due-scan check and the
-# catch-up check further down in the SAME tick. In production, the
-# due-scan's own _run_nightly() call runs synchronously inside that
-# tick and can take minutes; if its per-universe loop trips nightly_
-# scan.py's RateLimitCircuitBreaker partway through, it calls
-# _record_rate_limit_cooldown() (scheduler_state.json now correctly
-# carries a fresh cool-down) - but `_rl_cooldown_active` in THIS tick's
-# local variable was already computed as False before the due-scan
-# ran, and nothing re-derives it before the catch-up block's own gate
-# check reads it. So catch-up proceeds, immediately re-hits the same
-# rate limit.
+# Root cause (TASK 23's own finding): _loop() computes
+# `_rl_cooldown_active`/`_rl_cooldown_until` exactly ONCE per tick (from
+# state loaded BEFORE the due-scan block runs), and used to reuse that
+# same snapshot to gate the catch-up check further down in the SAME
+# tick. The due-scan's own _run_nightly() call runs synchronously
+# inside that tick and can take minutes; if its per-universe loop trips
+# nightly_scan.py's RateLimitCircuitBreaker partway through, it calls
+# _record_rate_limit_cooldown() (scheduler_state.json correctly carries
+# a fresh cool-down) - but `_rl_cooldown_active` in THIS tick's local
+# variable was already computed as False before the due-scan ran, and
+# nothing re-derived it before the catch-up block's own gate check read
+# it, so catch-up used to proceed anyway, immediately re-hitting the
+# same rate limit.
 #
-# This is a DIFFERENT, simpler mechanism than the task's own named
-# hypothesis ("the cool-down state can be overwritten/lost between the
-# two processes [via] scheduler_state.json read-modify-write") - it
-# needs only ONE process, and the cool-down is never lost from disk at
-# all (confirmed below: it's correctly persisted and still active
-# immediately after this tick). The task's named cross-process lost-
-# update hypothesis is NOT what this test proves - what it proves is a
-# same-tick stale LOCAL VARIABLE, a different bug with the same
-# symptom. Per the task's explicit "do not change it unless proven"
-# framing (and "INVESTIGATE ONLY"), no fix is applied for this item in
-# this task - reported as a finding for the Director's own follow-up
-# decision, same as TASK 22b's own "additional finding, reported, not
-# auto-fixed beyond what was explicitly asked" precedent.
+# TASK 25, part B's fix: the catch-up block now re-reads
+# _rate_limit_cooldown_status() fresh, from a fresh _load_state(),
+# immediately before its own gate check - this test's own
+# _fake_run_nightly() below still simulates the due-scan tripping the
+# breaker mid-tick, but now proves the catch-up call it used to also
+# make never happens.
+#
+# This was always a DIFFERENT, simpler mechanism than TASK 23's own
+# named hypothesis ("the cool-down state can be overwritten/lost
+# between the two processes [via] scheduler_state.json read-modify-
+# write") - it needs only ONE process, and the cool-down was never lost
+# from disk at all (confirmed below: it's correctly persisted and still
+# active immediately after this tick, exactly as before this fix).
 # ======================================================================
 import json as _json2
 from datetime import datetime as _dt2, timezone as _tz2
@@ -349,30 +352,26 @@ _cooldown_now_active, _cooldown_now_until = se._rate_limit_cooldown_status(
     se._load_state(), _dt2.now(_tz2.utc))
 check("the cool-down WAS correctly persisted to scheduler_state.json by the "
       "due-scan's own breaker trip, and is still active immediately after - "
-      "ruling out a lost/overwritten write as what let the catch-up through",
+      "same as before this fix, confirming the cool-down itself was never lost",
       _cooldown_now_active is True)
 
-check("FINDING: despite that freshly-active cool-down, the catch-up block ran "
-      "anyway IN THE SAME TICK - a second _run_nightly() call with a real "
-      "run_night, proving _rl_cooldown_active's one-per-tick snapshot (taken "
-      "BEFORE the due-scan ran) is what let it through, not a lost state write",
-      len(_nightly_calls) == 2 and _nightly_calls[1]["run_night"] == "2026-10-28"
-      and _nightly_calls[1]["universes"] == ["ASX 300"])
+check("FIXED (TASK 25, part B): the catch-up block no longer runs in the same "
+      "tick as a due-scan that just tripped the breaker - only the due-scan's "
+      "own _run_nightly() call happened, never a second one with a real run_night",
+      len(_nightly_calls) == 1 and _nightly_calls[0]["run_night"] is None)
 
-check("the catch-up block's own cool-down-skip log line never fired - it was "
-      "gated on the SAME stale _rl_cooldown_active value computed at tick-start",
-      not any("catch-up scan skipped - rate-limit cool-down" in m for m in _cooldown_test_logs))
-check("the catch-up scan's own start line DID log (attempt 2/3 - sharing the "
-      "due-scan's own scan_attempts budget, exactly as designed)",
-      any("catch-up scan for 2026-10-28" in m for m in _cooldown_test_logs))
+check("the catch-up block's own cool-down-skip log line NOW fires - it re-reads "
+      "the cool-down fresh immediately before its own gate check, instead of "
+      "reusing the stale tick-start _rl_cooldown_active snapshot",
+      any("catch-up scan skipped - rate-limit cool-down" in m for m in _cooldown_test_logs))
+check("the catch-up scan's own start line never logs - it was skipped before "
+      "ever reaching that point",
+      not any("catch-up scan for 2026-10-28" in m for m in _cooldown_test_logs))
 
-print("[task23_c9_item4_cooldown_staleness_finding] REPRODUCED: single-process, "
-      "same-tick stale `_rl_cooldown_active` snapshot - not a cross-process "
-      "scheduler_state.json lost update (cool-down was correctly persisted and "
-      "remained active throughout). No fix applied for this item in this task, "
-      "per its own 'INVESTIGATE ONLY ... do not change it unless proven "
-      "[the named cross-process hypothesis]' instruction - reported as a "
-      "finding for the Director's own follow-up decision OK")
+print("[task23_c9_item4_cooldown_staleness_FIXED] TASK 25 part B: catch-up "
+      "correctly stops in the same tick once the due-scan's own breaker trip "
+      "records a fresh cool-down - no longer the same-tick stale "
+      "`_rl_cooldown_active` snapshot bug this test originally found OK")
 
 print()
 print(f"PASS so far: {passed}, FAIL so far: {failed}")

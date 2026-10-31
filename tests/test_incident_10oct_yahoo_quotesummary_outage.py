@@ -395,7 +395,14 @@ with mock.patch.object(nightly_scan, "refresh_market_cap_ranking"), \
      mock.patch.object(se, "_build_derived_universes"), \
      mock.patch("alert_engine.run_extra_ticker_pass"), \
      mock.patch("alert_engine.send_batched_notifications"), \
-     mock.patch("results_engine.check_results_day"):
+     mock.patch("results_engine.check_results_day"), \
+     mock.patch.object(se, "_run_reprice_pass_in_child", return_value=False):
+    # TASK 25 (31 Oct 2026): the reprice pass tries a child process
+    # FIRST - forced to "unavailable" here so this check keeps counting
+    # calls to the mocked nightly_scan.reprice_universe() in THIS
+    # process, via the in-process fallback loop, exactly as it always
+    # has. A real child process wouldn't see this mock at all (it's a
+    # separate process), which isn't what this check is testing.
     reprice_calls["n"] = 0
     _normal_logs = []
     se._run_nightly(dict(_base_cfg), _normal_logs.append, run_night="2026-10-10")

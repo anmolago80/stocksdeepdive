@@ -184,7 +184,16 @@ with mock.patch.object(nightly_scan, "run_universe_scan", return_value=_fake_pay
      mock.patch.object(sched, "_load_state", return_value={}), \
      mock.patch.object(sched, "_save_state", return_value=None), \
      mock.patch.object(sched, "_log_mem", side_effect=lambda log, label, pid=None: _mem_lines_reprice.append(label)), \
-     mock.patch.object(sched, "_malloc_trim_and_log", side_effect=lambda log, label: _trim_lines_reprice.append(label)):
+     mock.patch.object(sched, "_malloc_trim_and_log", side_effect=lambda log, label: _trim_lines_reprice.append(label)), \
+     mock.patch.object(sched, "_run_reprice_pass_in_child", return_value=False):
+    # TASK 25 (31 Oct 2026): the reprice pass now tries a child process
+    # FIRST (_run_reprice_pass_in_child) - forced to "unavailable" here
+    # so this check keeps exercising exactly what it always has, the
+    # per-universe IN-PROCESS loop (_reprice_universes_loop, shared
+    # verbatim by both paths) calling THIS process's own _log_mem/
+    # _malloc_trim_and_log per universe. The child-process path itself
+    # (log lines relayed from a real subprocess instead) is TASK 25's
+    # own test file's job, not this one's.
     import alert_engine
     import snapshot_store
     import insider_engine

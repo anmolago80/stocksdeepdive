@@ -146,6 +146,8 @@ CONFIG (Railway environment variables, all optional):
 
 import json
 import os
+import queue
+import subprocess
 import sys
 import threading
 import time
@@ -976,6 +978,167 @@ def _rescan_request_status():
     }
 
 
+# TASK 25 (Director-directed, 31 Oct 2026, part A): the reprice pass's
+# own short-lived child process - containment for the native (non-
+# Python-heap) memory MALLOC_ARENA_MAX=2 did NOT stop (Railway evidence:
+# fastapi rss climbed 0.58->0.76GB on 29 Oct's reprice pass and
+# 0.81->0.96GB on 30 Oct's, service sitting at 1.57GB with no restart
+# since 29 Oct, while TASK 21b's own diagnostic showed Python-object
+# growth of only ~14MB across the same pass) - when a CHILD PROCESS
+# exits, the OS reclaims every byte it ever touched, Python-managed or
+# not, which no in-process fix (gc.collect(), malloc_trim(), TASK 21's
+# own per-universe trim) can do for memory glibc's own allocator never
+# hands back to begin with.
+_REPRICE_CHILD_TIMEOUT_SECONDS = 30 * 60
+
+
+def _reprice_universes_loop(to_reprice, run_night, log):
+    """The reprice pass's own per-universe loop - reprice_universe()
+    then the SAME three post-reprice memory-trim/diagnostic calls this
+    loop has always made (_log_mem/_malloc_trim_and_log/_memdiag_
+    snapshot_and_log), per universe, in order. TASK 25 (Director-
+    directed, 31 Oct 2026, part A): extracted verbatim from _run_
+    nightly()'s own inline loop so it can be shared, UNCHANGED, by both
+    the in-process path (this task's own fallback, and the only path
+    before this task existed) and _reprice_pass_child_entry() below -
+    "does the child produce identical saved rows to the in-process
+    path" is true by construction, since both call this exact function
+    rather than two independently-maintained copies of the same loop.
+    No change to what gets saved (scan_store.reprice_scan(), inside
+    reprice_universe() itself) or how prices/scores are computed."""
+    import nightly_scan
+    for universe in to_reprice:
+        try:
+            nightly_scan.reprice_universe(universe, log=log, run_night=run_night)
+        except Exception as e:
+            log(f"[scheduler] reprice {universe} failed: {e}")
+        _log_mem(log, f"after reprice {universe}")
+        _malloc_trim_and_log(log, f"after reprice {universe}")
+        _memdiag_snapshot_and_log(log, f"after reprice {universe}")
+
+
+# TASK 25, part A (same comment as above, this is the specific "how" -
+# subprocess.Popen running a STANDALONE entry-point script
+# (reprice_child_entry.py), deliberately NEVER multiprocessing's
+# "spawn" start method. "spawn"'s own bootstrap re-executes whatever
+# script is the CALLING process's own sys.modules["__main__"] (to
+# reconstruct state needed for unpickling) - that's server.py when
+# this runs inside the FastAPI process, but it's app.py when this
+# runs inside the STREAMLIT subprocess's own independent scheduler
+# thread (start()'s own docstring: both processes legitimately run
+# this module's _loop(), and either one's "nightly" job-lock win can
+# be the one that reaches the reprice pass). server.py's own
+# uvicorn.run() is safely behind `if __name__ == "__main__":`, but
+# app.py calls _start_background_scheduler() UNGUARDED at its own top
+# level (Streamlit scripts are always run top-to-bottom, never behind
+# a __main__ guard) - re-executing it in a "spawn" child would start a
+# SECOND scheduler thread inside that child, exactly what item 5 of
+# this task forbids. subprocess.Popen launching a standalone script
+# has no such ambient "__main__" concept at all - the child runs
+# ONLY reprice_child_entry.py, regardless of which process's thread
+# started it.
+_REPRICE_CHILD_ENTRY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          "reprice_child_entry.py")
+
+
+def _run_reprice_pass_in_child(to_reprice, run_night, log):
+    """Runs _reprice_universes_loop() for every universe in `to_reprice`
+    inside a short-lived child process instead of this one - see the
+    module comment above _REPRICE_CHILD_TIMEOUT_SECONDS for why, and
+    the one above _REPRICE_CHILD_ENTRY_PATH for why this is a plain
+    subprocess.Popen of a standalone script rather than multiprocessing.
+
+    Hands off {"to_reprice": ..., "run_night": ...} as one line of JSON
+    on the child's stdin; reprice_child_entry.py writes each log line
+    from the pass as its own line on stdout (flushed immediately, not
+    batched), which a background reader thread relays here, line by
+    line, into `log` - including the per-universe "[mem] rss=... after
+    reprice <universe>" line (this CHILD process's own memory, which
+    is exactly the number that matters, since it's the one reclaimed
+    when the process exits).
+
+    Returns True if the child exited with code 0 after its stdout
+    pipe closed (EOF) - False if it couldn't even be started, the pipe
+    never closes within _REPRICE_CHILD_TIMEOUT_SECONDS, or it exited
+    non-zero, in every case logging exactly which one happened before
+    returning. The caller's own contract (see its call site in _run_
+    nightly() below) is to run the SAME loop in-process whenever this
+    returns False - a reprice is never silently skipped because of
+    this containment."""
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, _REPRICE_CHILD_ENTRY_PATH],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+    except Exception as e:
+        log(f"[scheduler] reprice pass: child process failed to start ({e}) - "
+            f"falling back to running the reprice loop in-process")
+        return False
+
+    try:
+        proc.stdin.write(json.dumps({"to_reprice": to_reprice, "run_night": run_night}) + "\n")
+        proc.stdin.close()
+    except Exception as e:
+        log(f"[scheduler] reprice pass: could not hand off to the child process "
+            f"({e}) - falling back to running the reprice loop in-process")
+        proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        return False
+
+    line_queue = queue.Queue()
+
+    def _read_stdout():
+        try:
+            for raw_line in proc.stdout:
+                line_queue.put(raw_line.rstrip("\n"))
+        except Exception:
+            pass
+        finally:
+            line_queue.put(None)  # EOF sentinel - always put, crash or clean exit
+
+    threading.Thread(target=_read_stdout, daemon=True).start()
+
+    deadline = time.time() + _REPRICE_CHILD_TIMEOUT_SECONDS
+    reached_eof = False
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            line = line_queue.get(timeout=min(1.0, remaining))
+        except queue.Empty:
+            continue
+        if line is None:
+            reached_eof = True
+            break
+        log(line)
+
+    if not reached_eof:
+        log(f"[scheduler] reprice pass: child process exceeded "
+            f"{_REPRICE_CHILD_TIMEOUT_SECONDS}s - terminating and falling back to "
+            f"running the reprice loop in-process")
+        proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        return False
+
+    try:
+        exitcode = proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        exitcode = None
+    if exitcode != 0:
+        log(f"[scheduler] reprice pass: child process exited with code {exitcode} "
+            f"before finishing - falling back to running the reprice loop in-process")
+        return False
+    return True
+
+
 def _run_nightly(cfg, log, run_night=None, cancel_event=None):
     import nightly_scan
     import scanner_engine
@@ -1395,33 +1558,25 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                 # log()'s own docstring. A no-op (not even a function
                 # call cost worth noting) with the switch off.
                 _memdiag_snapshot_and_log(log, "before reprice pass")
-                for universe in to_reprice:
-                    try:
-                        nightly_scan.reprice_universe(universe, log=log, run_night=run_night)
-                    except Exception as e:
-                        log(f"[scheduler] reprice {universe} failed: {e}")
-                    # TASK 21 (Director-directed, 25 Oct 2026, memory):
-                    # per universe, not just once for the whole reprice
-                    # pass - this is the STAGE the Railway [mem]
-                    # diagnostic root-caused as the largest single
-                    # jump (0.31GB -> 1.19GB): reprice_universe() is the
-                    # only post-scan stage that downloads full price
-                    # history (yf.download(), up to REPRICE_CHUNK_SIZE
-                    # tickers/chunk) rather than a small per-ticker
-                    # .info dict, and this loop can call it 20+ times
-                    # in a row for every real universe not scanned
-                    # tonight. reprice_universe() itself now frees each
-                    # chunk's downloaded history explicitly (del +
-                    # gc.collect(), see its own comment) - trimming
-                    # after each universe here is what actually
-                    # returns that freed memory to the OS between
-                    # universes, instead of letting it pile up for
-                    # the whole pass before the first trim.
-                    _log_mem(log, f"after reprice {universe}")
-                    _malloc_trim_and_log(log, f"after reprice {universe}")
-                    # TASK 21b (DIAGNOSE ONLY, MEM_DIAG=1 only): one of
-                    # the Director's own 3 named checkpoints.
-                    _memdiag_snapshot_and_log(log, f"after reprice {universe}")
+                # TASK 25 (Director-directed, 31 Oct 2026, part A): the
+                # whole per-universe loop now runs in a short-lived
+                # CHILD PROCESS by default (_run_reprice_pass_in_child) -
+                # see that function's own docstring, and the module
+                # comment above _REPRICE_CHILD_TIMEOUT_SECONDS, for why.
+                # Falls back to running _reprice_universes_loop() in
+                # THIS process, exactly as every night before this task,
+                # if the child can't start, crashes, or times out - a
+                # reprice is never skipped because of this change. The
+                # one parent-side "[mem]" line before/after brackets
+                # whichever path ran, so a log search for "[mem]" still
+                # shows this process's own RSS staying low even while
+                # the per-universe child lines (same format as always)
+                # show the real work happening.
+                _log_mem(log, "before reprice pass (parent)")
+                if not _run_reprice_pass_in_child(to_reprice, run_night, log):
+                    log("[scheduler] reprice pass: running in-process (child path unavailable)")
+                    _reprice_universes_loop(to_reprice, run_night, log)
+                _log_mem(log, "after reprice pass (parent)")
             else:
                 log("[scheduler] reprice pass: every real universe was scanned tonight, nothing to reprice")
         except Exception as e:
@@ -3786,9 +3941,30 @@ def _loop(log):
                 ref_night = _catchup_reference_night(cfg, now) if _abandoned_status != "alive" else None
                 if ref_night is not None:
                     missing = _universes_missing_today(cfg, ref_night)
-                    if missing and _rl_cooldown_active:
+                    # TASK 25 (Director-directed, 31 Oct 2026, part B -
+                    # proven by TASK 23's own investigation): re-read
+                    # fresh, right here, rather than reusing the
+                    # _rl_cooldown_active/_rl_cooldown_until snapshot
+                    # taken once at the TOP of this tick, before the
+                    # due-scan block above ever ran. The due-scan's own
+                    # _run_nightly() call can run for minutes and, if it
+                    # trips the rate-limit circuit breaker partway
+                    # through, record a BRAND NEW cool-down via
+                    # _record_rate_limit_cooldown() - which this catch-up
+                    # block, reading the stale tick-start snapshot, would
+                    # never see, immediately re-hitting the same rate
+                    # limit in the SAME tick. Real incident this fixes
+                    # (28 Oct, Railway logs): fastapi's due-scan recorded
+                    # a cool-down until 21:53:48, then started catch-up
+                    # attempt 3/3 at 21:09:46 anyway - ~1 min later, same
+                    # tick. The due-scan's OWN cool-down check above is
+                    # untouched - evaluated before the due-scan ever
+                    # runs, so staleness was never a problem there.
+                    _catchup_rl_cooldown_active, _catchup_rl_cooldown_until = (
+                        _rate_limit_cooldown_status(_load_state(), datetime.now(timezone.utc)))
+                    if missing and _catchup_rl_cooldown_active:
                         log(f"[scheduler] catch-up scan skipped - rate-limit cool-down "
-                            f"active until {_rl_cooldown_until}")
+                            f"active until {_catchup_rl_cooldown_until}")
                         missing = []
                     if missing:
                         # URGENT COMMIT 2 (25 Sep 2026, owner-reported):
