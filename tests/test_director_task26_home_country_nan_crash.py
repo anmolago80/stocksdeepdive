@@ -138,12 +138,18 @@ check("FIX: a Comparison mixing a real Home Country (Brazil) with NaN/missing "
       "AttributeError: 'float' object has no attribute 'replace')",
       not _at_cmp.exception)
 _cmp_html = " ".join(m.value or "" for m in _at_cmp.get("markdown"))
-check("the foreign ticker's real Home Country label (Brazil) is shown",
-      _cmp_html.count("Brazil") == 1)
+check("the foreign ticker's real Home Country label (Brazil) is shown - "
+      "TWICE on this page since TASK 27 (1 Nov 2026) added the same label "
+      "to the '{page_label} preview' table (shared by Scanner AND "
+      "Comparison), on top of the Side-by-side table this check originally "
+      "covered alone - same precedent the existing 'scan of <date>' note "
+      "already set by appearing in both tables",
+      _cmp_html.count("Brazil") == 2)
 check("no 'nan'/'NaN' text ever leaks onto the page from the NaN-valued rows",
       not _leaks_nan_text(_cmp_html))
 print("[task26_c1_comparison_no_crash] mixed Comparison (real + NaN + missing "
-      "Home Country) renders cleanly, real label shown once OK")
+      "Home Country) renders cleanly, real label shown (now twice as of "
+      "TASK 27) OK")
 
 # ======================================================================
 # CHECK 2 (item 2, app.py's Scanner-side builder, _home_country_by_
@@ -151,15 +157,17 @@ print("[task26_c1_comparison_no_crash] mixed Comparison (real + NaN + missing "
 # (_render_scan_results(state_prefix="scan") - the actual code path
 # that builder feeds, driven the same way the "Change universe & Run
 # Scan" button does: scan_stocks/scan_universe_name/scan_fresh session
-# state. Confirmed by direct reading (and by this check's own first,
-# since-corrected attempt): Scanner's own results table NEVER renders
-# a Home Country sub-label at all (that display is wired up only
-# inside _render_scan_results' state_prefix=="cmp" branch, i.e.
-# Comparison - a TASK 22 scope gap, not something this task touches or
-# needs to fix). This check therefore proves what's actually true for
-# Scanner: the builder itself runs over a NaN-valued row without
-# crashing the page, same "no exception" bar as the real incident -
-# not a label-visibility claim this view has never made.
+# state. At the time THIS task was done, Scanner's own results tables
+# never rendered a Home Country sub-label at all (TASK 22's own report
+# overclaimed this) - that gap was closed by TASK 27 (1 Nov 2026),
+# which added the SAME label to the "{page_label} preview" table AND
+# the overnight table, both now covered by tests/test_director_
+# task27_scanner_home_country_label.py. This check's own job was
+# always narrower than a label-visibility claim: proving the builder
+# itself runs over a NaN-valued row without crashing the page, same
+# "no exception" bar as the real incident - still true, and still
+# worth keeping as its own check even after TASK 27 added the label
+# this exact code path now also feeds.
 # ======================================================================
 scan_store.save_scan("Foreign US-listed", [
     {"Ticker": "NU", "Type": "STOCK", "Company Name": "Nu Holdings Ltd.", "Price": 12.0,

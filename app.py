@@ -13425,6 +13425,20 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
                 f"<br><span style='color:#5b7290;font-size:10.5px'>"
                 f"{html.escape(_tk_sector)}</span>"
             )
+        # TASK 27 (Director-directed, 1 Nov 2026): same small Home
+        # Country label the Comparison/Side-by-side table already
+        # shows (TASK 22/26) - a non-US-domiciled company listed on
+        # NYSE/Nasdaq/NYSE American, the only universe whose raw scan
+        # row ever carries this field; every other row/universe has
+        # nothing here. TASK 26's own guard (isinstance + strip, never
+        # a plain truthiness check) - a saved row's value can be
+        # pandas NaN (a float) rather than a missing/empty string.
+        _on_home_country = _orow.get("Home Country")
+        if isinstance(_on_home_country, str) and _on_home_country.strip():
+            _tk_cell += (
+                "<div style='font-size:11px;color:#8aa0b8;font-weight:400;'>"
+                + html.escape(_on_home_country) + "</div>"
+            )
         _on_ccy = (
             fcf_valuation_engine.trading_currency_for(_tk)
             if _on_show_ccy and _tk != "-" else None
@@ -16740,6 +16754,22 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                             when=_pr.get("_saved_scan_as_of") or "-",
                         ))
                         + "</div>"
+                    )
+                # TASK 27 (Director-directed, 1 Nov 2026): same small
+                # Home Country label the Side-by-side table further
+                # down already shows (TASK 22/26) - this "{page_label}
+                # preview" table is the first results table a Run Scan
+                # click produces (shown before the paywall gate), and
+                # previously showed nothing here at all. TASK 26's own
+                # guard (isinstance + strip, never a plain truthiness
+                # check) - `_pr` is a pandas row, whose "Home Country"
+                # can be NaN (a float) rather than a missing/empty
+                # string for a ticker with none.
+                _pr_home_country = _pr.get("Home Country")
+                if isinstance(_pr_home_country, str) and _pr_home_country.strip():
+                    _pr_tk_cell += (
+                        "<div style='font-size:11px;color:#8aa0b8;font-weight:400;'>"
+                        + html.escape(_pr_home_country) + "</div>"
                     )
                 _pr_ccy = f" {fcf_valuation_engine.trading_currency_for(_pr['Ticker'])}" if _scan_show_ccy else ""
                 _row_html = (
