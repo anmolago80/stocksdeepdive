@@ -15917,8 +15917,15 @@ def _render_scan_results(page_label, state_prefix, empty_message,
         try:
             _scan_payload = scan_store.load_scan_raw(_scan_universe_name, allow_private=True)
             for _hc_row in (_scan_payload or {}).get("rows") or []:
-                if _hc_row.get("Home Country"):
-                    _home_country_by_ticker[_hc_row.get("Ticker")] = _hc_row["Home Country"]
+                # TASK 26 (Director-directed, 1 Nov 2026, real crash):
+                # a row's "Home Country" can be pandas NaN (a float)
+                # rather than a missing/empty string - NaN is truthy,
+                # so a plain truthiness check would let it into this
+                # dict, which _render_scan_results()'s own escape call
+                # further down would then crash on.
+                _hc_value = _hc_row.get("Home Country")
+                if isinstance(_hc_value, str) and _hc_value.strip():
+                    _home_country_by_ticker[_hc_row.get("Ticker")] = _hc_value
         except Exception:
             pass
     universe_source = st.session_state.get(f"{state_prefix}_universe_source", "")
@@ -16975,10 +16982,20 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 # all (nightly_scan.run_universe_scan()'s own passthrough
                 # - see that function's own comment); every other row,
                 # every other universe, has nothing here, same as today.
-                if r.get("Home Country"):
+                #
+                # TASK 26 (Director-directed, 1 Nov 2026, real crash):
+                # in a mixed Comparison, a row with no Home Country can
+                # hold pandas NaN (a float) instead of a missing/empty
+                # string - NaN is truthy, so the old `if r.get(...)`
+                # check let it through and html.escape(NaN) raised
+                # AttributeError. isinstance-checking for a real, non-
+                # empty string is the only safe truthiness test for a
+                # value that can come from a pandas row.
+                _cmp_home_country = r.get("Home Country")
+                if isinstance(_cmp_home_country, str) and _cmp_home_country.strip():
                     _cmp_tk_cell += (
                         "<div style='font-size:11px;color:#8aa0b8;font-weight:400;'>"
-                        + html.escape(r["Home Country"]) + "</div>"
+                        + html.escape(_cmp_home_country) + "</div>"
                     )
                 _cmp_ccy = fcf_valuation_engine.trading_currency_for(_cmp_tk) if _scan_show_ccy else None
                 _row_html = (

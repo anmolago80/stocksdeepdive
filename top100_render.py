@@ -1157,7 +1157,17 @@ def _foreign_us_listed_home_country_by_ticker():
     for row in payload.get("rows") or []:
         ticker = row.get("Ticker")
         home_country = row.get("Home Country")
-        if ticker and home_country and home_country != "United States":
+        # TASK 26 (Director-directed, 1 Nov 2026, real crash): a row's
+        # "Home Country" can be pandas NaN (a float) rather than a
+        # missing/empty string once this scan's own rows have passed
+        # through a pandas DataFrame somewhere upstream - NaN is
+        # truthy, so a plain `if home_country` check (and, further
+        # downstream, html.escape(home_country)) would crash exactly
+        # like app.py's own Comparison page did. isinstance-checking
+        # for a real, non-empty string is the only safe truthiness
+        # test for a value that can come from a pandas row.
+        if (ticker and isinstance(home_country, str) and home_country.strip()
+                and home_country != "United States"):
             out[ticker] = home_country
     return out
 
@@ -1218,7 +1228,14 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
         home_country_html = None
         if home_country_by_ticker:
             _hc = home_country_by_ticker.get(row["ticker"])
-            if _hc:
+            # TASK 26 (Director-directed, 1 Nov 2026, real crash):
+            # belt-and-braces - _foreign_us_listed_home_country_by_
+            # ticker() already excludes a non-string value, but this
+            # is the actual render boundary (_home_country_label_html()
+            # calls html.escape(), which raises on a float), so it
+            # gets its own isinstance check too rather than trusting
+            # the dict was built safely.
+            if isinstance(_hc, str) and _hc.strip():
                 home_country_html = _home_country_label_html(_hc)
         _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
                     home_country_html=home_country_html)
