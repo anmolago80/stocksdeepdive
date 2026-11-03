@@ -3834,22 +3834,29 @@ EN = {
     # Section 4 — history chart: fact vs estimate by shape/texture, not
     # colour alone (recorded_vs_estimated mock's own grammar).
     "compounder.trading_cost.chart_spread_title": "Spread, % of price",
-    "compounder.trading_cost.legend_estimated": "Estimated — from daily prices",
+    "compounder.trading_cost.legend_estimated": "Estimated — 10-day rolling average",
     "compounder.trading_cost.legend_recorded": "Recorded — measured mid-session",
     "compounder.trading_cost.recording_began_zone_label": "RECORDING BEGAN {date}",
     "compounder.trading_cost.wide_threshold_label": "Wide, above 1.5%",
-    "compounder.trading_cost.hover_both": "recorded {recorded}% ({time}) · estimated {estimated}% · gap {gap}pt",
+    "compounder.trading_cost.hover_both": "recorded {recorded}% ({time}) · 10-day avg {estimated}% · gap {gap}pt",
     "compounder.trading_cost.hover_recorded_only": "recorded {recorded}% ({time})",
-    "compounder.trading_cost.hover_estimated_only": "estimated {estimated}%",
+    "compounder.trading_cost.hover_estimated_only": "10-day avg {estimated}%",
     "compounder.trading_cost.chart_description": (
-        "Muted, diagonally hatched bars are the estimated spread for "
-        "every day, from price alone. Solid bright dots with a dark "
-        "ring are real recorded spreads, always drawn on top of the "
-        "bars. The soft tinted zone marks the period since recording "
-        "began — a day inside it with no dot simply wasn't sampled "
-        "that day (rejected, a holiday, or a miss), never filled in "
-        "with an estimate standing in for a real quote. The dashed "
-        "line marks the wide-spread threshold."
+        "The bright filled line is the 10-trading-day rolling average "
+        "of the daily estimated spread, from price alone - smoother "
+        "than any single day, which the Corwin-Schultz estimator can "
+        "genuinely report as 0% on a day it detected no real spread "
+        "signal (a real reading, never a gap it failed to fill). "
+        "Solid bright dots with a dark ring are real recorded spreads, "
+        "always drawn on top of the line. The soft tinted zone marks "
+        "the period since recording began — a day inside it with no "
+        "dot simply wasn't sampled that day (rejected, a holiday, or "
+        "a miss), never filled in with an estimate standing in for a "
+        "real quote. The dashed line marks the wide-spread threshold."
+    ),
+    "compounder.trading_cost.chart_zero_note": (
+        "A 0% day means the estimator detected no spread signal that "
+        "day — not a missing reading."
     ),
 
     # Section 5 — day-by-day table (structure unchanged).
@@ -7657,23 +7664,31 @@ ES = {
     # textura, nunca solo por color (gramática del mock recorded_vs_
     # estimated).
     "compounder.trading_cost.chart_spread_title": "Spread, % del precio",
-    "compounder.trading_cost.legend_estimated": "Estimado — a partir de precios diarios",
+    "compounder.trading_cost.legend_estimated": "Estimado — promedio móvil de 10 días",
     "compounder.trading_cost.legend_recorded": "Registrado — medido en sesión",
     "compounder.trading_cost.recording_began_zone_label": "REGISTRO INICIADO {date}",
     "compounder.trading_cost.wide_threshold_label": "Amplio, por encima de 1.5%",
-    "compounder.trading_cost.hover_both": "registrado {recorded}% ({time}) · estimado {estimated}% · diferencia {gap}pt",
+    "compounder.trading_cost.hover_both": "registrado {recorded}% ({time}) · prom. 10 días {estimated}% · diferencia {gap}pt",
     "compounder.trading_cost.hover_recorded_only": "registrado {recorded}% ({time})",
-    "compounder.trading_cost.hover_estimated_only": "estimado {estimated}%",
+    "compounder.trading_cost.hover_estimated_only": "prom. 10 días {estimated}%",
     "compounder.trading_cost.chart_description": (
-        "Las barras tenues con trama diagonal son el spread estimado "
-        "de cada día, calculado solo a partir del precio. Los puntos "
-        "sólidos y brillantes con anillo oscuro son spreads realmente "
-        "registrados, siempre dibujados sobre las barras. La zona con "
-        "tinte suave marca el período desde que comenzó el registro — "
-        "un día dentro de esa zona sin punto simplemente no se "
-        "muestreó ese día (rechazado, feriado o una falla), nunca se "
-        "rellena con una estimación en lugar de una cotización real. "
-        "La línea punteada marca el umbral de spread amplio."
+        "La línea brillante y rellena es el promedio móvil de 10 días "
+        "de negociación del spread estimado diario, calculado solo a "
+        "partir del precio - más suave que un solo día, que el "
+        "estimador de Corwin-Schultz puede reportar genuinamente como "
+        "0% en un día en el que no detectó ninguna señal real de "
+        "spread (una lectura real, nunca un hueco que no pudo llenar). "
+        "Los puntos sólidos y brillantes con anillo oscuro son spreads "
+        "realmente registrados, siempre dibujados sobre la línea. La "
+        "zona con tinte suave marca el período desde que comenzó el "
+        "registro — un día dentro de esa zona sin punto simplemente no "
+        "se muestreó ese día (rechazado, feriado o una falla), nunca "
+        "se rellena con una estimación en lugar de una cotización "
+        "real. La línea punteada marca el umbral de spread amplio."
+    ),
+    "compounder.trading_cost.chart_zero_note": (
+        "Un día con 0% significa que el estimador no detectó ninguna "
+        "señal de spread ese día — no es una lectura faltante."
     ),
 
     # Sección 5 — tabla día a día (estructura sin cambios).

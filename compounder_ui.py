@@ -40,6 +40,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import currency_format
+import fcf_valuation_engine
+import fundamentals_data
 import i18n
 import quote_recorder
 import quote_snapshot_store
@@ -1672,14 +1674,66 @@ def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="e
 # trading_cost_tab() above for the on/off switch and tab placement.
 # -----------------------------------
 
+_CURRENCY_SYMBOL_BY_CODE = {
+    "AUD": "A$", "USD": "US$", "CAD": "C$",
+    "GBP": "GBP ", "EUR": "EUR ", "CHF": "CHF ", "SEK": "SEK ", "JPY": "JPY ",
+}
+
+
 def _currency_symbol_for_ticker(ticker):
-    """"A$" for an ASX ticker (".AX" suffix), "US$" otherwise - the
-    Trading Cost tab serves both AUD (ASX) and USD (US) tickers, and a
-    bare "$" would be ambiguous rather than informative (same reasoning
-    _fmt_value_traded() below already applies to its own figure). Same
-    ticker-suffix convention _market_tz_for_ticker() below already
-    uses - never a second, independently-derived market check."""
-    return "A$" if ticker.upper().endswith(".AX") else "US$"
+    """The Trading Cost tab's own money-value prefix for `ticker`.
+
+    TASK 28 (Director-directed, 3 Nov 2026, real incident - HSBA.L's
+    own Trading Cost tab showed "A limit order at the mid (US$1,268.60)"
+    - HSBA.L trades in pence, ~GBP 12.69, never US dollars): this used
+    to be "A$" for a ".AX" ticker, "US$" for EVERYTHING else - every
+    .L/.TO/.T/European ticker was mislabelled US$. Derived instead from
+    fcf_valuation_engine.trading_currency_for(ticker) (no `info` passed
+    - this call has none to hand, so it goes straight to that
+    function's own ticker-suffix table, the SAME one TASK 29b already
+    fixed to return the correct LISTING currency for every suffix this
+    codebase covers, incl. the four European markets quote_recorder.py
+    now records). AUD/USD/CAD keep their existing letter+"$"
+    disambiguation (three dollar-based currencies that would otherwise
+    all read as one ambiguous bare "$" - same reasoning _fmt_value_
+    traded() below already applies to its own figure); every other
+    currency here is labelled with its own plain ISO code (a trailing
+    space baked into the dict value, so _fmt_money()'s own bare
+    concatenation reads "GBP 12.69", not "GBP12.69") rather than a
+    glyph - none of GBP/EUR/CHF/SEK/JPY shares a symbol with another
+    currency on this list the way "$" would, so a glyph buys no
+    disambiguation here, and a plain code is unambiguous across every
+    font/locale. Falls back to "US$" for any currency code this table
+    doesn't carry (today: every ticker suffix trading_currency_for()
+    itself knows maps to one of these eight - this is a pure "never
+    silently render an empty prefix" safety net, not an expected path)."""
+    ccy = fcf_valuation_engine.trading_currency_for(ticker)
+    return _CURRENCY_SYMBOL_BY_CODE.get(ccy, "US$")
+
+
+def _normalize_pence_bid_ask_last(ticker, bid, ask, last_price, reference_price):
+    """(bid, ask, last_price), repaired for a ".L" ticker whose
+    quote_recorder.py-stored bid/ask/last can arrive from Yahoo in
+    PENCE even when this tab's own price_history (and so
+    `reference_price`, its latest close) is already in GBP pounds -
+    the SAME root cause TASK 29/29b fixed for price HISTORY: Yahoo's
+    own per-quote unit isn't reliably confirmed by a currency string,
+    so this checks magnitude against a known-good reference price
+    instead. Reuses fundamentals_data.repair_mixed_unit_price_series()
+    - the SAME ratio-based (30x-300x) per-point repair TASK 29/29b
+    already established - rather than a second, independently-written
+    pence-detection check; fallback_divide_all=False, since a quote_
+    recorder snapshot carries no currency-code confirmation at all
+    (never blanket-divide bid/ask/last that might already be correct).
+    A no-op (returns the three inputs completely unchanged) for a
+    non-".L" ticker, or when none of bid/ask/last needed rescaling
+    against the reference."""
+    if not (ticker or "").upper().endswith(".L"):
+        return bid, ask, last_price
+    repaired = fundamentals_data.repair_mixed_unit_price_series(
+        [bid, ask, last_price], reference_price, fallback_divide_all=False,
+    )
+    return repaired[0], repaired[1], repaired[2]
 
 
 def _fmt_money(value, symbol, decimals=2):
@@ -2065,21 +2119,60 @@ def _plain_tile(label, value_text, caption=None):
     )
 
 
+_SPREAD_CHART_ROLLING_WINDOW_DAYS = 10
+
+
+def _rolling_mean(values, window=_SPREAD_CHART_ROLLING_WINDOW_DAYS):
+    """[avg_i, ...], one per `values` index - the TRAILING `window`-day
+    mean ending at index i, skipping None entries inside that window
+    (never treating a None - "not computed at all", see corwin_
+    schultz_spread()'s own docstring - as a 0). The first few indices
+    average over however many days are actually available (never
+    padded with a fabricated day). None at index i only when EVERY
+    value in that window is itself None - a real, computed 0.0 inside
+    the window still counts as a genuine reading and pulls the average
+    toward 0, exactly as it should (TASK 28's own "a 0 day means no
+    spread detected, not missing data")."""
+    out = []
+    for i in range(len(values)):
+        window_vals = [v for v in values[max(0, i - window + 1):i + 1] if v is not None]
+        out.append(sum(window_vals) / len(window_vals) if window_vals else None)
+    return out
+
+
 def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, ticker, lang="en",
                                 show_recorded=True):
     """"Spread, % of price" chart, redesigned to read fact vs estimate
     by SHAPE AND TEXTURE, never colour alone - matching 45e2b786-
     recorded_vs_estimated_mock.html's own grammar (the acceptance bar
-    for this layout - its numbers are fake, never copied): estimated
-    days are muted, diagonally hatched background bars (plotly's own
-    marker_pattern, always present for every day); recorded days are
-    solid bright dots with a dark ring, always drawn on top (a second
-    trace, so z-order is "last trace wins" - already true here since
-    it's added after the bars); a soft tinted zone (add_vrect) marks
-    the period since real recording began, labelled "RECORDING BEGAN
-    <date>"; the wide-spread threshold line's own label gets a dark
-    backing (annotation_bgcolor) so it can't blend into a bar or dot
-    it happens to sit near. ONE y-axis - both traces share it.
+    for this layout - its numbers are fake, never copied): recorded
+    days are solid bright dots with a dark ring, always drawn on top
+    (a second trace, so z-order is "last trace wins" - already true
+    here since it's added after the main line); a soft tinted zone
+    (add_vrect) marks the period since real recording began, labelled
+    "RECORDING BEGAN <date>"; the wide-spread threshold line's own
+    label gets a dark backing (annotation_bgcolor) so it can't blend
+    into the line or a dot it happens to sit near. ONE y-axis - both
+    traces share it.
+
+    TASK 28 (Director-directed, 3 Nov 2026, real incident - HSBA.L/
+    BBVA): the main series used to be the RAW daily Corwin-Schultz
+    estimate, one muted hatched bar per day - but _pair_spread()
+    clamps a negative estimate to 0.0 (ROOT CAUSE 2, trading_cost_
+    engine.py's own docstring: "a negative alpha means this pair's own
+    2-day range gave no real spread signal"), and for a liquid stock
+    most days genuinely come out negative/clamped, so that bar chart
+    read as mostly empty. The main series is now a _SPREAD_CHART_
+    ROLLING_WINDOW_DAYS(10)-trading-day rolling average of those SAME
+    daily estimates (_rolling_mean() above) - smoother, always filled,
+    and a day whose own raw estimate is 0.0 still pulls the average
+    down exactly as it should (it's a real "no spread detected"
+    reading, not a gap) rather than being hidden/skipped. This is a
+    DISPLAY-only change - the headline spread/band figures and
+    crossing-cost numbers (trading_cost_engine.py itself, and every
+    "for comparison"/"tracking" figure derived from its own average_
+    estimated_spread_pct) are completely untouched; only what this one
+    chart function plots as its main line changed.
 
     `snap_times`: {"YYYY-MM-DD": snap_at_utc} from quote_snapshot_
     store.snapshot_times_for_ticker() - the recorded sample TIME shown
@@ -2100,6 +2193,7 @@ def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, tick
     dates = [r["date"] for r in days_rows]
     estimated = [r["estimated_spread_pct"] for r in days_rows]
     recorded = [r["recorded_spread_pct"] for r in days_rows]
+    rolling_estimated = _rolling_mean(estimated)
 
     def _snap_time_str(date_str):
         snap_iso = snap_times.get(date_str)
@@ -2109,28 +2203,26 @@ def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, tick
         tz_abbr = dt_local.tzname() or ""
         return f"{_format_clock_time(dt_local)} {tz_abbr}".strip()
 
-    def _hover_for(row):
-        est, rec = row["estimated_spread_pct"], row["recorded_spread_pct"]
-        if rec is not None and est is not None:
-            gap = rec - est
+    def _hover_for(row, rolling_val):
+        rec, roll = row["recorded_spread_pct"], rolling_val
+        if rec is not None and roll is not None:
+            gap = rec - roll
             return _t("hover_both", recorded=f"{rec:.1f}", time=_snap_time_str(row["date"]),
-                       estimated=f"{est:.1f}", gap=f"{gap:+.1f}")
+                       estimated=f"{roll:.1f}", gap=f"{gap:+.1f}")
         if rec is not None:
             return _t("hover_recorded_only", recorded=f"{rec:.1f}", time=_snap_time_str(row["date"]))
-        if est is not None:
-            return _t("hover_estimated_only", estimated=f"{est:.1f}")
+        if roll is not None:
+            return _t("hover_estimated_only", estimated=f"{roll:.1f}")
         return ""
 
-    hover_text = [_hover_for(r) for r in days_rows]
+    hover_text = [_hover_for(r, roll) for r, roll in zip(days_rows, rolling_estimated)]
 
     fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=dates, y=estimated, name=_t("legend_estimated"),
-        marker=dict(
-            color="rgba(94,211,240,0.30)",
-            pattern=dict(shape="/", fgcolor="rgba(94,211,240,0.65)", size=6, solidity=0.3),
-        ),
-        hovertext=hover_text, hoverinfo="text",
+    fig.add_trace(go.Scatter(
+        x=dates, y=rolling_estimated, name=_t("legend_estimated"), mode="lines",
+        line=dict(color="rgba(94,211,240,0.9)", width=2.5, shape="spline"),
+        fill="tozeroy", fillcolor="rgba(94,211,240,0.18)",
+        hovertext=hover_text, hoverinfo="text", connectgaps=False,
     ))
     if show_recorded:
         fig.add_trace(go.Scatter(
@@ -2168,7 +2260,6 @@ def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, tick
         xaxis=dict(gridcolor="rgba(138,160,184,0.15)"),
         yaxis=dict(gridcolor="rgba(138,160,184,0.15)", ticksuffix="%"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        barmode="overlay",
     )
     return fig
 
@@ -2263,6 +2354,22 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
     _in_roster = quote_recorder.is_in_roster(ticker)
 
     latest = quote_snapshot_store.latest_snapshot(ticker) if _in_roster else None
+    # TASK 28 (Director-directed, 3 Nov 2026, real incident - HSBA.L):
+    # normalise a ".L" ticker's recorded bid/ask/last ONCE, right here,
+    # before any downstream read (the mid price below, the "Bid & ask
+    # now" rail/tiles further down) - see _normalize_pence_bid_ask_
+    # last()'s own docstring. `reference_price` is this ticker's own
+    # latest close from price_history (already correctly GBP-scaled -
+    # TASK 29/29b's own fix), the same reliable-reference convention
+    # every other pence repair in this codebase already uses.
+    if latest:
+        _ref_price = None
+        if price_history:
+            _ref_price = sorted(price_history, key=lambda r: r["date"])[-1].get("close")
+        _norm_bid, _norm_ask, _norm_last = _normalize_pence_bid_ask_last(
+            ticker, latest.get("bid"), latest.get("ask"), latest.get("last_price"), _ref_price,
+        )
+        latest = dict(latest, bid=_norm_bid, ask=_norm_ask, last_price=_norm_last)
 
     latest_dt_local = None
     latest_caption = None
@@ -2509,6 +2616,12 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
         ),
         text_description=_t("chart_description"),
     )
+    # TASK 28 (Director-directed, 3 Nov 2026): a visible caption, not
+    # just the collapsed AI-text-equivalent expander's own copy - a 0%
+    # day is a real "no spread detected" reading from the Corwin-
+    # Schultz estimator (ROOT CAUSE 2 - see _pair_spread()'s own
+    # docstring), never a gap this chart failed to fill.
+    st.caption(_t("chart_zero_note"))
 
     # ---- Section 5: day-by-day table (structure unchanged, estimated
     # column muted so recorded reads as primary) ----
