@@ -1889,6 +1889,36 @@ def _run_quote_recorder_jp(log):
     quote_recorder.run_jp_recorder(log=log)
 
 
+def _run_quote_recorder_euronext(log):
+    """Euronext Paris/Amsterdam mid-session quote sampler (TASK 29b,
+    Part B2) - see _run_quote_recorder_asx above, same contract, same
+    module. This market's roster is Top 200 pool members only - see
+    quote_recorder.run_euronext_recorder()'s own docstring."""
+    import quote_recorder
+    quote_recorder.run_euronext_recorder(log=log)
+
+
+def _run_quote_recorder_xetra(log):
+    """Xetra (Frankfurt) mid-session quote sampler (TASK 29b, Part
+    B2) - see _run_quote_recorder_euronext above, same contract."""
+    import quote_recorder
+    quote_recorder.run_xetra_recorder(log=log)
+
+
+def _run_quote_recorder_six(log):
+    """SIX Swiss Exchange mid-session quote sampler (TASK 29b, Part
+    B2) - see _run_quote_recorder_euronext above, same contract."""
+    import quote_recorder
+    quote_recorder.run_six_recorder(log=log)
+
+
+def _run_quote_recorder_stockholm(log):
+    """Nasdaq Stockholm (OMX) mid-session quote sampler (TASK 29b,
+    Part B2) - see _run_quote_recorder_euronext above, same contract."""
+    import quote_recorder
+    quote_recorder.run_stockholm_recorder(log=log)
+
+
 def _mark_top100_pending(scan_day, finished_at, reason):
     """Top 100 trigger window fix (owner-approved, 30 Sep 2026, from
     instruction_top100_trigger_window.md): called once a nightly scan
@@ -4296,6 +4326,130 @@ def _loop(log):
                                 _release_job_lock("quote_recorder_jp")
                         else:
                             log("[scheduler] JP quote recorder skipped - another process "
+                                "already holds the lock")
+
+                # TASK 29b (Director-directed, 3 Nov 2026, Part B2/B5):
+                # four new European sampling windows, all 09:00-17:30
+                # local CET/CEST (Euronext Paris/Amsterdam, Xetra, SIX,
+                # Nasdaq Stockholm - see quote_recorder._MARKET_WINDOW's
+                # own docstring) - same per-market lock/retry-cap/state-
+                # date-guard shape as every market above. Each of these
+                # four markets' entire roster is Top 200 pool members
+                # only (quote_recorder.tickers_for_market() has no
+                # _MARKET_UNIVERSE entry for any of them), so a run
+                # before any Top 200 selection has ever completed
+                # simply records 0 tickers - no different from the UK/
+                # TSX/JP blocks above recording 0 while their own
+                # anchor universe is private. These four windows all
+                # sit well inside the UTC morning/afternoon (09:00-
+                # 17:30 CET/CEST is 08:00-16:30 UTC in winter, 07:00-
+                # 15:30 UTC in summer) - nowhere near NIGHTLY_SCAN_UTC_
+                # HOUR's own
+                # ~20:00-21:30 UTC nightly scan window, so none of these
+                # four new ticks can ever overlap it (see this task's
+                # own B5 report for the full scheduling-conflict check).
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_EURONEXT, now=now)
+                        and state.get("last_quote_recorder_euronext_date") != today):
+                    attempts = state.get("quote_recorder_euronext_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_euronext", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_euronext_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting Euronext quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_euronext", log, _run_quote_recorder_euronext,
+                                            log_error=_log_error)
+                                state = _load_state()
+                                state["last_quote_recorder_euronext_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                _log_error(f"[scheduler] Euronext quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_euronext")
+                        else:
+                            log("[scheduler] Euronext quote recorder skipped - another process "
+                                "already holds the lock")
+
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_XETRA, now=now)
+                        and state.get("last_quote_recorder_xetra_date") != today):
+                    attempts = state.get("quote_recorder_xetra_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_xetra", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_xetra_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting Xetra quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_xetra", log, _run_quote_recorder_xetra,
+                                            log_error=_log_error)
+                                state = _load_state()
+                                state["last_quote_recorder_xetra_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                _log_error(f"[scheduler] Xetra quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_xetra")
+                        else:
+                            log("[scheduler] Xetra quote recorder skipped - another process "
+                                "already holds the lock")
+
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_SIX, now=now)
+                        and state.get("last_quote_recorder_six_date") != today):
+                    attempts = state.get("quote_recorder_six_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_six", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_six_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting SIX quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_six", log, _run_quote_recorder_six,
+                                            log_error=_log_error)
+                                state = _load_state()
+                                state["last_quote_recorder_six_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                _log_error(f"[scheduler] SIX quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_six")
+                        else:
+                            log("[scheduler] SIX quote recorder skipped - another process "
+                                "already holds the lock")
+
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_STOCKHOLM, now=now)
+                        and state.get("last_quote_recorder_stockholm_date") != today):
+                    attempts = state.get("quote_recorder_stockholm_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_stockholm", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_stockholm_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting Stockholm quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_stockholm", log, _run_quote_recorder_stockholm,
+                                            log_error=_log_error)
+                                state = _load_state()
+                                state["last_quote_recorder_stockholm_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                _log_error(f"[scheduler] Stockholm quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_stockholm")
+                        else:
+                            log("[scheduler] Stockholm quote recorder skipped - another process "
                                 "already holds the lock")
 
                 # Mega-batch Part 10: nightly off-site DB backup - same

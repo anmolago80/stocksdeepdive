@@ -132,19 +132,49 @@ import trading_cost_engine
 MARKET_ASX = "ASX"
 MARKET_US = "US"
 # Stage 1b - UK/TSX windows. Anchor universe mirrors the existing US
-# pattern (US anchors on its own S&P 500 scan) - FTSE 100 and TSX
-# Composite are both PRIVATE by default (scan_store.is_private_
-# universe()), and tickers_for_market() below is deliberately left at
-# scan_store.load_scan_raw()'s own default deny, so these two markets'
-# rosters read empty and these windows stay idle while the universes
-# are private - see this task's own report for that consequence.
+# pattern (US anchors on its own S&P 500 scan) - tickers_for_market()
+# below is deliberately left at scan_store.load_scan_raw()'s own
+# default deny, so either market's scanned-universe roster reads empty
+# while its own anchor universe is PRIVATE (scan_store.is_private_
+# universe()) - see this task's own report for that consequence.
+#
+# TASK 29b (Director-directed, 3 Nov 2026): the "FTSE 100 and TSX
+# Composite are both PRIVATE by default" claim this comment used to
+# make is STALE - scan_store.py's own _DEFAULT_PRIVATE_UNIVERSES has
+# made all four UK/Canada universes public since its own "PUSH 2" (10
+# Oct 2026) commit, and this market's own roster is confirmed actually
+# recording real rows daily in production (B1's own investigation,
+# this task's report) - left here only as a reminder that the LIVE
+# behaviour tracks scan_store.py's own default/Railway's own
+# PRIVATE_UNIVERSES override, never this module's comments.
 MARKET_UK = "UK"
 MARKET_TSX = "TSX"
 # Stage 1 Japan, Commit B - same idle-while-private consequence as
-# MARKET_UK/MARKET_TSX above: Nikkei 225 is private by default and
-# tickers_for_market() is deliberately left at default deny, so this
-# window samples an empty roster until Andrew opens the universe up.
+# MARKET_UK/MARKET_TSX above (Nikkei 225 is private by scan_store.py's
+# own code default). TASK 29b: confirmed actually recording real rows
+# daily in production regardless (B1's own investigation) - the live
+# Railway PRIVATE_UNIVERSES value must differ from the code default.
 MARKET_JP = "JP"
+
+# TASK 29b (Director-directed, 3 Nov 2026, Part B): four new European
+# markets, added ONLY as a roster destination for Top 200 pool members
+# (see _top200_tickers_for_market() below) - unlike ASX/US/UK/TSX/JP
+# above, none of these has its own scanned-universe anchor wired into
+# _MARKET_UNIVERSE below (DAX/CAC 40/AEX/SMI/OMX Stockholm 30 are
+# scanned nightly like any other universe, per scan_store.py's own
+# header comment, but this task's own DO item asks only for the Top
+# 200 pool to reach these markets, not a second full scanned-universe
+# roster source) - tickers_for_market() on any of these four returns
+# [] (no _MARKET_UNIVERSE entry), so each one's roster is 100% the Top
+# 200/research/position addition. MARKET_EURONEXT covers BOTH France
+# (.PA) and the Netherlands (.AS) - same exchange group, same trading
+# hours, so one market/one session window for both suffixes, matching
+# this module's own "one market, one window" shape rather than adding
+# a same-hours duplicate.
+MARKET_EURONEXT = "EURONEXT"
+MARKET_XETRA = "XETRA"
+MARKET_SIX = "SIX"
+MARKET_STOCKHOLM = "STOCKHOLM"
 
 _MARKET_UNIVERSE = {
     MARKET_ASX: "ASX 200", MARKET_US: "S&P 500",
@@ -155,10 +185,22 @@ _MARKET_TZ = {
     MARKET_ASX: ZoneInfo("Australia/Sydney"), MARKET_US: ZoneInfo("America/New_York"),
     MARKET_UK: ZoneInfo("Europe/London"), MARKET_TSX: ZoneInfo("America/Toronto"),
     MARKET_JP: ZoneInfo("Asia/Tokyo"),
+    # TASK 29b: Europe/Paris covers both Euronext Paris and Euronext
+    # Amsterdam (same CET/CEST offset, no separate zone needed) -
+    # Europe/Berlin (Xetra/Frankfurt), Europe/Zurich (SIX), Europe/
+    # Stockholm (Nasdaq Stockholm/OMX).
+    MARKET_EURONEXT: ZoneInfo("Europe/Paris"), MARKET_XETRA: ZoneInfo("Europe/Berlin"),
+    MARKET_SIX: ZoneInfo("Europe/Zurich"), MARKET_STOCKHOLM: ZoneInfo("Europe/Stockholm"),
 }
 _MARKET_CURRENCY_FALLBACK = {
     MARKET_ASX: "AUD", MARKET_US: "USD", MARKET_UK: "GBP", MARKET_TSX: "CAD",
     MARKET_JP: "JPY",
+    # TASK 29b: EUR covers both Euronext Paris (.PA) and Euronext
+    # Amsterdam (.AS) - both EUR-denominated, unlike MARKET_UK's own
+    # single GBP currency, so this one fallback correctly serves both
+    # suffixes _TICKER_SUFFIX_MARKET below maps to MARKET_EURONEXT.
+    MARKET_EURONEXT: "EUR", MARKET_XETRA: "EUR", MARKET_SIX: "CHF",
+    MARKET_STOCKHOLM: "SEK",
 }
 
 # Same pacing as nightly_scan.py's own sector/attention top-up passes -
@@ -218,6 +260,18 @@ _MARKET_WINDOW = {
     # for the midday close this market (uniquely, among these markets)
     # observes.
     MARKET_JP: (9, 0, 15, 30),
+    # TASK 29b (Director-directed, 3 Nov 2026): the four European
+    # exchanges' own real continuous-trading session hours (all CET/
+    # CEST, 09:00 local open on every one of them) - Euronext Paris/
+    # Amsterdam and Deutsche Boerse Xetra both run to 17:30 local; SIX
+    # Swiss Exchange's main session runs to ~17:20, Nasdaq Stockholm's
+    # to ~17:25 - each rounded UP to 17:30 as a safety bound only, same
+    # convention WINDOW_END_HOUR's own comment above already uses for
+    # ASX/US's exact-vs-safety-bound distinction (a late-starting
+    # recorder tick a few minutes past the real close still reads as
+    # mid-session, never mislabelled a closing-auction quote).
+    MARKET_EURONEXT: (9, 0, 17, 30), MARKET_XETRA: (9, 0, 17, 30),
+    MARKET_SIX: (9, 0, 17, 30), MARKET_STOCKHOLM: (9, 0, 17, 30),
 }
 
 # Stage 1 Japan, Commit B: the TSE's own midday trading halt, in the
@@ -280,13 +334,87 @@ def tickers_for_market(market):
     ASX 200 / S&P 500 scan (scan_store.load_scan_raw - skips the 72h
     staleness cutoff load_scan() applies, since a slightly-stale ticker
     LIST is still a fine list to sample quotes for; only the quote
-    itself needs to be fresh). [] if that scan has never been saved."""
-    payload = scan_store.load_scan_raw(_MARKET_UNIVERSE[market])
+    itself needs to be fresh). [] if that scan has never been saved, or
+    if `market` has no _MARKET_UNIVERSE entry at all (TASK 29b's own
+    four new European markets - MARKET_EURONEXT/XETRA/SIX/STOCKHOLM -
+    have no scanned-universe anchor wired in here; their entire roster
+    comes from _top200_tickers_for_market() below instead)."""
+    universe_name = _MARKET_UNIVERSE.get(market)
+    if universe_name is None:
+        return []
+    payload = scan_store.load_scan_raw(universe_name)
     if not payload or not payload.get("rows"):
         return []
     tickers = {(row.get("Ticker") or "").strip() for row in payload["rows"]}
     tickers.discard("")
     return sorted(tickers)
+
+
+# TASK 29b (Director-directed, 3 Nov 2026, Part B2): suffix -> market,
+# for bucketing a Top 200 pool member into the market it should be
+# recorded against - a ticker with NO suffix (a plain US listing, or a
+# "Foreign US-listed" name like BBVA - a foreign company that trades
+# as a US-listed ADR/ordinary, no suffix of its own either) maps to
+# MARKET_US, matching this task's own "no suffix -> US (includes
+# Foreign US-listed)" instruction. Deliberately NOT the same mapping
+# as fcf_valuation_engine._TICKER_SUFFIX_CURRENCY (a currency, not a
+# market/timezone decision) or trading_cost_engine's own venue checks -
+# this one decides which quote_recorder session window/roster a ticker
+# belongs to, nothing else.
+_TICKER_SUFFIX_MARKET = {
+    ".AX": MARKET_ASX, ".L": MARKET_UK, ".TO": MARKET_TSX, ".T": MARKET_JP,
+    ".PA": MARKET_EURONEXT, ".AS": MARKET_EURONEXT,
+    ".DE": MARKET_XETRA, ".SW": MARKET_SIX, ".ST": MARKET_STOCKHOLM,
+}
+
+
+def _market_for_ticker(ticker):
+    """The quote_recorder market a Top 200 pool ticker belongs to - see
+    _TICKER_SUFFIX_MARKET above. MARKET_US for a no-suffix ticker or
+    any suffix not in that mapping (never raises on an unrecognised
+    suffix - falls back to the most populous, most Yahoo/Alpaca-
+    reliable market rather than silently dropping the ticker)."""
+    t = (ticker or "").strip().upper()
+    for suffix, market in _TICKER_SUFFIX_MARKET.items():
+        if t.endswith(suffix):
+            return market
+    return MARKET_US
+
+
+def top200_roster_tickers():
+    """Every current Top 200 pool member - top100_store.current_pool()
+    UNIONED with top100_store.current_asx_extension() (TASK 29b's own
+    "incl. the ASX extension" instruction - the guaranteed-twenty
+    Australian top-up rows current_pool() alone never carries, see that
+    function's own docstring) - as a plain set of ticker strings, with
+    no market filtering. Deferred import (same reasoning _research_
+    and_position_tickers() above already applies to blog_render/
+    positions_store - avoids a hard top-level dependency on top100_
+    store from this module), fail-open to an empty set on any failure
+    (a broken Top 200 read never means the research/position roster
+    addition is lost too)."""
+    tickers = set()
+    try:
+        import top100_store
+        for row in top100_store.current_pool():
+            t = (row.get("ticker") or "").strip()
+            if t:
+                tickers.add(t)
+        for row in top100_store.current_asx_extension():
+            t = (row.get("ticker") or "").strip()
+            if t:
+                tickers.add(t)
+    except Exception:
+        pass
+    return tickers
+
+
+def _top200_tickers_for_market(market):
+    """top200_roster_tickers() above, filtered to the Top 200 members
+    that belong to `market` by suffix (_market_for_ticker()) - the
+    per-market slice roster_tickers()/tickers_for_market() union into
+    that market's own roster."""
+    return {t for t in top200_roster_tickers() if _market_for_ticker(t) == market}
 
 
 def _research_and_position_tickers():
@@ -322,27 +450,39 @@ def _research_and_position_tickers():
     return tickers
 
 
+_ALL_MARKETS = (
+    MARKET_ASX, MARKET_US, MARKET_UK, MARKET_TSX, MARKET_JP,
+    MARKET_EURONEXT, MARKET_XETRA, MARKET_SIX, MARKET_STOCKHOLM,
+)
+
+
 def roster_tickers(market=None):
     """The ticker set currently eligible for daily quote recording -
     tickers_for_market()'s own scanned-universe list UNIONED with
-    _research_and_position_tickers() above (Commit 4's own words:
-    "Roster = every scanned universe member plus ALL hand-covered
-    Research tickers and author-position tickers"). `market`:
-    MARKET_ASX/MARKET_US for one market's own SCANNED-UNIVERSE roster
-    only (the research/position addition isn't market-scoped, so it's
-    never added here - a caller wanting the true combined roster for
-    one market's own recording pass uses today_roster_tickers() below,
-    not this with a `market` argument), or None (default) for the
-    full combined roster the Trading Cost tab's own per-ticker honesty
-    check (compounder_ui.render_trading_cost_tab(), Commit 2) reads -
-    that check widening automatically, with no code change on its own
-    side, is exactly why Commit 2's own non-roster message now only
-    ever appears for a ticker genuinely outside every universe. A SET
-    (not the sorted list tickers_for_market() returns) - this function
-    exists for fast membership checks, not display."""
+    _top200_tickers_for_market() (TASK 29b, Part B2/B3) and, for the
+    combined roster only, _research_and_position_tickers() above
+    (Commit 4's own words: "Roster = every scanned universe member
+    plus ALL hand-covered Research tickers and author-position
+    tickers", now ALSO "plus every current Top 200 pool member",
+    mapped to its own market by suffix). `market`: one of _ALL_MARKETS
+    for that single market's own scanned-universe-plus-Top-200 roster
+    (the research/position addition isn't market-scoped, so it's never
+    added here - a caller wanting the true combined roster for one
+    market's own recording pass uses today_roster_tickers() below, not
+    this with a `market` argument), or None (default) for the full
+    combined roster across EVERY market (TASK 29b, Part B3 - widened
+    from ASX+US only, which left the Trading Cost tab's own per-ticker
+    honesty check, compounder_ui.render_trading_cost_tab() via is_in_
+    roster() below, wrongly telling a genuinely-recorded UK/TSX/JP
+    ticker like HSBA.L it "isn't in the daily bid/ask recording set" -
+    see this task's own B1 report) plus _research_and_position_
+    tickers(). A SET (not the sorted list tickers_for_market() returns)
+    - this function exists for fast membership checks, not display."""
     if market is not None:
-        return set(tickers_for_market(market))
-    universe = set(tickers_for_market(MARKET_ASX)) | set(tickers_for_market(MARKET_US))
+        return set(tickers_for_market(market)) | _top200_tickers_for_market(market)
+    universe = set()
+    for m in _ALL_MARKETS:
+        universe |= set(tickers_for_market(m)) | _top200_tickers_for_market(m)
     return universe | _research_and_position_tickers()
 
 
@@ -365,6 +505,12 @@ def is_in_roster(ticker):
 # track closely, so it earns daily sampling from the very next run.
 # Everything else is the WEEKLY tier, sampled via a rotating 1/5th
 # per trading day (_WEEKDAY_ROTATION_SIZE) rather than daily.
+#
+# TASK 29b (Director-directed, 3 Nov 2026, Part B4): every current Top
+# 200 pool member ALSO joins the daily tier unconditionally (this
+# task's own words: "Top 200 members go in the DAILY tier (sampled
+# every trading day); keep the existing rotation for the rest") - see
+# daily_tier_tickers()'s own updated docstring below.
 DAILY_MIN_SPREAD_PCT = 1.0
 _WEEKDAY_ROTATION_SIZE = 5
 
@@ -372,18 +518,23 @@ _WEEKDAY_ROTATION_SIZE = 5
 def daily_tier_tickers(market=None):
     """Tickers sampled EVERY trading day: every research/held ticker
     (_research_and_position_tickers(), regardless of market - the task
-    's own words: "Daily tier: research/held tickers plus...") that is
-    ALSO on this market's own roster, plus any roster ticker whose most
-    recent quote_snapshot_store.latest_snapshot() spread exceeded
-    DAILY_MIN_SPREAD_PCT. Recomputed from STORED snapshots on every
-    call, never a separately persisted "is daily" flag - a single wide
-    recording self-promotes a ticker to daily starting the very next
-    run this function is called from, and a ticker that started wide
-    and has since tightened simply stops qualifying on its own, no
-    separate "demote" step needed. `market`: MARKET_ASX/MARKET_US to
-    scope to one market's roster, or None for the combined roster."""
+    's own words: "Daily tier: research/held tickers plus...") PLUS
+    every current Top 200 pool member (top200_roster_tickers(), TASK
+    29b's own addition - a Top 200 name is exactly the kind of ticker
+    worth a real bid/ask reading every day, not a 1/5th-per-week
+    rotation) that is ALSO on this market's own roster, plus any
+    roster ticker whose most recent quote_snapshot_store.latest_
+    snapshot() spread exceeded DAILY_MIN_SPREAD_PCT. Recomputed from
+    STORED snapshots on every call, never a separately persisted "is
+    daily" flag - a single wide recording self-promotes a ticker to
+    daily starting the very next run this function is called from,
+    and a ticker that started wide and has since tightened, or drops
+    out of the Top 200 pool on its next refresh, simply stops
+    qualifying on its own, no separate "demote" step needed. `market`:
+    one of _ALL_MARKETS to scope to one market's roster, or None for
+    the combined roster."""
     roster = roster_tickers(market)
-    tier = _research_and_position_tickers() & roster
+    tier = (_research_and_position_tickers() | top200_roster_tickers()) & roster
     for ticker in roster - tier:
         latest = quote_snapshot_store.latest_snapshot(ticker)
         if not latest or latest.get("bid") is None or latest.get("ask") is None:
@@ -914,3 +1065,36 @@ def run_jp_recorder(log=print):
     09:00-15:30 window already skips the 11:30-12:30 lunch break (see
     _MARKET_LUNCH_BREAK) - nothing extra needed here."""
     _record_market(MARKET_JP, log=log)
+
+
+def run_euronext_recorder(log=print):
+    """scheduler_engine.py entry point for the Euronext Paris/Amsterdam
+    sampling slot (TASK 29b, Part B2) - via Yahoo (no Alpaca coverage
+    outside MARKET_US). This market's entire roster is Top 200 pool
+    members (tickers_for_market(MARKET_EURONEXT) is always [] - no
+    _MARKET_UNIVERSE entry - see that function's own docstring), so an
+    empty Top 200 pool (no selection has run yet) means this samples 0
+    tickers, same "idle while the roster is empty" shape every other
+    recorder here already has for a private/unpopulated universe."""
+    _record_market(MARKET_EURONEXT, log=log)
+
+
+def run_xetra_recorder(log=print):
+    """scheduler_engine.py entry point for the Xetra (Frankfurt)
+    sampling slot (TASK 29b, Part B2) - via Yahoo. Same Top-200-only
+    roster shape as run_euronext_recorder() above."""
+    _record_market(MARKET_XETRA, log=log)
+
+
+def run_six_recorder(log=print):
+    """scheduler_engine.py entry point for the SIX Swiss Exchange
+    sampling slot (TASK 29b, Part B2) - via Yahoo. Same Top-200-only
+    roster shape as run_euronext_recorder() above."""
+    _record_market(MARKET_SIX, log=log)
+
+
+def run_stockholm_recorder(log=print):
+    """scheduler_engine.py entry point for the Nasdaq Stockholm (OMX)
+    sampling slot (TASK 29b, Part B2) - via Yahoo. Same Top-200-only
+    roster shape as run_euronext_recorder() above."""
+    _record_market(MARKET_STOCKHOLM, log=log)

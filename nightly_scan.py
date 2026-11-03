@@ -2437,10 +2437,22 @@ def _reprice_row(row, hist_df, universe_attention_lite=True, log=print):
     # to GBP by that same full scan's own normalize_pence_quote() call -
     # a real price can't move ~100x between successive scans, so a
     # point this far from it is a unit bug, not a genuine move.
-    if row.get("price_quote_unit") == "GBp":
+    #
+    # TASK 29b (Director-directed, 3 Nov 2026, real incident - BCG.L,
+    # repeat): gating this on row["price_quote_unit"] == "GBp" missed
+    # BCG.L - its own info["currency"] is a plain "GBP" (price_quote_
+    # unit None), yet its raw batch-downloaded history can still
+    # switch pence/pounds mid-window. Every ".L" ticker is repaired
+    # regardless of its price_quote_unit flag now; fallback_divide_all
+    # stays False for a ticker that was never pence-CONFIRMED (never
+    # blanket-divide a window that might genuinely already be GBP) -
+    # only a GBp-flagged row keeps the old blanket-divide fallback.
+    _is_london_row = str(row.get("Ticker") or "").upper().endswith(".L")
+    if row.get("price_quote_unit") == "GBp" or _is_london_row:
         close_series = pd.Series(
             fundamentals_data.repair_mixed_unit_price_series(
-                close_series.tolist(), row.get("Price"), ticker=row.get("Ticker"), log=log
+                close_series.tolist(), row.get("Price"), ticker=row.get("Ticker"), log=log,
+                fallback_divide_all=(row.get("price_quote_unit") == "GBp"),
             ),
             index=close_series.index,
         )

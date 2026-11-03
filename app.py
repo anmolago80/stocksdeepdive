@@ -11581,6 +11581,27 @@ def page_deep_dive():
         # this page, finally shown - with the 50-day average and the Trade
         # Filter's entry zone drawn on it. ---
         _px_hist = get_price_history(_dd["ticker"])
+        # TASK 29b (Director-directed, 3 Nov 2026, real incident -
+        # BCG.L): this is a SEPARATE, independent get_price_history()
+        # call from the one deep_dive_engine.analyze() already repaired
+        # internally (via fundamentals_data.normalize_pence_quote(),
+        # see that function's own call site) for current_price/MA50/
+        # fear-greed/trade-setup-entry - this chart's own raw re-fetch
+        # was never repaired at all, so a mixed pence/pounds ".L"
+        # series (BCG.L: ~200 until late Aug 2026, then ~2.3) still
+        # rendered as a false "99% crash" even after that fix, with its
+        # own locally-recomputed MA50 line (_px_ma50 below) wrong right
+        # alongside it. Repaired here against _dd["price"] - the SAME
+        # already-correct current price deep_dive_engine.analyze() just
+        # computed from its own repaired series - fallback_divide_all=
+        # False since this ticker was never pence-CONFIRMED (never
+        # blanket-divide a chart series that might already be all GBP).
+        if (_px_hist is not None and not _px_hist.empty
+                and _dd["ticker"].upper().endswith(".L")):
+            _px_hist = fundamentals_data.repair_mixed_unit_price_dataframe(
+                _px_hist, _dd.get("price"), ticker=_dd["ticker"],
+                fallback_divide_all=False,
+            )
         if _px_hist is not None and not _px_hist.empty:
             _px_closes = _px_hist["Close"].dropna()
             if len(_px_closes) >= 2:

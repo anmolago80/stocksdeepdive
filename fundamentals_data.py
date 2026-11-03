@@ -99,7 +99,15 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # and rebuilt with the repaired series, rather than keeping the pre-fix
 # bundle for up to 24h - same mechanism/reasoning as the 5->6 bump
 # above.
-BUNDLE_VERSION = 7
+# 7->8 (3 Nov 2026, TASK 29b, Director-directed, real incident - BCG.L,
+# repeat): TASK 29's own repair above never actually ran for BCG.L -
+# it was gated on price_quote_unit == "GBp", and BCG.L's own info
+# currency isn't GBp/GBX (verified live, still broken after the 6->7
+# deploy). Now widened to repair every ".L" ticker regardless of its
+# price_quote_unit flag (see the elif site's own TASK 29b comment).
+# Bumped again for the same reason as 6->7 - every cached .L bundle/
+# Compounder section built before this fix lands must rebuild.
+BUNDLE_VERSION = 8
 
 
 def _data_dir():
@@ -1411,7 +1419,45 @@ def normalize_pence_quote(ticker, info, history_df=None, dividends=None, log=pri
         "price_unit_suspect_reason": None,
         "dividend_unit_suspect": False,
     }
+    _is_london_ticker = isinstance(ticker, str) and ticker.upper().endswith(".L")
     if price_quote_unit != "GBp":
+        # TASK 29b (Director-directed, 3 Nov 2026, real incident -
+        # BCG.L, repeat): this used to bail out here completely for
+        # any non-GBp-flagged ticker - correct for a genuinely plain-
+        # GBP ticker (nothing to normalise), but BCG.L proved two
+        # separate things wrong with that assumption for a ".L"
+        # ticker specifically:
+        #   (a) its raw history_df can still switch pence/pounds mid-
+        #       series even when its own info["currency"] isn't GBp/
+        #       GBX - repaired below, fallback_divide_all=False (never
+        #       blanket-divide a series this function has no pence-
+        #       currency-code confirmation for - that safety net stays
+        #       reserved for a GBp-flagged ticker below).
+        #   (b) Yahoo's own info["currency"] for BCG.L is "EUR" - its
+        #       FINANCIAL REPORTING currency, not its LSE LISTING
+        #       currency - and every caller of this function (deep_
+        #       dive_engine.py's own `"currency": info.get("currency")`
+        #       headline field, api_v1.py, portfolio_charts_engine.py,
+        #       portfolio_health_engine.py) treats info["currency"] as
+        #       the display/listing currency, so the Deep Dive price
+        #       chart's own y-axis showed "EUR" next to a GBP price.
+        #       The LSE's own primary listing currency for a ".L"
+        #       ticker is always GBP (or GBp pence, already normalised
+        #       to GBP above) regardless of what currency the company
+        #       REPORTS its financials in - forced here, once, for
+        #       every ".L" ticker, rather than trusting Yahoo's
+        #       info["currency"] field to mean "listing currency" (it
+        #       doesn't always). Scoped to display only - this never
+        #       touches financialCurrency-driven statement conversion
+        #       elsewhere (get_bundle()'s own separate fin_ccy/list_ccy
+        #       logic, untouched by this function).
+        if _is_london_ticker:
+            info["currency"] = "GBP"
+            if history_df is not None and not history_df.empty:
+                history_df = repair_mixed_unit_price_dataframe(
+                    history_df, info.get("currentPrice"), ticker=ticker, log=log,
+                    fallback_divide_all=False,
+                )
         return info, history_df, dividends, meta
 
     suspect, reason = _check_price_unit_guard(ticker, info, raw_price_for_guard, log=log)
@@ -1646,9 +1692,10 @@ def get_bundle(ticker, force_refresh=False):
         hist = None
         flags.append("price_history_unavailable")
     prices_10y = _monthly_series(hist)
+    _is_london_ticker = isinstance(ticker, str) and ticker.upper().endswith(".L")
     if not prices_10y["dates"]:
         flags.append("price_history_unavailable")
-    elif price_quote_unit == "GBp":
+    elif price_quote_unit == "GBp" or _is_london_ticker:
         # TASK 29 (Director-directed, 3 Nov 2026, real incident -
         # BCG.L): this used to be a blanket "/100 every point" - see
         # the module comment above _PENCE_HISTORY_REPAIR_RATIO_RANGE
@@ -1656,10 +1703,25 @@ def get_bundle(ticker, force_refresh=False):
         # units mid-history. Per-point repair instead, against this
         # ticker's own current price (info["currentPrice"] - already
         # normalised to GBP by _normalize_pence_price_fields() above).
+        #
+        # TASK 29b (Director-directed, 3 Nov 2026, real incident -
+        # BCG.L, repeat): the repair above never ran at all for
+        # BCG.L, because its own info["currency"] is a plain "GBP"
+        # (never GBp/GBX) even though its Yahoo history series still
+        # switches pence/pounds mid-history - gating this repair on
+        # price_quote_unit == "GBp" assumed the currency CODE always
+        # agrees with what the HISTORY series actually does, which
+        # Yahoo's own data doesn't guarantee. Every ".L" ticker now
+        # gets the same per-point repair regardless of its info
+        # currency; fallback_divide_all stays False for a ticker that
+        # was never pence-CONFIRMED (never blanket-divide a series
+        # that might genuinely already be all in GBP) - only a GBp-
+        # flagged ticker keeps the old safety-net fallback.
         prices_10y = {
             "dates": prices_10y["dates"],
             "prices": repair_mixed_unit_price_series(
-                prices_10y["prices"], info.get("currentPrice"), ticker=ticker
+                prices_10y["prices"], info.get("currentPrice"), ticker=ticker,
+                fallback_divide_all=(price_quote_unit == "GBp"),
             ),
         }
 

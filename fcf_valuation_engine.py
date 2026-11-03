@@ -390,13 +390,35 @@ def trading_currency_for(ticker, info=None):
     Step A inventory found repeated across ~25 call sites (every one of
     which decided AUD-vs-USD only, with no .L/.TO handling at all).
 
-    Order: info["currency"] (already correct for the overwhelming
-    majority of tickers - Yahoo's own info blob almost always carries
-    it, and by the time this runs it's already been through
-    fundamentals_data.py's own GBp->GBP normalisation for a London-
-    listed name) - else the ticker's own suffix, via _TICKER_SUFFIX_
-    CURRENCY above - else "USD". `info` may be None/missing/empty; this
-    never raises on a missing key, only falls through to the next rule.
+    Order: for a ".L" ticker, ALWAYS the suffix-mapped "GBP" - see the
+    TASK 29b paragraph below for why this one suffix is checked FIRST,
+    ahead of info["currency"]. For every other ticker: info["currency"]
+    (already correct for the overwhelming majority of tickers - Yahoo's
+    own info blob almost always carries it, and by the time this runs
+    it's already been through fundamentals_data.py's own GBp->GBP
+    normalisation for a London-listed name) - else the ticker's own
+    suffix, via _TICKER_SUFFIX_CURRENCY above - else "USD". `info` may
+    be None/missing/empty; this never raises on a missing key, only
+    falls through to the next rule.
+
+    TASK 29b (Director-directed, 3 Nov 2026, real incident - BCG.L):
+    verified live that Yahoo's own info["currency"] for BCG.L is "EUR"
+    - its FINANCIAL REPORTING currency, not its real LSE LISTING
+    currency - a Yahoo quirk this function's own info["currency"]-first
+    order didn't anticipate (its own docstring assumed info["currency"]
+    always means listing currency). The LSE's own primary listing
+    currency for a ".L" ticker is always GBP (or GBp pence, already
+    normalised to GBP upstream before this function ever sees it) -
+    checked here ahead of info["currency"] for a ".L" ticker
+    specifically, rather than trusting Yahoo's field unconditionally.
+    A no-op for every ".L" ticker whose info["currency"] was already
+    correctly "GBP"/"GBp" (the overwhelming majority) - this only
+    changes the outcome for the genuine Yahoo-quirk case. Every other
+    suffix (.AX/.TO/.T/...) keeps the original info["currency"]-first
+    order unchanged - this task's own evidence is .L-specific, and a
+    legitimately-reporting-in-a-different-currency ASX name (CSL.AX/
+    RMD.AX/CPU.AX - financialCurrency USD, info["currency"] correctly
+    AUD) must not be disturbed by a blanket suffix-first rule.
 
     Deliberately NOT wired into every one of this codebase's own ~25
     pre-existing UI/display/benchmark-index/news-region/insider-data-
@@ -413,6 +435,8 @@ def trading_currency_for(ticker, info=None):
     Fair Value displays) - see this commit's own report for the full
     list and the scoping rationale."""
     info = info or {}
+    if (ticker or "").upper().endswith(".L"):
+        return "GBP"
     ccy = info.get("currency")
     if ccy:
         return ccy.upper()
