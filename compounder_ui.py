@@ -382,9 +382,14 @@ def _cp_price_chart(ticker, price_history):
         line=dict(color="#2dd4bf", width=2),
     ))
     if entry.get("avg_10y") is not None:
+        # TASK 29 (Director-directed, 3 Nov 2026): was a hardcoded "$" -
+        # wrong/misleading for a GBP (.L) ticker like BCG.L. Reuse the
+        # same shared formatter the rest of the codebase already uses
+        # for a per-ticker money amount (currency_format.format_money -
+        # Lists & display Commit 5) instead of re-deriving the symbol.
         fig.add_hline(
             y=entry["avg_10y"], line_dash="dash", line_color="#e6edf5",
-            annotation_text=f"10y Average ${entry['avg_10y']:,.2f}",
+            annotation_text=f"10y Average {currency_format.format_money(entry['avg_10y'], ticker)}",
             annotation_position="top left", annotation_font_size=11,
         )
     fig.update_layout(

@@ -151,7 +151,8 @@ def _fake_download_chunk(tickers):
 
 with mock.patch.object(scan_store, "load_scan_raw", return_value=_EXISTING_SCAN), \
      mock.patch.object(nightly_scan, "_reprice_download_chunk", side_effect=_fake_download_chunk), \
-     mock.patch.object(nightly_scan, "_reprice_row", side_effect=lambda row, hist, lite: dict(row, repriced=True)), \
+     mock.patch.object(nightly_scan, "_reprice_row",
+                       side_effect=lambda row, hist, lite, log=print: dict(row, repriced=True)), \
      mock.patch.object(scan_store, "reprice_scan", side_effect=lambda universe, rows, **k: {"rows": rows}), \
      mock.patch.object(nightly_scan, "admin_metrics_store") as _mock_admin_metrics, \
      mock.patch("gc.collect", side_effect=lambda: _gc_calls.__setitem__("n", _gc_calls["n"] + 1)):

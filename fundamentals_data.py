@@ -89,7 +89,17 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # though the deploy itself succeeded. See auto_compounder_engine.py's own
 # _read_cache() comment (audit fixes 2.1/2.2) for the full mechanism this
 # bump exists to trigger.
-BUNDLE_VERSION = 6
+# 6->7 (3 Nov 2026, TASK 29, Director-directed, real incident - BCG.L):
+# the pence-history-repair fix above (repair_mixed_unit_price_series()/
+# repair_mixed_unit_price_dataframe(), replacing the old blanket "/100
+# every point" rule) - see the module comment above _PENCE_HISTORY_
+# REPAIR_RATIO_RANGE for the full writeup. Bumped so every cached .L
+# bundle (and, via auto_compounder_engine.py's own bundle_version check,
+# every cached Compounder section built from one) is treated as stale
+# and rebuilt with the repaired series, rather than keeping the pre-fix
+# bundle for up to 24h - same mechanism/reasoning as the 5->6 bump
+# above.
+BUNDLE_VERSION = 7
 
 
 def _data_dir():
@@ -863,6 +873,148 @@ def _is_pence_quoted(raw_currency):
     return raw_currency in _PENCE_CURRENCY_CODES
 
 
+# TASK 29 (Director-directed, 3 Nov 2026, real incident - BCG.L): the
+# pre-existing GBp->GBP fix above (and its two history-series siblings
+# below) was all-or-nothing - "ticker flagged GBp -> divide EVERY
+# point/row in its price history by 100". That's correct for a
+# CONSISTENTLY pence-quoted series, but Yahoo's own monthly/6-month
+# history for some .L tickers switches units MID-SERIES (older months
+# in pence, newer months already in pounds, for the SAME ticker) -
+# verified live on BCG.L: current price GBP 2.30 (correct), but the
+# 10y monthly chart read ~100-360 for most of the history then
+# collapsed to ~2 from mid-2026 on, a "99% crash" that never happened.
+# PE Ratio by Year (3,431x/3,516x/3,616x/1,779x vs a real TTM of
+# 25.56x), PE Trailing's intrinsic value, and Retained Earnings' value-
+# created-per-$ figure were all downstream of the same corrupted
+# series. Why Yahoo's own series switches units mid-history was never
+# verified - this fix doesn't depend on knowing why.
+#
+# Fix: per-POINT (or per-ROW, for an OHLC frame) repair instead of a
+# blanket divide - compare EACH point against a known-good REFERENCE
+# price (the ticker's own current price, already normalised to GBP)
+# and only divide a point by 100 if its ratio to that reference falls
+# in this range (~100x, with margin for real day-to-day price
+# movement) - never touching a point that already agrees with the
+# reference. A CONSISTENTLY pence-quoted ticker's history still gets
+# every point divided (every point's ratio is ~100x) - same practical
+# outcome as the old blanket rule for that case - but a MIXED series
+# now repairs correctly, and a series that's already all in the
+# reference's own unit is never touched at all.
+_PENCE_HISTORY_REPAIR_RATIO_RANGE = (30.0, 300.0)
+
+
+def repair_mixed_unit_price_series(prices, reference_price, ticker=None, log=print,
+                                    fallback_divide_all=True):
+    """Per-point pence->GBP repair for a plain list of prices (get_
+    bundle()'s own prices_10y["prices"], or a close-price series
+    flattened to a list by a caller like nightly_scan._reprice_row())
+    - see the module comment above _PENCE_HISTORY_REPAIR_RATIO_RANGE
+    for the full incident/fix writeup.
+
+    `reference_price` is this ticker's own CURRENT (or otherwise
+    known-good) price, already normalised to the SAME unit the
+    returned series should end up in - never the raw, possibly-still-
+    pence info["currentPrice"]; normalisation must already have run
+    before this is called. Every call site in this codebase only ever
+    calls this once it already knows (from the ticker's own currency
+    code, never a magnitude guess) that the series is nominally pence-
+    quoted - so when `reference_price` itself isn't a usable positive
+    number (no reference to repair against), `fallback_divide_all=True`
+    (the default) falls back to the OLD blanket "/100 every point"
+    behaviour rather than leaving a known-pence series completely
+    unrepaired; passing False instead leaves `prices` completely
+    unchanged in that case.
+
+    Logs one line - "[units] <TICKER> history repaired: N of M points
+    rescaled pence->GBP" - only when N > 0 and `ticker` is given, so a
+    log search for "[units]" shows exactly which tickers were actually
+    affected; a point that already agrees with `reference_price` is
+    never counted or touched."""
+    if prices is None:
+        return prices
+    prices = list(prices)
+    if not prices:
+        return prices
+    if (not isinstance(reference_price, (int, float))
+            or reference_price != reference_price or reference_price <= 0):
+        if not fallback_divide_all:
+            return prices
+        repaired = [p / 100.0 if isinstance(p, (int, float)) and p == p else p for p in prices]
+        if ticker:
+            log(f"[units] {ticker} history repaired: {len(prices)} of "
+                f"{len(prices)} points rescaled pence->GBP (no reference price - "
+                f"fell back to rescaling the whole series)")
+        return repaired
+    lo, hi = _PENCE_HISTORY_REPAIR_RATIO_RANGE
+    repaired = []
+    n_rescaled = 0
+    for p in prices:
+        if isinstance(p, (int, float)) and p == p and p > 0:
+            ratio = p / reference_price
+            if lo <= ratio <= hi:
+                repaired.append(p / 100.0)
+                n_rescaled += 1
+                continue
+        repaired.append(p)
+    if n_rescaled and ticker:
+        log(f"[units] {ticker} history repaired: {n_rescaled} of "
+            f"{len(prices)} points rescaled pence->GBP")
+    return repaired
+
+
+def repair_mixed_unit_price_dataframe(history_df, reference_price, ticker=None, log=print,
+                                       fallback_divide_all=True):
+    """Same per-point repair as repair_mixed_unit_price_series() above,
+    for an OHLC(V) DataFrame (normalize_pence_quote()'s own
+    `history_df`) - the "Close" column decides whether a given ROW is
+    pence-shaped (its ratio to `reference_price`), then that SAME per-
+    row decision is applied to every other OHLC column present, so one
+    row's Open/High/Low/Close always move together rather than each
+    column being judged independently (which could split a single
+    day's own OHLC across two different units on a borderline ratio).
+    Returns a COPY only if at least one row needed repair; `history_df`
+    itself is never mutated. None in, None out; unchanged if "Close"
+    isn't a column.
+
+    Every call site here only calls this once it already knows (from
+    the ticker's own currency code) the frame is nominally pence-
+    quoted, so when `reference_price` isn't a usable positive number,
+    `fallback_divide_all=True` (the default) falls back to the OLD
+    blanket "/100 every row" behaviour rather than leaving a known-
+    pence frame completely unrepaired; False instead leaves
+    `history_df` completely unchanged in that case."""
+    if history_df is None or history_df.empty or "Close" not in history_df.columns:
+        return history_df
+    if (not isinstance(reference_price, (int, float))
+            or reference_price != reference_price or reference_price <= 0):
+        if not fallback_divide_all:
+            return history_df
+        history_df = history_df.copy()
+        for col in ("Open", "High", "Low", "Close", "Adj Close"):
+            if col in history_df.columns:
+                history_df[col] = history_df[col] / 100.0
+        if ticker:
+            log(f"[units] {ticker} history repaired: {len(history_df)} of "
+                f"{len(history_df)} points rescaled pence->GBP (no reference "
+                f"price - fell back to rescaling the whole series)")
+        return history_df
+    lo, hi = _PENCE_HISTORY_REPAIR_RATIO_RANGE
+    closes = history_df["Close"]
+    ratios = closes / reference_price
+    mask = closes.notna() & (ratios >= lo) & (ratios <= hi)
+    n_rescaled = int(mask.sum())
+    if n_rescaled == 0:
+        return history_df
+    history_df = history_df.copy()
+    for col in ("Open", "High", "Low", "Close", "Adj Close"):
+        if col in history_df.columns:
+            history_df.loc[mask, col] = history_df.loc[mask, col] / 100.0
+    if ticker:
+        log(f"[units] {ticker} history repaired: {n_rescaled} of "
+            f"{len(history_df)} points rescaled pence->GBP")
+    return history_df
+
+
 def _normalize_pence_price_fields(info):
     """Stage 1a GBp->GBP normalisation, price-field half. Mutates and
     returns (info, price_quote_unit) where price_quote_unit is "GBp" or
@@ -1267,10 +1419,14 @@ def normalize_pence_quote(ticker, info, history_df=None, dividends=None, log=pri
     meta["price_unit_suspect_reason"] = reason
 
     if history_df is not None and not history_df.empty:
-        history_df = history_df.copy()
-        for col in ("Open", "High", "Low", "Close", "Adj Close"):
-            if col in history_df.columns:
-                history_df[col] = history_df[col] / 100.0
+        # TASK 29 (Director-directed, 3 Nov 2026, real incident -
+        # BCG.L): per-row repair instead of a blanket "/100 every row"
+        # - see the module comment above _PENCE_HISTORY_REPAIR_RATIO_
+        # RANGE for why. `info["currentPrice"]` is already normalised
+        # to GBP by _normalize_pence_price_fields() above.
+        history_df = repair_mixed_unit_price_dataframe(
+            history_df, info.get("currentPrice"), ticker=ticker, log=log
+        )
 
     if dividends is not None and not dividends.empty:
         divs_dict = {
@@ -1493,13 +1649,18 @@ def get_bundle(ticker, force_refresh=False):
     if not prices_10y["dates"]:
         flags.append("price_history_unavailable")
     elif price_quote_unit == "GBp":
-        # Same /100 treatment as the plain info price fields - this
-        # ticker's own monthly close series is fetched in pence too,
-        # since nothing about tk.history() itself is affected by the
-        # info-blob normalisation above.
+        # TASK 29 (Director-directed, 3 Nov 2026, real incident -
+        # BCG.L): this used to be a blanket "/100 every point" - see
+        # the module comment above _PENCE_HISTORY_REPAIR_RATIO_RANGE
+        # for why that's wrong whenever Yahoo's own series switches
+        # units mid-history. Per-point repair instead, against this
+        # ticker's own current price (info["currentPrice"] - already
+        # normalised to GBP by _normalize_pence_price_fields() above).
         prices_10y = {
             "dates": prices_10y["dates"],
-            "prices": [p / 100.0 for p in prices_10y["prices"]],
+            "prices": repair_mixed_unit_price_series(
+                prices_10y["prices"], info.get("currentPrice"), ticker=ticker
+            ),
         }
 
     try:

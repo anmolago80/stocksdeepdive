@@ -2359,7 +2359,7 @@ REPRICE_CHUNK_SLEEP = 2.0  # seconds between chunks - Yahoo etiquette for
 # not per ticker, keeps that polite without materially slowing the run).
 
 
-def _reprice_row(row, hist_df, universe_attention_lite=True):
+def _reprice_row(row, hist_df, universe_attention_lite=True, log=print):
     """Recomputes ONLY the price-dependent outputs of one already-scanned
     row, given its freshly batch-downloaded 6-month OHLCV history
     `hist_df` (one ticker's slice from the chunked yf.download() call in
@@ -2427,8 +2427,23 @@ def _reprice_row(row, hist_df, universe_attention_lite=True):
     # last FULL scan's own normalize_pence_quote() call and carried
     # across reprices for exactly this (see that row field's own
     # comment at its write site). A no-op for every non-GBp ticker.
+    #
+    # TASK 29 (Director-directed, 3 Nov 2026, real incident - BCG.L):
+    # this used to be a blanket "/100 every point" - see fundamentals_
+    # data.py's own module comment above _PENCE_HISTORY_REPAIR_RATIO_
+    # RANGE for why that's wrong whenever Yahoo's own series switches
+    # units mid-history. Per-point repair instead, against row["Price"]
+    # - this ticker's own last FULLY-SCANNED price, already normalised
+    # to GBP by that same full scan's own normalize_pence_quote() call -
+    # a real price can't move ~100x between successive scans, so a
+    # point this far from it is a unit bug, not a genuine move.
     if row.get("price_quote_unit") == "GBp":
-        close_series = close_series / 100.0
+        close_series = pd.Series(
+            fundamentals_data.repair_mixed_unit_price_series(
+                close_series.tolist(), row.get("Price"), ticker=row.get("Ticker"), log=log
+            ),
+            index=close_series.index,
+        )
     current_price = float(close_series.iloc[-1])
     if not math.isfinite(current_price) or current_price <= 0:
         return None
@@ -2617,7 +2632,7 @@ def reprice_universe(universe, log=print, run_night=None):
         for t in chunk:
             row = rows_by_ticker[t]
             try:
-                new_row = _reprice_row(row, hist_by_ticker.get(t), universe_attention_lite)
+                new_row = _reprice_row(row, hist_by_ticker.get(t), universe_attention_lite, log=log)
             except Exception as e:
                 log(f"[nightly_scan] reprice {universe} {t}: {e}")
                 new_row = None
