@@ -49,6 +49,7 @@ against a real EODHD response the first time EODHD_API_KEY is set.
 import calendar
 import datetime
 import json
+import math
 import os
 import tempfile
 import time
@@ -107,7 +108,18 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # price_quote_unit flag (see the elif site's own TASK 29b comment).
 # Bumped again for the same reason as 6->7 - every cached .L bundle/
 # Compounder section built before this fix lands must rebuild.
-BUNDLE_VERSION = 8
+# 8->9 (4 Nov 2026, TASK 29c, Director-directed, real incident -
+# HSBA.L): the reference-to-current-price check above only catches a
+# pence segment whose ratio to TODAY's price still falls in the ~100x
+# band - HSBA.L's own price has risen enough since its mid-2020 pence
+# segment (~300-370p, only ~24-29x today's ~GBP 12.7) that it slipped
+# through both the 6->7 and 7->8 deploys untouched (still showing a
+# false spike and a "10y Average GBP 23.73" live). Fixed with a
+# second, neighbour-jump-based detection pass - see the module comment
+# above _PENCE_HISTORY_NEIGHBOUR_JUMP_RATIO_RANGE for the full
+# writeup. Bumped again for the same reason as every prior bump here -
+# every cached .L bundle/Compounder section must rebuild.
+BUNDLE_VERSION = 9
 
 
 def _data_dir():
@@ -910,6 +922,96 @@ def _is_pence_quoted(raw_currency):
 # reference's own unit is never touched at all.
 _PENCE_HISTORY_REPAIR_RATIO_RANGE = (30.0, 300.0)
 
+# TASK 29c (Director-directed, 4 Nov 2026, real incident - HSBA.L): the
+# ratio-to-CURRENT-price check above only catches a pence segment
+# whose ratio to TODAY's price still falls in the ~100x band - but a
+# ticker whose price has risen a lot since that pence segment (HSBA.L:
+# ~GBP 5-13 historically, now ~GBP 12.7; its mid-2020 pence closes
+# ~300-370p are only ~24-29x today's price - UNDER the 30x floor
+# above) slips through untouched, so the "repaired" series still shows
+# a false ~30x spike and a 10y average pulled far above reality (GBP
+# 23.73 live, "should be ~6-8"). Every .L ticker whose price has moved
+# enough since a pence segment has the same gap - this isn't HSBA.L-
+# specific.
+#
+# Fix: a SECOND, complementary detection signal, additive to the
+# reference-price check above (never replacing it - that check still
+# catches a CONSISTENTLY pence-quoted ticker and a BCG.L-shaped recent
+# segment on its own). Yahoo's own pence<->pounds unit switch is a
+# flat x100 data artifact, not a real trading event, so two ADJACENT
+# trading days straddling the switch have nearly identical REAL
+# prices - their ratio lands close to literally 100x regardless of
+# how far either side has since drifted from today's price. Walking
+# the series for a consecutive-pair ratio in this band - with margin
+# either side of 100x for ordinary same-day price noise, never wide
+# enough to also match a genuine single-day move - finds the switch
+# boundary no matter what today's own price has done since.
+_PENCE_HISTORY_NEIGHBOUR_JUMP_RATIO_RANGE = (50.0, 200.0)
+
+
+def _neighbour_jump_segments(values):
+    """[(start, end), ...] (end exclusive) - splits `values` at every
+    index i where the consecutive VALID (finite, positive, numeric)
+    points values[i-1]/values[i] differ by a ratio inside _PENCE_
+    HISTORY_NEIGHBOUR_JUMP_RATIO_RANGE (~100x, with margin) - the
+    signature of a pence<->pounds unit switch between two adjacent
+    trading days, as opposed to a genuine price move (a real stock,
+    even in a sharp crash or rally, never moves anywhere near
+    50x-200x between two consecutive trading days).
+
+    Returns [] - NOT one segment covering the whole range - when no
+    jump is found anywhere in the series: with no detected switch
+    boundary at all, there is no signal to act on, and this function's
+    only caller (the pence-repair pass below) must stay a complete
+    no-op for that series rather than judging the WHOLE thing as one
+    segment against the reference price - a single all-encompassing
+    segment's own median can easily sit on the "divide" side of a
+    border-case value purely by chance (confirmed by this module's own
+    ratio-boundary regression test), which would re-touch a point the
+    reference-price pass (PASS 1) deliberately left alone as a genuine
+    price, not a unit bug. A None/non-numeric/non-positive point never
+    itself starts or ends a comparison (skipped when looking for the
+    previous valid point to compare against), so a gap in the data can
+    never be mistaken for a unit switch."""
+    lo, hi = _PENCE_HISTORY_NEIGHBOUR_JUMP_RATIO_RANGE
+    boundaries = []
+    prev_valid = None
+    for i, v in enumerate(values):
+        if isinstance(v, (int, float)) and v == v and v > 0:
+            if prev_valid is not None:
+                ratio = max(v, prev_valid) / min(v, prev_valid)
+                if lo <= ratio <= hi:
+                    boundaries.append(i)
+            prev_valid = v
+    if not boundaries:
+        return []
+    segments = []
+    start = 0
+    for b in boundaries:
+        segments.append((start, b))
+        start = b
+    segments.append((start, len(values)))
+    return segments
+
+
+def _segment_needs_divide(values, start, end, reference_price):
+    """True if THIS segment's own representative value (the median of
+    its valid numeric points) sits closer to `reference_price`, in
+    log-space, after dividing by 100 than before - "which side of a
+    detected jump is the pence side", decided purely by distance to
+    the known-good reference price, never by which segment happens to
+    be longer or come first/last in the series. False (never divide)
+    for a segment with no usable value at all."""
+    vals = sorted(v for v in values[start:end]
+                   if isinstance(v, (int, float)) and v == v and v > 0)
+    if not vals:
+        return False
+    n = len(vals)
+    representative = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+    dist_raw = abs(math.log(representative / reference_price))
+    dist_divided = abs(math.log((representative / 100.0) / reference_price))
+    return dist_divided < dist_raw
+
 
 def repair_mixed_unit_price_series(prices, reference_price, ticker=None, log=print,
                                     fallback_divide_all=True):
@@ -917,7 +1019,9 @@ def repair_mixed_unit_price_series(prices, reference_price, ticker=None, log=pri
     bundle()'s own prices_10y["prices"], or a close-price series
     flattened to a list by a caller like nightly_scan._reprice_row())
     - see the module comment above _PENCE_HISTORY_REPAIR_RATIO_RANGE
-    for the full incident/fix writeup.
+    for the original incident/fix writeup, and the one above _PENCE_
+    HISTORY_NEIGHBOUR_JUMP_RATIO_RANGE (TASK 29c) for the second,
+    complementary pass this function now also runs.
 
     `reference_price` is this ticker's own CURRENT (or otherwise
     known-good) price, already normalised to the SAME unit the
@@ -931,12 +1035,26 @@ def repair_mixed_unit_price_series(prices, reference_price, ticker=None, log=pri
     (the default) falls back to the OLD blanket "/100 every point"
     behaviour rather than leaving a known-pence series completely
     unrepaired; passing False instead leaves `prices` completely
-    unchanged in that case.
+    unchanged in that case (the neighbour-jump pass below never runs
+    either, in that case - it needs the same reference price the first
+    pass does).
+
+    PASS 1 (TASK 29/29b): a point whose ratio to `reference_price`
+    falls in _PENCE_HISTORY_REPAIR_RATIO_RANGE is divided by 100.
+    PASS 2 (TASK 29c): every point PASS 1 left untouched is then
+    checked again via _neighbour_jump_segments()/_segment_needs_
+    divide() above - a segment bordered by a ~100x neighbour-to-
+    neighbour jump, whose own representative value sits closer to
+    `reference_price` once divided, is divided as a WHOLE segment
+    (never one point at a time, so a segment can't be split by its
+    own internal day-to-day noise). A point PASS 1 already divided is
+    never reconsidered or divided again.
 
     Logs one line - "[units] <TICKER> history repaired: N of M points
-    rescaled pence->GBP" - only when N > 0 and `ticker` is given, so a
-    log search for "[units]" shows exactly which tickers were actually
-    affected; a point that already agrees with `reference_price` is
+    rescaled pence->GBP" - only when N > 0 and `ticker` is given (N
+    counting points from EITHER pass), so a log search for "[units]"
+    shows exactly which tickers were actually affected; a point that
+    already agrees with `reference_price` (and its own neighbours) is
     never counted or touched."""
     if prices is None:
         return prices
@@ -955,15 +1073,25 @@ def repair_mixed_unit_price_series(prices, reference_price, ticker=None, log=pri
         return repaired
     lo, hi = _PENCE_HISTORY_REPAIR_RATIO_RANGE
     repaired = []
-    n_rescaled = 0
+    rescaled = []
     for p in prices:
         if isinstance(p, (int, float)) and p == p and p > 0:
             ratio = p / reference_price
             if lo <= ratio <= hi:
                 repaired.append(p / 100.0)
-                n_rescaled += 1
+                rescaled.append(True)
                 continue
         repaired.append(p)
+        rescaled.append(False)
+
+    for start, end in _neighbour_jump_segments(repaired):
+        if _segment_needs_divide(repaired, start, end, reference_price):
+            for i in range(start, end):
+                if not rescaled[i] and isinstance(repaired[i], (int, float)) and repaired[i] == repaired[i]:
+                    repaired[i] = repaired[i] / 100.0
+                    rescaled[i] = True
+
+    n_rescaled = sum(rescaled)
     if n_rescaled and ticker:
         log(f"[units] {ticker} history repaired: {n_rescaled} of "
             f"{len(prices)} points rescaled pence->GBP")
@@ -972,17 +1100,19 @@ def repair_mixed_unit_price_series(prices, reference_price, ticker=None, log=pri
 
 def repair_mixed_unit_price_dataframe(history_df, reference_price, ticker=None, log=print,
                                        fallback_divide_all=True):
-    """Same per-point repair as repair_mixed_unit_price_series() above,
-    for an OHLC(V) DataFrame (normalize_pence_quote()'s own
+    """Same two-pass per-row repair as repair_mixed_unit_price_series()
+    above, for an OHLC(V) DataFrame (normalize_pence_quote()'s own
     `history_df`) - the "Close" column decides whether a given ROW is
-    pence-shaped (its ratio to `reference_price`), then that SAME per-
-    row decision is applied to every other OHLC column present, so one
-    row's Open/High/Low/Close always move together rather than each
-    column being judged independently (which could split a single
+    pence-shaped (PASS 1: its ratio to `reference_price`; PASS 2,
+    TASK 29c: its own neighbour-jump segment membership - see that
+    function's own docstring for both passes in full), then that SAME
+    per-row decision is applied to every other OHLC column present, so
+    one row's Open/High/Low/Close always move together rather than
+    each column being judged independently (which could split a single
     day's own OHLC across two different units on a borderline ratio).
-    Returns a COPY only if at least one row needed repair; `history_df`
-    itself is never mutated. None in, None out; unchanged if "Close"
-    isn't a column.
+    Returns a COPY only if at least one row needed repair (from either
+    pass); `history_df` itself is never mutated. None in, None out;
+    unchanged if "Close" isn't a column.
 
     Every call site here only calls this once it already knows (from
     the ticker's own currency code) the frame is nominally pence-
@@ -990,7 +1120,8 @@ def repair_mixed_unit_price_dataframe(history_df, reference_price, ticker=None, 
     `fallback_divide_all=True` (the default) falls back to the OLD
     blanket "/100 every row" behaviour rather than leaving a known-
     pence frame completely unrepaired; False instead leaves
-    `history_df` completely unchanged in that case."""
+    `history_df` completely unchanged in that case (PASS 2 never runs
+    either - it needs the same reference price PASS 1 does)."""
     if history_df is None or history_df.empty or "Close" not in history_df.columns:
         return history_df
     if (not isinstance(reference_price, (int, float))
@@ -1009,11 +1140,29 @@ def repair_mixed_unit_price_dataframe(history_df, reference_price, ticker=None, 
     lo, hi = _PENCE_HISTORY_REPAIR_RATIO_RANGE
     closes = history_df["Close"]
     ratios = closes / reference_price
-    mask = closes.notna() & (ratios >= lo) & (ratios <= hi)
-    n_rescaled = int(mask.sum())
+    rescaled_mask = (closes.notna() & (ratios >= lo) & (ratios <= hi)).tolist()
+
+    # PASS 2 (TASK 29c): the same neighbour-jump segment detection
+    # repair_mixed_unit_price_series() runs, against the Close column
+    # AFTER PASS 1's own divide - exactly the "run pass 2 on top of
+    # pass 1's result, skip any point pass 1 already fixed" order that
+    # function uses, so the two stay in lockstep.
+    closes_after_pass1 = [
+        (c / 100.0 if rescaled_mask[i] else c) for i, c in enumerate(closes.tolist())
+    ]
+    for start, end in _neighbour_jump_segments(closes_after_pass1):
+        if _segment_needs_divide(closes_after_pass1, start, end, reference_price):
+            for i in range(start, end):
+                if not rescaled_mask[i]:
+                    v = closes_after_pass1[i]
+                    if isinstance(v, (int, float)) and v == v:
+                        rescaled_mask[i] = True
+
+    n_rescaled = sum(rescaled_mask)
     if n_rescaled == 0:
         return history_df
     history_df = history_df.copy()
+    mask = pd.Series(rescaled_mask, index=history_df.index)
     for col in ("Open", "High", "Low", "Close", "Adj Close"):
         if col in history_df.columns:
             history_df.loc[mask, col] = history_df.loc[mask, col] / 100.0

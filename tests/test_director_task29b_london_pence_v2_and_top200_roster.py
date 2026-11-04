@@ -442,10 +442,16 @@ print(f"[task29b_a_t10_reprice_row_never_flagged] _reprice_row() BCG.L "
 
 
 # ======================================================================
-# PART A, T11: BUNDLE_VERSION bumped 7->8.
+# PART A, T11: BUNDLE_VERSION bumped 7->8 by this task - TASK 29c (4
+# Nov 2026) bumped it again afterwards (8->9, its own neighbour-jump
+# repair fix), so this check only asserts it's been bumped AT LEAST to
+# what this task itself required, never an exact literal that a later
+# task's own legitimate further bump would make stale.
 # ======================================================================
-check("BUNDLE_VERSION bumped to 8", fd.BUNDLE_VERSION == 8)
-print("[task29b_a_t11_bundle_version] BUNDLE_VERSION == 8 OK")
+check("BUNDLE_VERSION bumped to at least 8 (this task's own bump; a "
+      "later task may have bumped it further)", fd.BUNDLE_VERSION >= 8)
+print(f"[task29b_a_t11_bundle_version] BUNDLE_VERSION == {fd.BUNDLE_VERSION} "
+      "(>= 8) OK")
 
 
 # ========================================================================
