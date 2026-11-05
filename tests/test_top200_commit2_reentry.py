@@ -316,10 +316,25 @@ finally:
     else:
         sys.modules.pop("top100_engine", None)
 
-_canon = lambda pool: json.dumps(pool, sort_keys=True, default=str)
+# "quality"/"quality_v2"/"quality_v2_meta"/"value_score_v2" (TASK 32,
+# Director-directed, owner request, 5 Nov 2026) - SHADOW-ONLY fields
+# _build_best_by_ticker() now also carries on every row, purely
+# additive and never read by select_top100_pool()'s own sort/slice.
+# 007d669 predates this task, so they're stripped before comparing.
+_TASK32_SHADOW_KEYS = ("quality", "quality_v2", "quality_v2_meta", "value_score_v2")
+
+
+def _canon(pool):
+    return json.dumps(
+        [{k: v for k, v in row.items() if k not in _TASK32_SHADOW_KEYS} for row in pool],
+        sort_keys=True, default=str,
+    )
+
+
 assert _canon(_pool_now) == _canon(_pool_before), (
-    "select_top100_pool()'s return value must stay byte-identical to 007d669 after "
-    "COMMIT 2 - it only ever touches submission/retry logic, never selection")
+    "select_top100_pool()'s return value must stay byte-identical to 007d669 (aside "
+    "from TASK 32's own purely-additive shadow fields) after COMMIT 2 - it only ever "
+    "touches submission/retry logic, never selection")
 print(f"[select_top100_pool_byte_identical_to_007d669] {len(_pool_now)}-row pool, identical "
       f"sorted-JSON serialization against the 007d669 baseline OK")
 

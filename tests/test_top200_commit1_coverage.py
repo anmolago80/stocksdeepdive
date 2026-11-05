@@ -349,10 +349,31 @@ finally:
     else:
         sys.modules.pop("top100_engine", None)
 
-_canon = lambda pool: json.dumps(pool, sort_keys=True, default=str)
+#   - "quality"/"quality_v2"/"quality_v2_meta"/"value_score_v2" (TASK
+#     32, Director-directed, owner request, 5 Nov 2026) - the SHADOW-
+#     ONLY "through-the-cycle" Quality score fields top100_engine.py's
+#     _build_best_by_ticker() now also carries on every row, purely
+#     additive and never read by select_top100_pool()'s own sort/slice
+#     (which still only ever reads "value_score" - see that module's
+#     own quality_v2_movers()/simulate_pool_v2() docstrings). 007d669
+#     predates this task entirely, so these keys are stripped before
+#     comparing - every LIVE field (above all "value_score" itself,
+#     and the selected pool's own membership/order) is still compared
+#     byte-for-byte.
+_TASK32_SHADOW_KEYS = ("quality", "quality_v2", "quality_v2_meta", "value_score_v2")
+
+
+def _canon(pool):
+    return json.dumps(
+        [{k: v for k, v in row.items() if k not in _TASK32_SHADOW_KEYS} for row in pool],
+        sort_keys=True, default=str,
+    )
+
+
 assert _canon(_pool_now) == _canon(_pool_before), (
-    "select_top100_pool()'s return value must be byte-identical to 007d669 given the same "
-    "input scan - COMMIT 1's coverage/zeros logging must be purely additive")
+    "select_top100_pool()'s return value must be byte-identical to 007d669 (aside from "
+    "TASK 32's own purely-additive shadow fields) given the same input scan - COMMIT 1's "
+    "coverage/zeros logging must be purely additive")
 print(f"[select_top100_pool_byte_identical_to_007d669] {len(_pool_now)}-row pool, identical "
       f"sorted-JSON serialization against the 007d669 baseline OK")
 

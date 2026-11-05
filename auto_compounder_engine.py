@@ -599,6 +599,46 @@ def _series_with_dates(df, key):
         return []
 
 
+def series_by_date(df, key):
+    """{date: value} for a statement row, keyed by its REAL period-end
+    date rather than column position - the same {date: value} shape
+    portfolio_health_engine.py's Evolution engine already builds for
+    itself (previously as its own private _evolution_series_by_date()),
+    promoted here so nightly_scan.py's quality_v2 (TASK 32) can share
+    the identical date-keyed lookup instead of a second copy. Just
+    _series_with_dates() above with the None-date rows dropped."""
+    return {d: v for d, v in _series_with_dates(df, key) if d is not None}
+
+
+def normalized_income_for_fy(income, fy):
+    """(normalized_income, source, total_unusual_items) for one fiscal-
+    year column of an income statement. "Normalized Income" row
+    directly when present ("normalized" source - the one-off items are
+    already excluded by the data provider); otherwise Net Income -
+    Total Unusual Items * (1 - effective tax rate) ("fallback" source).
+
+    TASK 16c's original fix (portfolio_health_engine.py's Evolution
+    engine, 22 Oct 2026): this is what keeps a one-off impairment/
+    restructuring year from reading as a margin/ROIC/growth collapse.
+    Promoted here (from that module's own private _evolution_
+    normalized_income()) for TASK 32 (5 Nov 2026): nightly_scan.py's
+    quality_v2 shadow score needs the SAME one-off exclusion, and the
+    Director's own instruction is explicit - "no second normalisation
+    method" - so this is now the ONE real implementation; both callers
+    delegate to it rather than each keeping their own copy."""
+    norm = series_by_date(income, "normalized_income").get(fy)
+    unusual = series_by_date(income, "total_unusual_items").get(fy)
+    if norm is not None:
+        return norm, "normalized", unusual
+    net_income = series_by_date(income, "net_income").get(fy)
+    if net_income is None or unusual is None:
+        return None, "unavailable", unusual
+    tax_provision = series_by_date(income, "tax_provision").get(fy)
+    pretax_income = series_by_date(income, "pretax_income").get(fy)
+    tax_rate = effective_tax_rate(tax_provision, pretax_income)
+    return net_income - unusual * (1.0 - tax_rate), "fallback", unusual
+
+
 def _latest(df, key):
     for _, v in _series(df, key):
         if v is not None:

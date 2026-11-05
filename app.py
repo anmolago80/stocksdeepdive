@@ -33329,6 +33329,188 @@ def _render_top200_backfill_preview_panel():
         top100_render._render_not_rated_section(_preview["set_aside"], "en")
 
 
+def _quality_v2_market_label(ticker, foreign_home_country):
+    """TASK 32 Part 3b: one of "Australia"/"USA"/"Foreign US-listed"/
+    "United Kingdom"/"Canada"/"Europe"/any other market peer_context.
+    market_for() returns - NEVER a second, independently-derived
+    country lookup. "USA" is split into "USA" vs "Foreign US-listed"
+    using the SAME classification top100_render.py's own USA tab
+    already uses (_foreign_us_listed_home_country_by_ticker()'s {ticker:
+    home_country} map, passed in here once per panel render rather than
+    reloaded per ticker). Continental Europe collapses into one
+    "Europe" bucket, same grouping top100_render._EUROPE_COUNTRIES
+    already defines for the public page's own new-market tabs."""
+    market = peer_context.market_for(ticker)
+    if market == "USA":
+        return "Foreign US-listed" if ticker in foreign_home_country else "USA"
+    if market in top100_render._EUROPE_COUNTRIES:
+        return "Europe"
+    return market
+
+
+def _quality_v2_diff_table(tickers, rows_v2):
+    """TASK 32 Part 3a/3d: one row per ticker - {"Ticker", "Company",
+    "Quality", "Quality v2", "Value Score", "Value Score v2"} drawn
+    from simulate_pool_v2()'s own "rows_v2" (tonight's eligible
+    candidates - the SAME row every other section of this panel reads).
+    A ticker not present in rows_v2 at all (no longer eligible tonight -
+    e.g. it stopped trading, or today's repricing made it DCF-
+    unreliable) shows "(not eligible tonight)" instead of fabricating
+    numbers for it."""
+    out = []
+    for t in sorted(tickers):
+        row = rows_v2.get(t)
+        if row is None:
+            out.append({"Ticker": t, "Company": "(not eligible tonight)", "Quality": None,
+                        "Quality v2": None, "Value Score": None, "Value Score v2": None})
+            continue
+        out.append({
+            "Ticker": t, "Company": row.get("company_name") or t,
+            "Quality": row.get("quality"), "Quality v2": row.get("quality_v2"),
+            "Value Score": row.get("value_score"), "Value Score v2": row.get("value_score_v2"),
+        })
+    return out
+
+
+def _render_quality_v2_preview_panel():
+    """TASK 32 (Director-directed, owner request, 5 Nov 2026) - SHADOW
+    MODE / TEST ONLY, owner approval required before any go-live.
+    "Quality v2 preview": compares the LIVE Top 200 (top100_store.
+    current_pool()/current_asx_extension(), what the site shows right
+    now) against a SIMULATED Top 200 built from quality_v2_engine.py's
+    "through-the-cycle", one-off-excluded Quality score (top100_engine.
+    simulate_pool_v2() - read-only, never writes anything, same safety
+    profile as the backfill preview panel above). Nothing here changes
+    the live selection, Quality, or Value Score, and nothing happens
+    until the button is clicked - same "no gate of its own, button-
+    triggered, in-process, read-only" pattern as every panel on this
+    page."""
+    st.markdown("### Quality v2 preview (SHADOW MODE - test only)")
+    st.caption(
+        "Owner-only. SHADOW MODE / TEST ONLY - owner approval required "
+        "before any go-live. Computes, in-process, what the Top 200 "
+        "would look like under quality_v2_engine.py's \"through-the-"
+        "cycle\", one-off-excluded Quality score instead of today's "
+        "point-in-time one, from already-scanned candidates carrying "
+        "the shadow \"Quality V2\" field - without writing anything or "
+        "changing the live selection in any way."
+    )
+    if not st.button("Compute Quality v2 preview", key="admin_dash_quality_v2_preview_button"):
+        return
+    try:
+        _sim = top100_engine.simulate_pool_v2(log=print)
+    except Exception as e:
+        st.caption(f"Preview failed: {e}")
+        return
+
+    _rows_v2 = _sim["rows_v2"]
+    _live_pool_tickers = {r["ticker"] for r in top100_store.current_pool()}
+    _live_ext_tickers = {r["ticker"] for r in top100_store.current_asx_extension()}
+    _v2_pool_tickers = _sim["pool_v2_tickers"]
+    _v2_ext_tickers = _sim["extension_v2_tickers"]
+
+    if _sim["backfill_live"]:
+        st.warning(
+            "TOP200_BACKFILL_LIVE is currently ON - this preview does "
+            "NOT simulate backfill's own standin/set-aside mechanics "
+            "(see simulate_pool_v2()'s own docstring), so comparing it "
+            "directly against today's live pool may overstate the "
+            "difference. Treat the numbers below as directional."
+        )
+
+    # --- 3a: drop-outs / new entrants, full lists with old/new Quality
+    # and Value Score.
+    st.markdown("#### Top 200: drop-outs / new entrants")
+    _dropped = _live_pool_tickers - _v2_pool_tickers
+    _entered = _v2_pool_tickers - _live_pool_tickers
+    _cutoff_live = top100_engine.pool_value_score_cutoff()
+    _cutoff_v2 = _sim["cutoff_v2"]
+    _c1, _c2, _c3 = st.columns(3)
+    with _c1:
+        st.metric("Would drop out", len(_dropped))
+    with _c2:
+        st.metric("Would newly enter", len(_entered))
+    with _c3:
+        if _cutoff_live is not None and _cutoff_v2 is not None:
+            st.metric("Cut-off change", f"{_cutoff_v2 - _cutoff_live:+.1f}",
+                      help=f"Live {_cutoff_live:.1f} -> v2 {_cutoff_v2:.1f}")
+        else:
+            st.metric("Cut-off change", "n/a")
+    st.markdown("**Would drop out**")
+    st.table(_quality_v2_diff_table(_dropped, _rows_v2) or [{"Ticker": "(none)"}])
+    st.markdown("**Would newly enter**")
+    st.table(_quality_v2_diff_table(_entered, _rows_v2) or [{"Ticker": "(none)"}])
+
+    # --- 3b: the same split, per market.
+    st.markdown("#### Per-market split")
+    _foreign_home_country = top100_render._foreign_us_listed_home_country_by_ticker()
+    _market_counts = {}
+    for t in _dropped:
+        m = _quality_v2_market_label(t, _foreign_home_country)
+        _market_counts.setdefault(m, {"dropped": 0, "entered": 0})["dropped"] += 1
+    for t in _entered:
+        m = _quality_v2_market_label(t, _foreign_home_country)
+        _market_counts.setdefault(m, {"dropped": 0, "entered": 0})["entered"] += 1
+    _market_order = ["Australia", "USA", "Foreign US-listed", "United Kingdom", "Canada", "Europe"]
+    _other_markets = sorted(m for m in _market_counts if m not in _market_order)
+    st.table([
+        {"Market": m, "Would drop out": _market_counts.get(m, {}).get("dropped", 0),
+         "Would newly enter": _market_counts.get(m, {}).get("entered", 0)}
+        for m in _market_order + _other_markets
+        if m in _market_counts
+    ] or [{"Market": "(no change in any market)"}])
+
+    # --- 3d: Top 20 Australia - who enters/leaves (pool .AX members +
+    # the ASX extension top-up, combined - the same 40-strong "Top 20
+    # Australia" population the public page's own Australia tab shows).
+    st.markdown("#### Top 20 Australia: entries / exits")
+    _live_au = {t for t in _live_pool_tickers if t.endswith(".AX")} | _live_ext_tickers
+    _v2_au = {t for t in _v2_pool_tickers if t.endswith(".AX")} | _v2_ext_tickers
+    _au_left = _live_au - _v2_au
+    _au_entered = _v2_au - _live_au
+    st.markdown("**Would leave Top 20 Australia**")
+    st.table(_quality_v2_diff_table(_au_left, _rows_v2) or [{"Ticker": "(none)"}])
+    st.markdown("**Would enter Top 20 Australia**")
+    st.table(_quality_v2_diff_table(_au_entered, _rows_v2) or [{"Ticker": "(none)"}])
+
+    # --- 3e: CSL.AX / OCL.AX shown explicitly, regardless of whether
+    # either appears in any diff list above (the Director's own two
+    # named evidence tickers).
+    st.markdown("#### CSL.AX / OCL.AX (named in the Director's own evidence)")
+    _named_rows = []
+    for t in ("CSL.AX", "OCL.AX"):
+        row = _rows_v2.get(t)
+        _named_rows.append({
+            "Ticker": t,
+            "In live pool": t in _live_pool_tickers,
+            "In live AU extension": t in _live_ext_tickers,
+            "In v2 pool": t in _v2_pool_tickers,
+            "In v2 AU extension": t in _v2_ext_tickers,
+            "Quality": row.get("quality") if row else None,
+            "Quality v2": row.get("quality_v2") if row else None,
+            "Value Score": row.get("value_score") if row else None,
+            "Value Score v2": row.get("value_score_v2") if row else None,
+        })
+    st.table(_named_rows)
+
+    # --- Part 4: biggest movers.
+    st.markdown("#### Biggest Quality movers (v2 vs live)")
+    _movers = top100_engine.quality_v2_movers(_rows_v2, min_delta=10, top_n=20, log=print)
+    st.metric("Companies moving > 10 Quality points", _movers["moved_over_threshold"])
+    st.markdown("**20 biggest risers**")
+    st.table([
+        {"Ticker": m["ticker"], "Quality": m["quality"], "Quality v2": m["quality_v2"],
+         "Δ": round(m["delta"], 1), "Main driver": m["driver"] or "n/a"}
+        for m in _movers["risers"]
+    ] or [{"Ticker": "(none)"}])
+    st.markdown("**20 biggest fallers**")
+    st.table([
+        {"Ticker": m["ticker"], "Quality": m["quality"], "Quality v2": m["quality_v2"],
+         "Δ": round(m["delta"], 1), "Main driver": m["driver"] or "n/a"}
+        for m in _movers["fallers"]
+    ] or [{"Ticker": "(none)"}])
+
+
 def _render_top200_schema_mode_panel():
     """COMMIT 4 of instruction_top200_unrated_and_blank_replies_
     combined.md (5 Oct 2026, Director-directed, switch TOP200_SCHEMA_
@@ -36697,6 +36879,13 @@ def page_admin_dashboard():
     # pattern as every panel above.
     st.markdown("---")
     _render_top200_backfill_preview_panel()
+
+    # --- QUALITY V2 PREVIEW (TASK 32, Director-directed, owner request,
+    # 5 Nov 2026, SHADOW MODE / TEST ONLY) - see _render_quality_v2_
+    # preview_panel()'s own docstring. Same "no gate of its own, final
+    # section of this page" pattern as every panel above.
+    st.markdown("---")
+    _render_quality_v2_preview_panel()
 
     # --- TOP 200 SCHEMA MODE (COMMIT 4 of instruction_top200_unrated_
     # and_blank_replies_combined.md, 5 Oct 2026, Director-directed) -

@@ -223,7 +223,17 @@ for _fixture_i in range(9):
             sys.modules["top100_engine"] = _saved_te
         else:
             sys.modules.pop("top100_engine", None)
-    _canon = lambda p: json.dumps(p, sort_keys=True, default=str)
+    # "quality"/"quality_v2"/"quality_v2_meta"/"value_score_v2" (TASK
+    # 32, Director-directed, owner request, 5 Nov 2026) - SHADOW-ONLY
+    # fields _build_best_by_ticker() now also carries on every row,
+    # purely additive and never read by select_top100_pool()'s own
+    # sort/slice. 007d669 predates this task, so they're stripped
+    # before comparing.
+    _task32_shadow_keys = ("quality", "quality_v2", "quality_v2_meta", "value_score_v2")
+    _canon = lambda p: json.dumps(
+        [{k: v for k, v in row.items() if k not in _task32_shadow_keys} for row in p],
+        sort_keys=True, default=str,
+    )
     if _canon(_pool_now) != _canon(_pool_before):
         _mismatch_count += 1
 

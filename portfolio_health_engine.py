@@ -1650,14 +1650,19 @@ def _evolution_series_by_date(df, key):
     engine._series_with_dates() (never a second date parser), so
     income/balance/cashflow rows (which don't share identical column
     sets on every ticker) can be looked up by the SAME fiscal-year date
-    without assuming positional alignment across the three statements."""
+    without assuming positional alignment across the three statements.
+
+    TASK 32 (5 Nov 2026): the actual {date: value} construction is now
+    auto_compounder_engine.series_by_date() (promoted so nightly_scan.
+    py's quality_v2 shadow score can share it too) - this wrapper is
+    kept, under its original name, only so every existing call site in
+    this file is untouched."""
     if df is None:
         return {}
     try:
-        pairs = auto_compounder_engine._series_with_dates(df, key)
+        return auto_compounder_engine.series_by_date(df, key)
     except Exception:
         return {}
-    return {d: v for d, v in pairs if d is not None}
 
 
 @st.cache_data(ttl=21600, max_entries=500)
@@ -1715,18 +1720,15 @@ def _evolution_normalized_income(income, fy):
     compounder_engine.effective_tax_rate() (never a second tax-rate
     guess) for the (1 - tax rate) term. Root cause A's own fix: this is
     what keeps a one-off impairment/restructuring year from reading as
-    a margin/ROIC collapse."""
-    norm = _evolution_series_by_date(income, "normalized_income").get(fy)
-    unusual = _evolution_series_by_date(income, "total_unusual_items").get(fy)
-    if norm is not None:
-        return norm, "normalized", unusual
-    net_income = _evolution_series_by_date(income, "net_income").get(fy)
-    if net_income is None or unusual is None:
-        return None, "unavailable", unusual
-    tax_provision = _evolution_series_by_date(income, "tax_provision").get(fy)
-    pretax_income = _evolution_series_by_date(income, "pretax_income").get(fy)
-    tax_rate = auto_compounder_engine.effective_tax_rate(tax_provision, pretax_income)
-    return net_income - unusual * (1.0 - tax_rate), "fallback", unusual
+    a margin/ROIC collapse.
+
+    TASK 32 (5 Nov 2026): the formula itself is now auto_compounder_
+    engine.normalized_income_for_fy() (promoted - the Director's own
+    instruction for nightly_scan.py's quality_v2 shadow score was
+    explicit: "no second normalisation method") - this wrapper is kept,
+    under its original name, only so every existing call site in this
+    file is untouched."""
+    return auto_compounder_engine.normalized_income_for_fy(income, fy)
 
 
 def _evolution_margins(income, fy_base, fy_now):

@@ -79,8 +79,10 @@ from datetime import datetime, timedelta, timezone
 
 import yfinance as yf
 
+import deep_dive_engine
 import fcf_valuation_engine
 import financials_classifier
+import fundamentals_data
 import market_readiness_engine
 import nightly_scan
 import peer_context
@@ -675,6 +677,31 @@ def _recompute_value_score(row):
     )
 
 
+def _recompute_value_score_v2(row):
+    """TASK 32 (Director-directed, owner request, 5 Nov 2026) - SHADOW
+    MODE / TEST ONLY: the exact same recompute as _recompute_value_
+    score() above, but with the row's "Quality V2" shadow score
+    (quality_v2_engine.py's "through-the-cycle", one-off-excluded
+    Quality - see that module's own docstring) in place of the live
+    "Quality". Everything else (MOS %, Psychology, Discovery (lite),
+    discovery_measured=False) is identical to the live recompute - only
+    the Quality input differs.
+
+    None when this row has no "Quality V2" at all - an older scan file
+    saved before this task, or a ticker this run's shadow computation
+    hasn't reached yet. Never read by select_top100_pool()'s own sort/
+    slice (which only ever reads "value_score") - shadow/display only,
+    consumed by simulate_pool_v2() below for the owner's "Quality v2
+    preview" admin panel."""
+    quality_v2 = row.get("Quality V2")
+    if quality_v2 is None:
+        return None
+    return ranking_engine.calculate_long_score(
+        quality_v2, row.get("MOS %") or 0.0, row.get("Psychology"),
+        row.get("Discovery (lite)") or 0, discovery_measured=False,
+    )
+
+
 def _build_best_by_ticker(log=print):
     """The deduped, eligibility-filtered candidate pool select_top100_
     pool() builds every call - extracted into its own function (COMMIT
@@ -926,12 +953,212 @@ def _build_best_by_ticker(log=print):
                     # only (_dedupe_share_classes() below), never fed
                     # into composite_score()/any sort/selection here.
                     "avg_volume": row.get("Average Volume"),
+                    # TASK 32 (Director-directed, owner request, 5 Nov
+                    # 2026) - SHADOW MODE / TEST ONLY: the winning row's
+                    # live Quality (display/debug only - the REAL
+                    # Quality input select_top100_pool() already scored
+                    # this row with is "value_score_source_row"/the
+                    # stored Long Score above, not this field) plus the
+                    # "through-the-cycle" shadow fields (quality_v2_
+                    # engine.py) - "quality_v2"/"quality_v2_meta" (None
+                    # if this scan row predates TASK 32 or the shadow
+                    # computation hasn't reached this ticker yet) and
+                    # "value_score_v2" (_recompute_value_score_v2()
+                    # above - the SAME MOS %/Psychology/Discovery as
+                    # "value_score", only the Quality input swapped).
+                    # NEVER read by the sort/slice two lines below this
+                    # function's own caller uses ("value_score" only) -
+                    # consumed solely by simulate_pool_v2() for the
+                    # owner's "Quality v2 preview" admin panel.
+                    "quality": row.get("Quality"),
+                    "quality_v2": row.get("Quality V2"),
+                    "quality_v2_meta": row.get("Quality V2 Meta"),
+                    "value_score_v2": _recompute_value_score_v2(row),
                 }
 
     _dedupe_share_classes(best_by_ticker, log=log)
     _dedupe_cross_listings(best_by_ticker, log=log)
     _report_undocumented_same_name_duplicates(best_by_ticker, log=log)
     return best_by_ticker, len(eligible)
+
+
+def _value_score_v2_sort_key(row):
+    """row["value_score_v2"] when this row's shadow Quality V2 score
+    has actually been computed, else row["value_score"] (the live
+    score) - so a ticker scan_v2 hasn't reached yet (an older scan
+    file, or a brand-new ticker whose shadow computation hasn't run)
+    still has a sane place in the v2 merit order instead of sorting as
+    the lowest possible value or crashing the sort on a None."""
+    v2 = row.get("value_score_v2")
+    return v2 if v2 is not None else row["value_score"]
+
+
+def simulate_pool_v2(log=print):
+    """TASK 32 (Director-directed, owner request, 5 Nov 2026) - SHADOW
+    MODE / TEST ONLY: a SIMULATED Top 200 (+ the Top 20 Australia ASX
+    extension top-up) built from quality_v2_engine.py's "through-the-
+    cycle" Quality score instead of the live one, for the owner's
+    "Quality v2 preview" admin panel (app.py). Built on
+    _build_best_by_ticker() - the EXACT SAME eligibility filtering
+    (DCF-unreliable/fund/fallback-financials exclusions), freshest-
+    row-wins candidate selection, and share-class/cross-listing dedupe
+    select_top100_pool() itself uses tonight, so this simulation's
+    candidate universe can never drift from the real one. Read-only:
+    never calls save_pool()/update_pool_presence() or writes anything
+    at all - identical safety profile to backfill_preview(). Does not
+    change, and is never read by, select_top100_pool() itself.
+
+    NOT simulated: TOP200_BACKFILL_LIVE's own standin/set-aside
+    mechanics (select_top100_pool()'s own is_backfill_live() branch) -
+    this always uses the plain top-N-by-Value-Score-v2 cut, even when
+    the LIVE pool is currently built with backfill on. The returned
+    "backfill_live" flag lets the caller disclose that explicitly - a
+    deliberate, documented scope limit for a preview tool (never a
+    correctness bug, since nothing here is live-effecting).
+
+    Returns {
+      "eligible_count": int,         # same meaning as select_top100_
+                                      # pool()'s own return
+      "backfill_live": bool,
+      "rows_v2": {ticker: row},      # every candidate row _build_
+                                      # best_by_ticker() produced,
+                                      # keyed by ticker - "quality",
+                                      # "quality_v2", "value_score"
+                                      # and "value_score_v2" all live
+                                      # on each row (see that
+                                      # function's own docstring)
+      "pool_v2_tickers": set,        # the simulated Top 200 under v2
+      "extension_v2_tickers": set,   # the simulated ASX extension
+                                      # top-up under v2
+      "cutoff_v2": float or None,    # the simulated pool's own 200th
+                                      # member's Value Score v2 (or
+                                      # live Value Score, for a member
+                                      # with no v2 score yet)
+    }"""
+    best_by_ticker, eligible_count = _build_best_by_ticker(log=log)
+
+    merit_ordered_v2 = sorted(best_by_ticker.values(), key=_value_score_v2_sort_key, reverse=True)
+    pool_v2_rows = merit_ordered_v2[:POOL_SIZE]
+    pool_v2_tickers = {r["ticker"] for r in pool_v2_rows}
+    cutoff_v2 = _value_score_v2_sort_key(pool_v2_rows[-1]) if pool_v2_rows else None
+
+    au_in_pool_v2 = sum(1 for t in pool_v2_tickers if t.endswith(".AX"))
+    extension_v2_tickers = set()
+    if au_in_pool_v2 < TOP20_AU_TARGET:
+        needed = TOP20_AU_TARGET - au_in_pool_v2
+        au_candidates_v2 = sorted(
+            (r for t, r in best_by_ticker.items() if t.endswith(".AX") and t not in pool_v2_tickers),
+            key=_value_score_v2_sort_key, reverse=True,
+        )[:needed]
+        extension_v2_tickers = {r["ticker"] for r in au_candidates_v2}
+
+    return {
+        "eligible_count": eligible_count,
+        "backfill_live": is_backfill_live(),
+        "rows_v2": best_by_ticker,
+        "pool_v2_tickers": pool_v2_tickers,
+        "extension_v2_tickers": extension_v2_tickers,
+        "cutoff_v2": cutoff_v2,
+    }
+
+
+# TASK 32 Part 4: which single formula term swung a row's quality_v2
+# vs its live quality the most - {label: (quality_v2_meta key, weight)}
+# for the 5 weighted terms that have a direct v1/v2 counterpart (FCF
+# and Debt are handled separately just below, since v1 never names
+# them the same way deep_dive_engine._quality_breakdown() does).
+_QUALITY_TERM_WEIGHTS = {
+    "ROIC": ("roic", 0.25, "ROIC"),
+    "ROE": ("roe", 0.20, "ROE"),
+    "Net Margin": ("net_margin", 0.15, "Profit Margin"),
+    "Revenue Growth": ("revenue_growth", 0.15, "Revenue Growth"),
+    "Earnings Growth": ("earnings_growth", 0.15, "Earnings Growth"),
+}
+
+
+def _quality_v2_main_driver(ticker, row, log=print):
+    """Which single term (ROIC/ROE/Net Margin/Revenue Growth/Earnings
+    Growth/Free Cash Flow/Debt) contributed most to this row's
+    quality_v2-vs-quality swing - the term whose v2 weighted
+    contribution (read straight from "quality_v2_meta", quality_v2_
+    engine.py's own stored per-input values) differs most from the
+    SAME term's v1 weighted contribution. v1's own individual terms
+    aren't stored anywhere (get_quality_score() only ever returns the
+    final score - see deep_dive_engine.py's own docstring on this exact
+    point), so they're read via deep_dive_engine._quality_breakdown()
+    - the existing display-only mirror of that formula - fed the row's
+    own cached fundamentals_data.get_bundle()["info"] (a 24h cache hit,
+    the SAME bundle quality_v2 itself was computed from tonight - no
+    new network call here). None on any lookup failure or when this
+    row carries no quality_v2_meta at all - the caller simply shows no
+    driver for that row, never drops it from the risers/fallers list."""
+    try:
+        meta = row.get("quality_v2_meta") or {}
+        if not meta:
+            return None
+        bundle = fundamentals_data.get_bundle(ticker)
+        info = (bundle or {}).get("info") or {}
+        v1_terms = deep_dive_engine._quality_breakdown(info)
+
+        deltas = {}
+        for label, (meta_key, weight, v1_label) in _QUALITY_TERM_WEIGHTS.items():
+            v2_val = meta.get(meta_key)
+            if v2_val is None:
+                continue
+            deltas[label] = (v2_val * 100 * weight) - v1_terms.get(v1_label, 0.0)
+
+        fcf_v2 = meta.get("fcf_positive")
+        if fcf_v2 is not None:
+            v2_fcf_term = 10.0 if fcf_v2 else -5.0
+            deltas["Free Cash Flow"] = v2_fcf_term - v1_terms.get("Free Cash Flow", 0.0)
+
+        debt_eq_v2 = meta.get("debt_to_equity")
+        if debt_eq_v2 is not None:
+            v2_debt_term = -min(debt_eq_v2 * 0.05, 15)
+            deltas["Debt"] = v2_debt_term - v1_terms.get("Debt Penalty", 0.0)
+
+        if not deltas:
+            return None
+        return max(deltas.items(), key=lambda kv: abs(kv[1]))[0]
+    except Exception as e:
+        log(f"[top100] quality_v2 main-driver lookup failed for {ticker}: {e}")
+        return None
+
+
+def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):
+    """TASK 32 Part 4 (Director-directed, owner request, 5 Nov 2026):
+    how many of `rows_v2` (simulate_pool_v2()'s own "rows_v2" - every
+    candidate the real nightly selection drew from tonight, live
+    Quality AND shadow Quality V2 both present) move more than
+    `min_delta` Quality points, plus the `top_n` biggest risers and
+    `top_n` biggest fallers, each with its own main driver (see
+    _quality_v2_main_driver() above). Read-only, never raises.
+
+    Returns {
+      "moved_over_threshold": int,
+      "risers": [{"ticker", "quality", "quality_v2", "delta", "driver"}, ...],
+      "fallers": [...],   # same shape, delta <= -min_delta is NOT a
+                           # requirement for inclusion here - every
+                           # negative-delta row is a candidate, same
+                           # as risers; only "moved_over_threshold"
+                           # itself applies the min_delta cut.
+    }
+    """
+    movers = []
+    for ticker, row in (rows_v2 or {}).items():
+        q1, q2 = row.get("quality"), row.get("quality_v2")
+        if q1 is None or q2 is None:
+            continue
+        movers.append({"ticker": ticker, "quality": q1, "quality_v2": q2, "delta": q2 - q1})
+
+    moved_over_threshold = sum(1 for m in movers if abs(m["delta"]) > min_delta)
+    risers = sorted((m for m in movers if m["delta"] > 0), key=lambda m: m["delta"], reverse=True)[:top_n]
+    fallers = sorted((m for m in movers if m["delta"] < 0), key=lambda m: m["delta"])[:top_n]
+
+    for m in risers + fallers:
+        m["driver"] = _quality_v2_main_driver(m["ticker"], rows_v2[m["ticker"]], log=log)
+
+    return {"moved_over_threshold": moved_over_threshold, "risers": risers, "fallers": fallers}
 
 
 def select_top100_pool(log=print, scan_day=None):

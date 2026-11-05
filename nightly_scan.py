@@ -50,6 +50,7 @@ import financials_income_store
 import fundamentals_data
 import moat_engine
 import peer_context
+import quality_v2_engine
 import reverse_dcf_engine
 import symbol_mapping
 import scan_checkpoint_store
@@ -195,6 +196,44 @@ def _attach_dividend_payout(row, ticker, log=print):
             row["Payout Ratio %"] = round(_dps / trailing_eps * 100, 1)
     except Exception as e:
         log(f"[nightly_scan] {ticker}: dividend payout ratio failed: {e}")
+
+
+def _attach_quality_v2(row, ticker, log=print):
+    """TASK 32 (Director-directed, owner request, 5 Nov 2026): SHADOW
+    MODE / TEST ONLY - adds "Quality V2"/"Quality V2 Meta" to an
+    already-built row dict, in place. See quality_v2_engine.py's own
+    module docstring for the full "through-the-cycle" design (one-off-
+    excluded, up to 3 fiscal years, median, per-input fallback).
+
+    Same "called only from the two REAL nightly scan paths below,
+    never from analyze_ticker_lite() itself" pattern as _attach_moat()/
+    _attach_dividend_payout() above - digest_engine's weekly watchlist
+    email (which shares analyze_ticker_lite()) was never asked to pay
+    for a new multi-year statement fetch. Reuses the SAME fundamentals_
+    data.get_bundle(ticker) call _attach_moat()'s own moat_engine.
+    compute_moat() already made moments ago for this ticker (24h
+    cache - this is a cache hit), so this is free on any ticker already
+    scanned today by either real path - no new Yahoo call per ticker
+    per night.
+
+    Purely additive: never touches "Quality"/"Quality Default" or any
+    other existing key on this row, and nothing in the live selection/
+    ranking path (top100_engine.py's _build_best_by_ticker()/
+    select_top100_pool(), snapshot_store, any public page) reads either
+    new key - see top100_engine.py's own quality/quality_v2/
+    value_score_v2 additions for exactly where this is read, shadow-
+    only, for the owner's "Quality v2 preview" admin panel. One bad
+    ticker never kills the row - "Quality V2" is simply left absent,
+    same convention as Moat/Payout Ratio above."""
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+        if not bundle:
+            return
+        score, meta = quality_v2_engine.get_quality_score_v2(ticker, bundle)
+        row["Quality V2"] = score
+        row["Quality V2 Meta"] = meta
+    except Exception as e:
+        log(f"[nightly_scan] {ticker}: quality_v2_engine failed: {e}")
 
 
 # URGENT Commit 2 (24 Sep 2026, owner-reported): scans have produced
@@ -1660,6 +1699,7 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
                 else:
                     _attach_moat(row, t, log=log)
                     _attach_dividend_payout(row, t, log=log)
+                    _attach_quality_v2(row, t, log=log)
                     # Services batch 2, Part 2: Sector, straight from the
                     # constituent pool already fetched above - no extra
                     # call. None (not "Unknown") for a universe whose
@@ -2309,6 +2349,7 @@ def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
                 else:
                     _attach_moat(row, t, log=log)
                     _attach_dividend_payout(row, t, log=log)
+                    _attach_quality_v2(row, t, log=log)
             screen_import_store.mark_scanned(t, ok=bool(row), row=row)
         except Exception as e:  # one bad ticker never kills the batch
             log(f"[nightly_scan] imported {t}: {e}")
