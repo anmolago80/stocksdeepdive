@@ -25279,6 +25279,101 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         _m3.metric("Return since buy", "–")
     _m4.metric("Shares", f"{(_h.get('shares') or 0):,.0f}")
 
+    # TASK 31 (Director-directed, owner request, 5 Nov 2026): "At purchase"
+    # baseline display - the locked baseline captured at add time
+    # (portfolio_store baseline_json / portfolio_health_engine.
+    # baseline_snapshot_fields()) is stored but was never shown anywhere.
+    # Display only - _h["baseline"]/_h["baseline_date"] are READ here,
+    # never written or recomputed. Reuses the SAME _normalize_baseline()
+    # Health/Progress scoring already calls, so an older "website_v1"
+    # baseline (pre-dating this Health/Progress port) degrades gracefully
+    # - n/a per missing field - instead of erroring.
+    _ap_raw_baseline = _h.get("baseline") or {}
+    if _ap_raw_baseline:
+        _ap_lang = st.session_state.get("lang", "en")
+        _ap_baseline = portfolio_health_engine._normalize_baseline(_ap_raw_baseline)
+        _ap_ccy = f" {_h['currency']}" if _h.get("currency") else ""
+
+        def _ap_num(key, template="{:,.2f}", suffix=""):
+            v = _ap_baseline.get(key)
+            return (template.format(v) + suffix) if v is not None else "n/a"
+
+        def _ap_pct(key):
+            v = _ap_baseline.get(key)
+            return f"{v * 100:+.1f}%" if v is not None else "n/a"
+
+        _ap_price = _ap_baseline.get("price")
+        _ap_iv = _ap_baseline.get("intrinsic_value")
+        _ap_mos_val = (
+            (1 - _ap_price / _ap_iv) * 100
+            if _ap_price is not None and _ap_iv not in (None, 0)
+            else None
+        )
+        _ap_mos_txt = f"{_ap_mos_val:+.1f}%" if _ap_mos_val is not None else "n/a"
+
+        st.markdown(f"###### {i18n.t('portfolio.at_purchase.heading', _ap_lang)}")
+        _ap_r1 = st.columns(4)
+        _ap_r1[0].metric(i18n.t("portfolio.at_purchase.date", _ap_lang), _h.get("baseline_date") or "n/a")
+        _ap_r1[1].metric(i18n.t("portfolio.at_purchase.price", _ap_lang),
+                          _ap_num("price", "{:,.4f}", _ap_ccy))
+        _ap_r1[2].metric(i18n.t("portfolio.at_purchase.intrinsic_value", _ap_lang),
+                          _ap_num("intrinsic_value", "{:,.4f}", _ap_ccy))
+        _ap_r1[3].metric(i18n.t("portfolio.at_purchase.mos", _ap_lang), _ap_mos_txt)
+        # TASK 31 item 2 / TASK 16b precedent: the valuation MODEL itself
+        # has changed since any past purchase date (discount-rate design,
+        # growth rules, risk-free fixes), and purchase-day model inputs
+        # were never stored, so this baseline IV can never be recomputed
+        # under today's model - see portfolio_health_engine.py's own
+        # TASK 16b note above EVOLUTION_INTRINSIC_WEIGHT for the fuller
+        # version of this same point.
+        st.caption(i18n.t("portfolio.at_purchase.iv_model_note", _ap_lang))
+
+        _ap_r2 = st.columns(4)
+        _ap_r2[0].metric(i18n.t("portfolio.at_purchase.quality_score", _ap_lang),
+                          _ap_num("quality_score", "{:.1f}"))
+        _ap_r2[1].metric(i18n.t("portfolio.at_purchase.revenue_growth", _ap_lang),
+                          _ap_pct("revenue_growth"))
+        _ap_r2[2].metric(i18n.t("portfolio.at_purchase.earnings_growth", _ap_lang),
+                          _ap_pct("earnings_growth"))
+        _ap_r2[3].metric(i18n.t("portfolio.at_purchase.profit_margin", _ap_lang),
+                          _ap_pct("profit_margin"))
+
+        _ap_r3 = st.columns(3)
+        _ap_r3[0].metric(i18n.t("portfolio.at_purchase.roe", _ap_lang), _ap_pct("roe"))
+        _ap_r3[1].metric(i18n.t("portfolio.at_purchase.debt_to_equity", _ap_lang),
+                          _ap_num("debt_to_equity", "{:.1f}", "%"))
+        _ap_r3[2].metric(i18n.t("portfolio.at_purchase.fcf_growth", _ap_lang),
+                          _ap_pct("fcf_growth"))
+
+        _ap_div = _ap_baseline.get("dividend_rate")
+        st.caption(
+            i18n.t("portfolio.at_purchase.dividend_rate", _ap_lang) + ": "
+            + (f"{_ap_div:,.4f}{_ap_ccy}" if _ap_div is not None else "n/a")
+        )
+
+        # TASK 31 item 3: the "Value Score at purchase" range the Top 200
+        # formula would give from these baseline values. Psychology was
+        # never saved at purchase, so both clamp extremes (ranking_engine.
+        # PSY_CLAMP = -50/+50) are shown as a low/high range rather than
+        # one fabricated midpoint; discovery is forced to 0/unmeasured
+        # (discovery_measured=False) for the same reason - it wasn't
+        # saved at purchase either. An estimate only, clearly labeled as
+        # such, never fed back into any stored score.
+        _ap_quality = _ap_baseline.get("quality_score")
+        if _ap_quality is not None and _ap_mos_val is not None:
+            _ap_score_lo = calculate_long_score(_ap_quality, _ap_mos_val, -50, 0, discovery_measured=False)
+            _ap_score_hi = calculate_long_score(_ap_quality, _ap_mos_val, 50, 0, discovery_measured=False)
+            _ap_cutoff = top100_engine.pool_value_score_cutoff()
+            _ap_cutoff_txt = (
+                f"{_ap_cutoff:.1f}" if _ap_cutoff is not None
+                else i18n.t("portfolio.at_purchase.cutoff_unavailable", _ap_lang)
+            )
+            st.metric(
+                i18n.t("portfolio.at_purchase.value_score_estimate", _ap_lang),
+                f"{min(_ap_score_lo, _ap_score_hi):.1f} - {max(_ap_score_lo, _ap_score_hi):.1f}",
+            )
+            st.caption(i18n.t("portfolio.at_purchase.value_score_note", _ap_lang, cutoff=_ap_cutoff_txt))
+
     _score_label = _health.get("score_label", "Investment Health Score")
     # TASK 17 (Director-directed, 23 Oct 2026): apply_live_evolution_
     # switch() only ever sets score_label to this exact string - used

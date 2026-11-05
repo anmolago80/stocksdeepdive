@@ -4524,6 +4524,37 @@ EN = {
         "thesis-breaking event is still live, in which case the cap is "
         "55 (the same ceiling the previous method could reach)."
     ),
+
+    # TASK 31 (Director-directed, owner request, 5 Nov 2026): "At purchase"
+    # baseline display in Portfolio Health -> Holding detail - the locked
+    # baseline_json captured at add time was stored but never shown.
+    # Display only.
+    "portfolio.at_purchase.heading": "At purchase",
+    "portfolio.at_purchase.date": "Baseline date",
+    "portfolio.at_purchase.price": "Price at purchase",
+    "portfolio.at_purchase.intrinsic_value": "Intrinsic value at purchase",
+    "portfolio.at_purchase.mos": "Margin of safety at purchase",
+    "portfolio.at_purchase.iv_model_note": (
+        "Calculated with the valuation model as it was on the purchase "
+        "date (discount-rate design, growth rules, risk-free fixes all "
+        "drift over time) - not directly comparable with today's model."
+    ),
+    "portfolio.at_purchase.quality_score": "Quality score at purchase",
+    "portfolio.at_purchase.revenue_growth": "Revenue growth at purchase",
+    "portfolio.at_purchase.earnings_growth": "Earnings growth at purchase",
+    "portfolio.at_purchase.profit_margin": "Profit margin at purchase",
+    "portfolio.at_purchase.roe": "ROE at purchase",
+    "portfolio.at_purchase.debt_to_equity": "Debt/equity at purchase",
+    "portfolio.at_purchase.fcf_growth": "FCF growth at purchase",
+    "portfolio.at_purchase.dividend_rate": "Dividend rate at purchase",
+    "portfolio.at_purchase.value_score_estimate": "Value Score at purchase (estimate)",
+    "portfolio.at_purchase.value_score_note": (
+        "Estimated range only - psychology wasn't saved at purchase, so "
+        "this uses the formula's own -50/+50 clamp limits as the low/high "
+        "bound, with discovery treated as unmeasured. Today's Top 200 "
+        "cut-off is {cutoff} for comparison."
+    ),
+    "portfolio.at_purchase.cutoff_unavailable": "n/a (no pool selected yet)",
 }
 
 ES = {
@@ -8241,6 +8272,35 @@ ES = {
         "en cuyo caso el límite es 55 (el mismo tope que alcanzaba el "
         "método anterior)."
     ),
+
+    "portfolio.at_purchase.heading": "Al momento de la compra",
+    "portfolio.at_purchase.date": "Fecha base",
+    "portfolio.at_purchase.price": "Precio al comprar",
+    "portfolio.at_purchase.intrinsic_value": "Valor intrínseco al comprar",
+    "portfolio.at_purchase.mos": "Margen de seguridad al comprar",
+    "portfolio.at_purchase.iv_model_note": (
+        "Calculado con el modelo de valoración tal como era en la fecha "
+        "de compra (el diseño de la tasa de descuento, las reglas de "
+        "crecimiento y los ajustes de la tasa libre de riesgo cambian con "
+        "el tiempo) - no es directamente comparable con el modelo actual."
+    ),
+    "portfolio.at_purchase.quality_score": "Puntaje de calidad al comprar",
+    "portfolio.at_purchase.revenue_growth": "Crecimiento de ingresos al comprar",
+    "portfolio.at_purchase.earnings_growth": "Crecimiento de ganancias al comprar",
+    "portfolio.at_purchase.profit_margin": "Margen de beneficio al comprar",
+    "portfolio.at_purchase.roe": "ROE al comprar",
+    "portfolio.at_purchase.debt_to_equity": "Deuda/patrimonio al comprar",
+    "portfolio.at_purchase.fcf_growth": "Crecimiento de FCF al comprar",
+    "portfolio.at_purchase.dividend_rate": "Tasa de dividendo al comprar",
+    "portfolio.at_purchase.value_score_estimate": "Value Score al comprar (estimado)",
+    "portfolio.at_purchase.value_score_note": (
+        "Solo un rango estimado - la psicología no se guardó al momento "
+        "de la compra, así que se usan los límites propios de la fórmula "
+        "(-50/+50) como cota baja/alta, con el descubrimiento tratado "
+        "como no medido. El corte actual de las 200 es {cutoff} como "
+        "referencia."
+    ),
+    "portfolio.at_purchase.cutoff_unavailable": "n/d (todavía no hay un pool seleccionado)",
 }
 
 
