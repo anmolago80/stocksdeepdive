@@ -59,13 +59,25 @@ def _mk_bundle(eps_newest_first, year_end_prices_newest_first, price_now, forwar
 # ======================================================================
 # KNSL-shaped fixture (the instruction's own worked example): forward
 # EPS 21.73, g=8.8%, discount=9.4%, 5 fiscal-year P/Es ~= 32/30/28/26/19
-# (EPS held at a constant 10/share so each year's P/E is just that
-# year's price / 10) -> median 28 -> value ~= 30.46 x 28 / 1.094^5 ~=
+# (EPS held at a constant 12/share so each year's P/E is just that
+# year's price / 12) -> median 28 -> value ~= 30.46 x 28 / 1.094^5 ~=
 # $544 (was $363 under today's single-day multiple).
+#
+# TASK 33 (5 Nov 2026): the instruction's own original EPS baseline was
+# 10/share (forwardEps 21.73 / 10 = 2.173x) - just OVER this task's new
+# implausible-forwardEps ceiling (2.0x), which would reject it and
+# break this fixture's own unrelated purpose (the 5-yr-average-P/E
+# logic). EPS and every price scaled up by the SAME 1.2x factor instead
+# (12/share, prices/price_now scaled identically) - every per-year P/E
+# ratio (and so the 28.0 median, and every Forecast-EPS/value number
+# below, none of which depend on the EPS/price SCALE, only forward_eps
+# and the P/E ratios) is numerically unchanged; only the forwardEps-
+# vs-normalised-EPS ratio moves, to 21.73/12 = 1.81x - safely inside
+# this task's [0.5, 2.0] plausibility window.
 # ======================================================================
-_KNSL_EPS = [10.0] * 5
-_KNSL_PRICES = [320.0, 300.0, 280.0, 260.0, 190.0]  # -> P/Es 32/30/28/26/19, median 28
-_knsl_bundle = _mk_bundle(_KNSL_EPS, _KNSL_PRICES, price_now=322.75, forward_eps=21.73)
+_KNSL_EPS = [12.0] * 5
+_KNSL_PRICES = [384.0, 360.0, 336.0, 312.0, 228.0]  # -> P/Es 32/30/28/26/19, median 28
+_knsl_bundle = _mk_bundle(_KNSL_EPS, _KNSL_PRICES, price_now=387.3, forward_eps=21.73)
 _knsl_g_earn = 0.088
 _knsl_discount = 0.094
 
@@ -81,10 +93,12 @@ print(f"[knsl_fair_pe_5y_median] 5 fiscal-year P/Es 32/30/28/26/19 -> median {_f
 
 _result = ace._pe_forward_method(_knsl_bundle, _knsl_g_earn, _knsl_discount, _knsl_normalized_eps)
 assert _result is not None
-(_value, _eps5, _fair_pe_5y, _today_pe, _year5_price, _reason, _fwd_used, _source) = _result
+(_value, _eps5, _fair_pe_5y, _today_pe, _year5_price, _reason, _fwd_used, _source,
+ _rejected_note) = _result
 assert _reason is None, _reason
 assert _fwd_used == 21.73, _fwd_used
 assert _source == "5yr_average", _source
+assert _rejected_note is None, _rejected_note  # TASK 33: 1.81x ratio, well within bounds
 assert abs(_fair_pe_5y - 28.0) < 0.01, _fair_pe_5y
 _expected_eps5 = 21.73 * (1 + _knsl_g_earn) ** 4
 assert abs(_eps5 - _expected_eps5) < 0.01, (_eps5, _expected_eps5)
@@ -114,7 +128,7 @@ _peak_result = ace._pe_forward_method(
     _peak_bundle, _peak_g_earn, _peak_discount, _peak_normalized_eps)
 assert _peak_result is not None
 (_peak_value, _peak_eps5, _peak_fair_pe, _peak_today_pe, _peak_year5, _peak_reason,
- _peak_fwd_used, _peak_source) = _peak_result
+ _peak_fwd_used, _peak_source, _peak_rejected_note) = _peak_result
 assert _peak_reason is None, _peak_reason
 assert abs(_peak_fair_pe - 30.0) < 0.01, _peak_fair_pe
 assert abs(_peak_today_pe - 45.0) < 0.01, _peak_today_pe
@@ -149,7 +163,7 @@ _two_year_result = ace._pe_forward_method(
     _two_year_bundle, 0.08, 0.09, _two_year_normalized_eps)
 assert _two_year_result is not None
 (_ty_value, _ty_eps5, _ty_fair_pe, _ty_today_pe, _ty_year5, _ty_reason, _ty_fwd_used,
- _ty_source) = _two_year_result
+ _ty_source, _ty_rejected_note) = _two_year_result
 assert _ty_reason is None, _ty_reason
 assert _ty_source == "current (insufficient history)", _ty_source
 assert abs(_ty_fair_pe - _ty_today_pe) < 1e-9, (_ty_fair_pe, _ty_today_pe)
@@ -171,7 +185,7 @@ assert _floor_reason is None, _floor_reason
 assert abs(_floor_fair_pe - 3.0) < 0.01, _floor_fair_pe  # the raw median, UNCLAMPED
 _floor_result = ace._pe_forward_method(_floor_bundle, 0.08, 0.09, _floor_normalized_eps)
 (_fl_value, _fl_eps5, _fl_fair_pe, _fl_today_pe, _fl_year5, _fl_reason, _fl_fwd_used,
- _fl_source) = _floor_result
+ _fl_source, _fl_rejected_note) = _floor_result
 assert _fl_reason is None, _fl_reason
 assert abs(_fl_fair_pe - ace.PE_FORWARD_5Y_FLOOR) < 1e-9, _fl_fair_pe
 print(f"[floor_clamp] raw median P/E (3.0x, from 4/3/2/3/2) clamped up to "
@@ -190,7 +204,7 @@ assert _ceil_reason is None, _ceil_reason
 assert abs(_ceil_fair_pe - 50.0) < 0.01, _ceil_fair_pe  # the raw median, UNCLAMPED
 _ceil_result = ace._pe_forward_method(_ceil_bundle, 0.08, 0.09, _ceil_normalized_eps)
 (_cl_value, _cl_eps5, _cl_fair_pe, _cl_today_pe, _cl_year5, _cl_reason, _cl_fwd_used,
- _cl_source) = _ceil_result
+ _cl_source, _cl_rejected_note) = _ceil_result
 assert _cl_reason is None, _cl_reason
 assert abs(_cl_fair_pe - ace.PE_FORWARD_5Y_CEIL) < 1e-9, _cl_fair_pe
 print(f"[ceiling_clamp] raw median P/E (50.0x, from 50/55/48/52/45) clamped down to "
@@ -206,7 +220,7 @@ _fv = ace._build_fair_value(_knsl_bundle, "KNSL", _dcf_result, None)
 _pe_forward_rows = {r["label"]: r for r in _fv["valuation_inputs"]["KNSL"]["pe_forward"]}
 assert "5-yr average P/E" in _pe_forward_rows, list(_pe_forward_rows)
 _row = _pe_forward_rows["5-yr average P/E"]
-assert _row["value"] == "28.0x (today " + f"{322.75 / 10.0:.1f}x)", _row["value"]
+assert _row["value"] == "28.0x (today " + f"{387.3 / 12.0:.1f}x)", _row["value"]
 assert not _row.get("flagged"), _row
 print(f"[display_row] 'pe_forward' valuation_inputs shows {_row['value']!r}, not flagged OK")
 

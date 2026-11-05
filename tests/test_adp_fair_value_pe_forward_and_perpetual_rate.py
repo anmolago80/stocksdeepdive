@@ -102,7 +102,7 @@ assert _normalized_eps_fixture["value"] == 1.0, _normalized_eps_fixture
 _result = ace._pe_forward_method(_bundle, _G_EARN, _DISCOUNT_RATE, _normalized_eps_fixture)
 assert _result is not None
 (_value, _forecast_eps_5y, _fair_pe_5y, _today_pe, _year5_price, _reason, _forward_eps_used,
- _multiple_source) = _result
+ _multiple_source, _rejected_note) = _result
 assert _reason is None, _reason
 assert _forward_eps_used is None, _forward_eps_used
 assert _multiple_source == "current (insufficient history)", _multiple_source

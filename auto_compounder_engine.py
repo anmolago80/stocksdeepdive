@@ -3832,6 +3832,35 @@ PE_FORWARD_5Y_MIN_YEARS = 3
 PE_FORWARD_5Y_FLOOR = 5.0
 PE_FORWARD_5Y_CEIL = 40.0
 
+# TASK 33 (Director-directed, owner-reported, 5 Nov 2026): Yahoo's
+# info["forwardEps"] is taken at face value with no plausibility check
+# against the stock's own normalised EPS - COKE live case: forwardEps
+# $38.94 vs normalised (diluted) EPS $6.82, a 5.7x ratio, driving PE
+# Forward to $836 (COKE's 10-for-1 split, effective 27 May 2025, is a
+# likely but NOT verified explanation - a stale/mis-scaled Yahoo
+# estimate carried at the pre-split share count). forward_eps is
+# rejected (falls back to the existing trailing-EPS-compounded-at-
+# g_earn path) whenever forward_eps / normalised_eps falls outside
+# this window - named constants, not magic numbers, so every other
+# forwardEps use site this task's own report lists can share them.
+FORWARD_EPS_PLAUSIBILITY_MIN_RATIO = 0.5
+FORWARD_EPS_PLAUSIBILITY_MAX_RATIO = 2.0
+
+
+def implausible_forward_eps_ratio(forward_eps, normalized_eps_value):
+    """True when forward_eps isn't within [FORWARD_EPS_PLAUSIBILITY_
+    MIN_RATIO, FORWARD_EPS_PLAUSIBILITY_MAX_RATIO] of normalized_eps_
+    value - shared by every forwardEps use site this task's own report
+    lists, so the plausibility rule can never drift between them. False
+    (never implausible) when normalized_eps_value isn't itself a usable
+    positive number - there's nothing to check the ratio against, and
+    each caller already has its own handling for a missing/negative
+    normalised EPS."""
+    if forward_eps is None or normalized_eps_value is None or normalized_eps_value <= 0:
+        return False
+    ratio = forward_eps / normalized_eps_value
+    return ratio < FORWARD_EPS_PLAUSIBILITY_MIN_RATIO or ratio > FORWARD_EPS_PLAUSIBILITY_MAX_RATIO
+
 
 def _fair_pe_5y(bundle, normalized_eps):
     """The "5-yr average P/E" PE Forward now applies: the MEDIAN of up to
@@ -3934,21 +3963,40 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
 
     Returns an 8-tuple now (was 6): (value, forecast_eps_5y,
     fair_pe_5y, today_pe, year5_price_undiscounted, reason,
-    forward_eps_used, pe_forward_multiple_source) - reason is None when
-    a value was produced, "no_analyst_forecast" when Yahoo has no
-    forward EPS AND the normalised EPS isn't usable either (nothing to
-    compound from), "negative_earnings" when a forward EPS exists but
-    there's no usable EPS to build today's P/E multiple from.
-    forward_eps_used is Yahoo's own raw next-FY figure, set only when
-    that branch actually fired (None on the trailing-EPS-compounded
-    fallback, which has no separate "next FY" figure to show) - lets
-    the caller display both "Forward EPS (next FY)" and "Forecast EPS
-    (yr 5)" side by side instead of implying forwardEps itself already
-    was the year-5 number. value is None (method not offered) when
-    g_earn/price/discount_rate aren't all available - a year-5 estimate
-    with no discount rate to bring it back to today isn't a usable
-    Intrinsic Value, so it's withheld rather than shown undiscounted
-    again."""
+    forward_eps_used, pe_forward_multiple_source, forward_eps_rejected_note) -
+    reason is None when a value was produced, "no_analyst_forecast"
+    when Yahoo has no forward EPS AND the normalised EPS isn't usable
+    either (nothing to compound from), "negative_earnings" when a
+    forward EPS exists but there's no usable EPS to build today's P/E
+    multiple from. forward_eps_used is Yahoo's own raw next-FY figure,
+    set only when that branch actually fired (None on the trailing-EPS-
+    compounded fallback, which has no separate "next FY" figure to
+    show) - lets the caller display both "Forward EPS (next FY)" and
+    "Forecast EPS (yr 5)" side by side instead of implying forwardEps
+    itself already was the year-5 number. value is None (method not
+    offered) when g_earn/price/discount_rate aren't all available - a
+    year-5 estimate with no discount rate to bring it back to today
+    isn't a usable Intrinsic Value, so it's withheld rather than shown
+    undiscounted again.
+
+    TASK 33 (Director-directed, owner-reported, 5 Nov 2026, COKE live
+    case): forward_eps is rejected - the trailing-EPS-compounded
+    fallback is used instead, exactly as if Yahoo had given no forward
+    EPS at all - whenever implausible_forward_eps_ratio() says it's
+    more than FORWARD_EPS_PLAUSIBILITY_MAX_RATIO (2.0x) above or below
+    FORWARD_EPS_PLAUSIBILITY_MIN_RATIO (0.5x) the normalised EPS this
+    same method already uses for its "today's P/E" multiple - COKE's
+    $38.94 forwardEps against a $6.82 normalised EPS (5.7x) is exactly
+    this case (likely, but NOT verified, explained by COKE's 10-for-1
+    split effective 27 May 2025 - a stale/mis-scaled Yahoo estimate
+    carried at the pre-split share count). forward_eps_rejected_note is
+    None unless this fired, in which case it's the exact reader-facing
+    string ("analyst forward EPS rejected: {ratio:.1f}x normalised
+    EPS") the caller shows in the PE Forward detail text - and one
+    "[forward_eps] <TICKER> rejected ..." line is logged via print()
+    (this module has no logger of its own; every other per-ticker
+    rejection/fallback decision in this codebase that needs a Railway-
+    visible trace uses this same bare print() convention)."""
     if g_earn is None or discount_rate is None or discount_rate <= -1:
         return None
     info = bundle.get("info") or {}
@@ -3958,15 +4006,23 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     base_eps = normalized_eps.get("value") if normalized_eps is not None else None
     forward_eps = info.get("forwardEps")
     forward_eps_used = None
+    forward_eps_rejected_note = None
+    if forward_eps is not None and forward_eps > 0 and implausible_forward_eps_ratio(forward_eps, base_eps):
+        ratio = forward_eps / base_eps
+        ticker = info.get("symbol") or "?"
+        print(f"[forward_eps] {ticker} rejected forwardEps={forward_eps:.2f} "
+              f"vs normalised EPS={base_eps:.2f} (ratio {ratio:.1f}x)")
+        forward_eps_rejected_note = f"analyst forward EPS rejected: {ratio:.1f}x normalised EPS"
+        forward_eps = None
     if forward_eps is not None and forward_eps > 0:
         forecast_eps_5y = forward_eps * ((1 + g_earn) ** 4)
         forward_eps_used = forward_eps
     elif base_eps is not None and base_eps > 0:
         forecast_eps_5y = base_eps * ((1 + g_earn) ** 5)
     else:
-        return None, None, None, None, None, "no_analyst_forecast", None, None
+        return None, None, None, None, None, "no_analyst_forecast", None, None, forward_eps_rejected_note
     if base_eps is None or base_eps <= 0:
-        return None, None, None, None, None, "negative_earnings", None, None
+        return None, None, None, None, None, "negative_earnings", None, None, forward_eps_rejected_note
     today_pe = price_now / base_eps
     fair_pe_5y, _ = _fair_pe_5y(bundle, normalized_eps)
     if fair_pe_5y is None:
@@ -3979,7 +4035,7 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     value = year5_price / ((1 + discount_rate) ** 5)
     return (
         value, forecast_eps_5y, fair_pe_5y, today_pe, year5_price, None,
-        forward_eps_used, pe_forward_multiple_source,
+        forward_eps_used, pe_forward_multiple_source, forward_eps_rejected_note,
     )
 
 
@@ -4267,8 +4323,8 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         _pe_forward_method, bundle, g_earn, dcf_result.get("discount_rate"), normalized_eps)
     (pe_forward_value, forecast_eps_5y, pe_forward_fair_pe_5y, pe_forward_today_pe,
      pe_forward_year5_price, pe_forward_reason, pe_forward_eps_next_fy,
-     pe_forward_multiple_source) = (
-        pe_forward_result if pe_forward_result else (None, None, None, None, None, None, None, None)
+     pe_forward_multiple_source, pe_forward_eps_rejected_note) = (
+        pe_forward_result if pe_forward_result else (None, None, None, None, None, None, None, None, None)
     )
     if pe_forward_value is None and pe_forward_reason:
         method_reasons["pe_forward"] = pe_forward_reason
@@ -4348,6 +4404,20 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
             {"label": "Year 5 Price (undiscounted)", "value": pe_forward_year5_price, "format": "cur"},
             {"label": "Discount Rate (this calc)", "value": dcf_result.get("discount_rate"), "format": "pct"},
         ]
+        # TASK 33 (Director-directed, owner-reported, 5 Nov 2026, COKE
+        # live case) - same "append an explanatory note row" pattern
+        # pe_trailing's own "EPS Basis" row below already uses: shown
+        # only when _pe_forward_method() actually rejected Yahoo's
+        # forwardEps as implausible (more than 2x/less than 0.5x the
+        # normalised EPS this same method already uses), so the reader
+        # sees WHY the forecast fell back to the trailing-EPS-
+        # compounded path instead of showing an inflated forwardEps-
+        # driven figure with no explanation.
+        if pe_forward_eps_rejected_note:
+            valuation_inputs["pe_forward"].append({
+                "label": "Forward EPS", "value": pe_forward_eps_rejected_note, "format": "raw",
+                "flagged": True,
+            })
     if "pe_trailing" in valuation_methods:
         valuation_inputs["pe_trailing"] = [
             {"label": "EPS (Normalised/Diluted)", "value": _neps_value, "format": "cur"},
