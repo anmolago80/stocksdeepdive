@@ -4310,6 +4310,11 @@ EN = {
     # other ticker of a pair like GOOG/GOOGL this row's own ticker won
     # on average traded volume.
     "top100.also_trades_as_chip": "also trades as {ticker}",
+    # TASK 30 (Director-directed, 4 Nov 2026, Part A1): shown on any
+    # Top 200 card whose current continuous run in the pool started
+    # within the last 7 calendar days - {date} is a plain "4 Nov"-
+    # style day+month, no year (never strftime/locale.setlocale()).
+    "top100.recent_added_chip": "Recently added · {date}",
     "top100.why_here_label": "full dimension detail",
     "top100.tradability_chip": "⚠ wide spread · {pct}% - costly to trade",
     "top100.sentiment_fearful": "Fearful",
@@ -8049,6 +8054,7 @@ ES = {
         "idéntica."
     ),
     "top100.also_trades_as_chip": "también cotiza como {ticker}",
+    "top100.recent_added_chip": "Añadido recientemente · {date}",
     "top100.why_here_label": "detalle completo por dimensión",
     "top100.tradability_chip": "⚠ spread amplio · {pct}% - costoso de operar",
     "top100.sentiment_fearful": "Temeroso",

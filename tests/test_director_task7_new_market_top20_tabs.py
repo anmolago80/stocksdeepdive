@@ -324,12 +324,16 @@ check("_render_top20_tab/_render_top20_australia_tab/_render_full100_tab are cal
       "EXACTLY the same signature render_top100_page() always used (no new REQUIRED argument "
       "was added to any of the three - TASK 24, 29 Oct 2026, added optional exclude_tickers/"
       "only_tickers/home_country_by_ticker kwargs to _render_top20_tab's own USA-tab call site, "
-      "defaulting to None/unused, so the base positional signature + filters=filters is still "
+      "and TASK 30, 4 Nov 2026, added an optional recent_badge_map kwarg (default None) to all "
+      "four, defaulting to unused, so the base positional signature + filters=filters is still "
       "exactly what's checked here) - confirmed by source inspection",
-      "_render_top20_tab(enriched, lang, finer_industry, sort_mode, filters=filters)" in _render_module_src
-      and "_render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters)" in _render_module_src
+      "_render_top20_tab(enriched, lang, finer_industry, sort_mode, filters=filters,\n"
+      "                           recent_badge_map=_recent_badges)" in _render_module_src
+      and "_render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters,\n"
+      "                                     recent_badge_map=_recent_badges)" in _render_module_src
       and "_render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=\"USD\", filters=filters," in _render_module_src
-      and "_render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters)" in _render_module_src)
+      and "_render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters,\n"
+      "                             recent_badge_map=_recent_badges)" in _render_module_src)
 
 
 print()

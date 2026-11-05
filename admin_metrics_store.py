@@ -154,6 +154,41 @@ def _conn():
             PRIMARY KEY (day, visitor_hash)
         )"""
     )
+    # TASK 30 (Director-directed, 4 Nov 2026, Part B, test stage) -
+    # returning-visitor measurement. SAME (day, visitor_hash) shape as
+    # daily_visitor_hashes above, but the hash itself is built by
+    # _visitor_hash_30d() (a 30-day ROTATING salt, not a per-day one) -
+    # see that function's own docstring for why this is a SEPARATE
+    # table rather than a new column on daily_visitor_hashes: the two
+    # hash constructions answer different questions ("how many
+    # visitors today" vs "is this the SAME visitor as N days ago") and
+    # must never be confused or joined against each other.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS visitor_hashes_30d (
+            day TEXT NOT NULL,
+            visitor_hash TEXT NOT NULL,
+            PRIMARY KEY (day, visitor_hash)
+        )"""
+    )
+    # TASK 30, Part B2: a signed-in owner session's OWN 30-day-rotating
+    # hash (recorded from app.py, where ai_gate.is_owner() can actually
+    # be checked - server.py's own OWNER_TRAFFIC_IPS exclusion runs at
+    # the raw HTTP layer, before any Streamlit session/sign-in exists
+    # to check against, and already keeps a KNOWN owner IP's traffic
+    # out of visitor_hashes_30d entirely; this second, independent
+    # exclusion catches the owner on any OTHER device/network, by
+    # identity rather than address). Read-side queries subtract any
+    # hash found here from the returning-visitor figures - never
+    # deleted from visitor_hashes_30d itself, so the raw counters this
+    # table doesn't touch (unique_visitors_for_day() etc.) are
+    # completely unaffected by this exclusion.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS owner_visitor_hashes_30d (
+            day TEXT NOT NULL,
+            visitor_hash TEXT NOT NULL,
+            PRIMARY KEY (day, visitor_hash)
+        )"""
+    )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS job_status (
             job TEXT PRIMARY KEY,
@@ -584,6 +619,222 @@ def unique_human_sessions_for_day(day=None):
             return row[0] if row else 0
     except Exception:
         return 0
+
+
+# TASK 30 (Director-directed, 4 Nov 2026, Part B, test stage) -
+# returning-visitor measurement. _visitor_hash() above (and the existing
+# daily_visitor_hashes/unique_visitors_for_day figures it feeds) is
+# DAY-rotated by design - the module docstring's "events, never people"
+# rule and that function's own docstring explain why: two days' rows can
+# never be joined into a trail. That is exactly why "did the same person
+# come back" is unanswerable today (TASK 30's own finding). The
+# functions below add a SEPARATE, independent hash rotated every 30
+# days instead of every day, so the SAME (ip, ua) pair produces the
+# SAME hash across a bounded ~30-day window (enough to answer "did this
+# visitor come back") while still rotating (so it can never become a
+# permanent, indefinite tracking identifier) - a deliberate privacy
+# middle ground, still no raw IP/UA stored anywhere, same AUTH_COOKIE_
+# SECRET source as every other hash in this module. This NEVER touches
+# daily_visitor_hashes, daily_human_hashes, or any figure already read
+# from them (unique_visitors_for_day(), visitor_panel_for_day(), etc.) -
+# those are a completely separate table/code path, unchanged by this.
+
+_ROTATION_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc).date()
+
+
+def _rotation_window_id(day):
+    """Integer id of the ~30-day window `day` (a "YYYY-MM-DD" string)
+    falls in, counting from a fixed epoch. Two days in the same window
+    get the same id; a day 30+ apart always gets a different one - this
+    IS the "rotation" in _visitor_hash_30d() below."""
+    d = datetime.strptime(day, "%Y-%m-%d").date()
+    return (d - _ROTATION_EPOCH).days // 30
+
+
+def _visitor_hash_30d(ip, ua, day):
+    """Like _visitor_hash() above (same secret source, same IP+UA-
+    together reasoning - see that function's own docstring), but keyed
+    on the 30-day rotation window instead of the calendar day, so the
+    SAME (ip, ua) pair hashes to the SAME value for ~30 days, then to a
+    a new, unrelated value. Never stores or logs the raw ip/ua - only
+    this one-way digest is ever written anywhere."""
+    secret = os.environ.get("AUTH_COOKIE_SECRET", "") or "sdd-pulse-fallback"
+    window = _rotation_window_id(day)
+    raw = f"{ip.strip()}|{ua.strip()}|{window}|{secret}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def record_visitor_hashes_30d(day_hash_pairs):
+    """Batch write into visitor_hashes_30d - same INSERT OR IGNORE/
+    executemany shape as record_visitor_hashes() above, called from the
+    same server.py middleware flush, with the SAME already-computed ip/
+    ua and the SAME owner-IP-exclusion gate that record_visitor_hashes()
+    already uses - so OWNER_TRAFFIC_IPS traffic is excluded from this
+    table too, for free, in addition to the independent ai_gate-based
+    exclusion in record_owner_visitor_hash() below. Callers wrap this in
+    try/except, same convention as every other batch write here."""
+    pairs = list(day_hash_pairs)
+    if not pairs:
+        return
+    with _conn() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO visitor_hashes_30d (day, visitor_hash) VALUES (?, ?)",
+            pairs,
+        )
+
+
+def prune_old_visitor_hashes_30d(log=print):
+    """Deletes visitor_hashes_30d rows older than PRUNE_AFTER_DAYS (90) -
+    same retention/reasoning as prune_old_visitor_hashes() above. Called
+    from scheduler_engine's nightly volume-check job, same slot as every
+    other prune here. Never raises."""
+    cutoff = _day_n_ago(PRUNE_AFTER_DAYS)
+    try:
+        with _conn() as conn:
+            cur = conn.execute("DELETE FROM visitor_hashes_30d WHERE day < ?", (cutoff,))
+            n = max(cur.rowcount, 0)
+        if n:
+            log(f"[admin_metrics_store] pruned {n} old 30d-visitor-hash row(s)")
+        return n
+    except Exception as e:
+        log(f"[admin_metrics_store] prune failed: {e}")
+        return 0
+
+
+def record_owner_visitor_hash(visitor_hash, day=None):
+    """TASK 30 Part B2: records the signed-in owner's OWN 30-day hash,
+    called from app.py (where ai_gate.is_owner() can actually be
+    checked - server.py's middleware runs at the raw HTTP layer, before
+    any Streamlit session/sign-in exists to check against, which is
+    exactly why that layer only has the IP-based OWNER_TRAFFIC_IPS
+    exclusion). This is independent of and in addition to that IP-based
+    exclusion - it catches the owner on any OTHER device/network too,
+    by identity rather than address. Writes ONLY the hash (never the
+    raw ip/ua that produced it) into owner_visitor_hashes_30d; never
+    deletes anything from visitor_hashes_30d itself - the exclusion is
+    applied at read time, in returning_visitor_stats() below, not by
+    mutating the raw counters. Never raises."""
+    if not visitor_hash:
+        return
+    day = day or _today()
+    try:
+        with _conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO owner_visitor_hashes_30d (day, visitor_hash) VALUES (?, ?)",
+                (day, visitor_hash),
+            )
+    except Exception:
+        pass
+
+
+def prune_old_owner_visitor_hashes_30d(log=print):
+    """Deletes owner_visitor_hashes_30d rows older than PRUNE_AFTER_DAYS
+    (90) - same retention/reasoning as every other prune here. Called
+    from scheduler_engine's nightly volume-check job. Never raises."""
+    cutoff = _day_n_ago(PRUNE_AFTER_DAYS)
+    try:
+        with _conn() as conn:
+            cur = conn.execute("DELETE FROM owner_visitor_hashes_30d WHERE day < ?", (cutoff,))
+            n = max(cur.rowcount, 0)
+        if n:
+            log(f"[admin_metrics_store] pruned {n} old owner-visitor-hash row(s)")
+        return n
+    except Exception as e:
+        log(f"[admin_metrics_store] prune failed: {e}")
+        return 0
+
+
+def returning_visitor_stats():
+    """TASK 30 Part B1/B2 - the Admin Dashboard's returning-visitor read.
+    Reads visitor_hashes_30d (the 30-day-rotating hash above) and
+    EXCLUDES any hash recorded in owner_visitor_hashes_30d (Part B2).
+    Never touches daily_visitor_hashes/daily_human_hashes or any figure
+    already read from them - a completely separate table/code path (see
+    the block comment above this section, and B3).
+
+    Returns {
+      "unique_visitors_7d": int,
+      "unique_visitors_30d": int,
+      "returning_2plus_days": int,  # distinct hashes seen on 2+ distinct
+                                     # days within the last 30 days
+      "daily": [{"day": "YYYY-MM-DD", "new": int, "returning": int}, ...]
+                                     # oldest -> newest, last 30 days;
+                                     # "new" = this hash's earliest row
+                                     # on record (bounded by the 90-day
+                                     # prune retention) falls on that
+                                     # day; "returning" = it had already
+                                     # appeared on an earlier day
+    }
+    Never raises - returns an all-zero/empty shape on any read error."""
+    empty = {
+        "unique_visitors_7d": 0,
+        "unique_visitors_30d": 0,
+        "returning_2plus_days": 0,
+        "daily": [],
+    }
+    try:
+        cutoff7 = _day_n_ago(6)
+        cutoff30 = _day_n_ago(29)
+        with _conn() as conn:
+            owner_hashes = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT visitor_hash FROM owner_visitor_hashes_30d"
+                ).fetchall()
+            }
+            rows = conn.execute(
+                "SELECT day, visitor_hash FROM visitor_hashes_30d WHERE day >= ?",
+                (cutoff30,),
+            ).fetchall()
+            hashes_in_window = {h for _, h in rows if h not in owner_hashes}
+            first_seen = {}
+            if hashes_in_window:
+                placeholders = ",".join("?" * len(hashes_in_window))
+                for h, d in conn.execute(
+                    f"SELECT visitor_hash, MIN(day) FROM visitor_hashes_30d "
+                    f"WHERE visitor_hash IN ({placeholders}) GROUP BY visitor_hash",
+                    tuple(hashes_in_window),
+                ).fetchall():
+                    first_seen[h] = d
+
+        by_day = {}
+        hashes_7d = set()
+        hashes_30d = set()
+        days_by_hash = {}
+        for day, h in rows:
+            if h in owner_hashes:
+                continue
+            hashes_30d.add(h)
+            if day >= cutoff7:
+                hashes_7d.add(h)
+            days_by_hash.setdefault(h, set()).add(day)
+            bucket = by_day.setdefault(day, {"new": set(), "returning": set()})
+            if first_seen.get(h) == day:
+                bucket["new"].add(h)
+            else:
+                bucket["returning"].add(h)
+
+        returning_2plus = sum(1 for ds in days_by_hash.values() if len(ds) >= 2)
+
+        daily = []
+        d = datetime.strptime(cutoff30, "%Y-%m-%d").date()
+        today_d = datetime.strptime(_today(), "%Y-%m-%d").date()
+        while d <= today_d:
+            key = d.strftime("%Y-%m-%d")
+            bucket = by_day.get(key, {"new": set(), "returning": set()})
+            daily.append(
+                {"day": key, "new": len(bucket["new"]), "returning": len(bucket["returning"])}
+            )
+            d += timedelta(days=1)
+
+        return {
+            "unique_visitors_7d": len(hashes_7d),
+            "unique_visitors_30d": len(hashes_30d),
+            "returning_2plus_days": returning_2plus,
+            "daily": daily,
+        }
+    except Exception:
+        return empty
 
 
 _REFERRER_BUCKETS_FOR_PANEL = ("x", "google", "reddit", "linkedin", "direct", "other")

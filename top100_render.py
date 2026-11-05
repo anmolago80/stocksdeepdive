@@ -487,6 +487,99 @@ def _origin_extension_badge_html(lang):
 
 
 # -----------------------------------------------------------------
+# TASK 30 (Director-directed, 4 Nov 2026, Part A) - "Recently added"
+# badge: shown on any Top 200 card (incl. an ASX-extension row) whose
+# CURRENT continuous run in the pool started within the last
+# _RECENT_BADGE_WINDOW_DAYS calendar days of today's own Brisbane
+# date. "Continuous" is based on top100_store.current_streak_start_
+# dates() - consecutive STORED SELECTION RUNS, never calendar-day
+# arithmetic - see that function's own docstring for why (Part A2: a
+# night the selection didn't run must never reset every current
+# member's streak and badge the whole list).
+# -----------------------------------------------------------------
+_RECENT_BADGE_WINDOW_DAYS = 7
+
+
+def _today_brisbane():
+    """Today's date in Australia/Brisbane (fixed UTC+10, no DST) -
+    same formula app.py's own _ledger_today_brisbane() already uses;
+    duplicated rather than imported (app.py imports this module, not
+    the other way around - importing it back would be circular)."""
+    return (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=10)).date()
+
+
+def _recent_badge_date_label(as_of_str, lang):
+    """"4 Nov" (EN) / "4 nov" (ES) - no year (the badge only ever
+    shows for a date within the last _RECENT_BADGE_WINDOW_DAYS days).
+    Reuses compounder_ui._MONTH_ABBR, this codebase's own hand-built
+    month-abbreviation table (never strftime's locale machinery, and
+    never locale.setlocale() - that mutates process-wide state, which
+    would corrupt every OTHER concurrent Streamlit session's own
+    formatting on a shared multi-tenant server - same reasoning
+    compounder_ui._format_snapshot_datetime() already documents)
+    rather than a second, independently-typed copy."""
+    d = _dt.datetime.strptime(as_of_str, "%Y-%m-%d").date()
+    mo = compounder_ui._MONTH_ABBR[lang][d.month - 1]
+    return f"{d.day} {mo}"
+
+
+def _recent_added_badge_html(as_of_str, lang):
+    """The "Recently added · <D Mon>" pill - same pill shape as
+    _origin_pool_badge_html()/_origin_extension_badge_html() above,
+    its own blue "new" colour (#5ed3f0 - this site's existing ticker-
+    link accent, reused rather than a fresh arbitrary hex) - distinct
+    from the green pool-rank/violet extension/amber awaiting/red
+    alert chips already in use, since this badge means something
+    different from all four: a neutral "this one's new here" note,
+    never a ranking, origin, or warning."""
+    date_label = _recent_badge_date_label(as_of_str, lang)
+    label = html.escape(_t("recent_added_chip", lang, date=date_label))
+    return (
+        "<span style='display:inline-flex;align-items:center;gap:5px;"
+        "border-radius:999px;padding:1px 10px;font-size:10.5px;font-weight:700;cursor:default;"
+        "background:#132a3d;border:1px solid #1e4a6b;color:#5ed3f0;'>"
+        f"{label}</span>"
+    )
+
+
+def _recent_badge_live():
+    """TOP200_RECENT_BADGE_LIVE gate (Part A4): unset/"0" - the owner
+    sees the badge, every other viewer sees today's page with no
+    badge at all; "1" - live for everyone. Same shape as TOP20_
+    FOREIGN_TAB_LIVE above (render_top100_page()'s own gate for the
+    Foreign US-listed tab) - the owner flips this on Railway by hand
+    after reviewing test-stage results; this task never sets it."""
+    return os.environ.get("TOP200_RECENT_BADGE_LIVE", "0").strip() == "1"
+
+
+def recent_badge_map(tickers, lang):
+    """{ticker: badge_html} for every ticker in `tickers` whose
+    current streak (top100_store.current_streak_start_dates()) started
+    within the last _RECENT_BADGE_WINDOW_DAYS calendar days of today's
+    own Brisbane date. {} (no badges at all, for anyone) when the
+    TOP200_RECENT_BADGE_LIVE gate is closed AND the current viewer
+    isn't the owner - computed ONCE per page render by the caller
+    (render_top100_page()), same "load once, look up per row by
+    ticker" convention _finer_industry_by_ticker() already uses, and
+    passed down to every tab exactly like that dict already is."""
+    if not tickers:
+        return {}
+    if not (_recent_badge_live() or _is_owner_for_refresh()):
+        return {}
+    starts = top100_store.current_streak_start_dates(list(tickers))
+    cutoff = _today_brisbane() - _dt.timedelta(days=_RECENT_BADGE_WINDOW_DAYS - 1)
+    out = {}
+    for ticker, as_of_str in starts.items():
+        try:
+            as_of_date = _dt.datetime.strptime(as_of_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if as_of_date >= cutoff:
+            out[ticker] = _recent_added_badge_html(as_of_str, lang)
+    return out
+
+
+# -----------------------------------------------------------------
 # Director's TASK 7, final version (14 Oct 2026): one "Top 20" tab
 # per new market in the public Top 200, built from the pool only - no
 # extension, no extra scoring, no change to selection. Currency can't
@@ -592,7 +685,8 @@ def _market_count_line(group_key, count, lang):
                country=_market_display_name(group_key, lang))
 
 
-def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows, group_key, filters=None):
+def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows, group_key, filters=None,
+                              recent_badge_map=None):
     """Rule 5: those pool members, top 20 by the active sort and active
     filters, same card rendering as the USA tab (_render_top20_tab()) -
     rated-gated, no bottom shelf, no extension - `market_rows` is this
@@ -600,7 +694,11 @@ def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_r
     filtered by country instead of currency. Rule 6: when this market's
     own member count (rated, before the 20-row cap) is under 20, the
     plain count line (_market_count_line()) is shown in ADDITION to
-    every member present, never instead of them."""
+    every member present, never instead of them.
+
+    `recent_badge_map` (TASK 30, Part A): {ticker: badge_html} - None/
+    missing ticker renders no badge."""
+    recent_badge_map = recent_badge_map or {}
     rows = _sort_and_gate_rated(market_rows, sort_mode)
     total = len(rows)
     rows = rows[:20]
@@ -617,7 +715,8 @@ def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_r
                 if group_key == "Europe" else None
             )
             _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
-                        country_badge_html=country_badge)
+                        country_badge_html=country_badge,
+                        recent_badge_html=recent_badge_map.get(row["ticker"]))
     if total < 20:
         st.caption(_market_count_line(group_key, total, lang))
 
@@ -862,7 +961,7 @@ def _row_edge_accent_style(score_row):
 
 
 def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=None,
-                 country_badge_html=None, home_country_html=None):
+                 country_badge_html=None, home_country_html=None, recent_badge_html=None):
     """One RATED company row - rank/ticker(linked), the leading number
     for the active sort (task's own "the leading number on each row is
     the one doing the sorting"), the other stats next to it, the ten
@@ -915,7 +1014,17 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     dimension chips - same small plain-text style as the Scanner
     page's own "Home Country" label (see _home_country_label_html()'s
     own docstring), never the bordered chip style `country_badge_html`
-    uses."""
+    uses.
+
+    `recent_badge_html` (TASK 30, Director-directed, 4 Nov 2026, Part
+    A): the blue "Recently added · <date>" pill (or None - every
+    caller passes recent_badge_map.get(ticker), which is None/missing
+    for a ticker whose streak didn't qualify, or for every ticker at
+    all while the TOP200_RECENT_BADGE_LIVE gate is closed to this
+    viewer) - lands in the SAME badge slot origin_badge_html/country_
+    badge_html already use, right after them, so it can appear
+    alongside either (a newly-added Australian row can carry BOTH its
+    origin badge and this one)."""
     ticker = row["ticker"]
     score_row = row["score_row"]
 
@@ -946,6 +1055,8 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
         header_bits.append(origin_badge_html)
     if country_badge_html:
         header_bits.append(country_badge_html)
+    if recent_badge_html:
+        header_bits.append(recent_badge_html)
     header_bits.append(_leading_metric_html(row, sort_mode, lang))
     secondary_html = _secondary_metrics_html(row, sort_mode, lang)
     if secondary_html:
@@ -1185,7 +1296,8 @@ def _home_country_label_html(home_country):
 
 
 def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, filters=None,
-                       exclude_tickers=None, only_tickers=None, home_country_by_ticker=None):
+                       exclude_tickers=None, only_tickers=None, home_country_by_ticker=None,
+                       recent_badge_map=None):
     """Top 20 by the active sort (point 2, "applying to every tab
     including Full 100"). Point 3: unrated companies are excluded from
     the Top 20 tabs entirely - never shown here, not even in a shelf -
@@ -1208,7 +1320,9 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
     caller is unaffected. `home_country_by_ticker` (optional dict) is
     forwarded to _render_row() as a small label for any row whose
     ticker is a key in it; omitted or a miss, no label - every other
-    caller is unaffected."""
+    caller is unaffected. `recent_badge_map` (TASK 30, Part A):
+    {ticker: badge_html} - None/missing ticker renders no badge."""
+    recent_badge_map = recent_badge_map or {}
     rows = _sort_and_gate_rated(enriched, sort_mode)
     if currency:
         rows = [r for r in rows if r["currency"] == currency]
@@ -1238,10 +1352,11 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
             if isinstance(_hc, str) and _hc.strip():
                 home_country_html = _home_country_label_html(_hc)
         _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
-                    home_country_html=home_country_html)
+                    home_country_html=home_country_html,
+                    recent_badge_html=recent_badge_map.get(row["ticker"]))
 
 
-def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None):
+def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None):
     """Full 100: the rated companies under the active sort, then
     (point 3) a labelled bottom shelf of unrated companies ordered by
     Value Score among themselves - shown under every sort view except
@@ -1254,7 +1369,12 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None)
     list only, preserving each surviving row's rank from the FULL
     (pre-filter) list - see _ranked_rows_after_filters(). The bottom
     shelf itself is never filtered (it carries no verdicts to filter
-    on) and always renders in full, per the task's own rule."""
+    on) and always renders in full, per the task's own rule.
+
+    `recent_badge_map` (TASK 30, Part A): {ticker: badge_html} - None/
+    missing ticker renders no badge, on either the rated rows or the
+    bottom shelf."""
+    recent_badge_map = recent_badge_map or {}
     rows = _sort_and_gate_rated(enriched, sort_mode)
     if not rows:
         st.caption(_t("empty_tab", lang))
@@ -1264,7 +1384,8 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None)
             st.caption(_t("filter_no_matches", lang))
         else:
             for i, row in ranked:
-                _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
+                _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
+                            recent_badge_html=recent_badge_map.get(row["ticker"]))
 
     if sort_mode != SORT_VALUE_TODAY:
         if top100_engine.is_backfill_live():
@@ -1282,10 +1403,10 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None)
                 (r for r in enriched if r["composite"] is None),
                 key=_key_value_score,
             )
-            _render_bottom_shelf(shelf_rows, lang)
+            _render_bottom_shelf(shelf_rows, lang, recent_badge_map=recent_badge_map)
 
 
-def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None):
+def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None):
     """Top 20 · Australia guaranteed-twenty (25 Sep 2026, owner-
     approved mock, "top20_australia_extended_mock.html") - a GUARANTEED
     twenty: every AUD pool row plus (point 1) the ASX extension's own
@@ -1303,7 +1424,13 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filte
 
     `filters` (Top 100 filter row, 1 Oct 2026): applied the same way as
     every other tab - after rank is assigned to this tab's own combined
-    (pool + extension) list, never touching the bottom shelf."""
+    (pool + extension) list, never touching the bottom shelf.
+
+    `recent_badge_map` (TASK 30, Part A): {ticker: badge_html}, keyed
+    over the FULL universe (global pool + ASX extension) by the caller
+    - so an extension-only ticker's badge is found here too, even
+    though it's never a key `enriched` alone would carry."""
+    recent_badge_map = recent_badge_map or {}
     pool_au = [r for r in enriched if r["currency"] == "AUD"]
     extension = _enriched_asx_extension()
     combined = pool_au + extension
@@ -1327,7 +1454,8 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filte
         else:
             for i, row in ranked:
                 _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
-                            origin_badge_html=origin_badge(row))
+                            origin_badge_html=origin_badge(row),
+                            recent_badge_html=recent_badge_map.get(row["ticker"]))
 
     if sort_mode != SORT_VALUE_TODAY:
         if top100_engine.is_backfill_live():
@@ -1341,7 +1469,8 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filte
                 (r for r in combined if r["composite"] is None),
                 key=_key_value_score,
             )
-            _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=origin_badge)
+            _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=origin_badge,
+                                  recent_badge_map=recent_badge_map)
 
 
 # Bottom-shelf chip colours (point 3) - exact hex values from the mock's
@@ -1351,7 +1480,7 @@ _SHELF_CHIP_AWAITING = ("#1a2333", "#2a3f63", "#7f95b3")
 _SHELF_CHIP_NOT_RATED = ("#2a2413", "#7c5e10", "#fbbf24")
 
 
-def _shelf_row_html(row, lang, origin_badge_html=None):
+def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
     """One bottom-shelf row (point 3) - a compact chip+ticker+stats
     line, never the full dimension-chip card _render_row() draws
     (there are no dimensions to show). Two distinct chip variants:
@@ -1376,7 +1505,12 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
 
     `origin_badge_html` (Top 20 Australia guaranteed-twenty): None on
     every other tab; Australia's own caller passes its badge so even
-    an unrated extension member is clearly marked."""
+    an unrated extension member is clearly marked.
+
+    `recent_badge_html` (TASK 30, Part A): the same "Recently added"
+    pill _render_row() can carry, now also reachable from the bottom
+    shelf - an unrated newcomer is exactly the kind of row this badge
+    should still mark."""
     score_row = row.get("score_row")
     if score_row is None:
         chip = _shelf_chip_html(_t("shelf_chip_awaiting", lang), *_SHELF_CHIP_AWAITING)
@@ -1399,7 +1533,7 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
         else:
             caption = _t("shelf_caption_not_rated", lang)
     ticker = row["ticker"]
-    badge_html = origin_badge_html or ""
+    badge_html = (origin_badge_html or "") + (recent_badge_html or "")
     mos_html = ""
     if row.get("mos_pct") is not None:
         _mos_text = snapshot_store.display_mos_pct(row["mos_pct"], _mos_unreliable(row), fmt="{:.1f}%", lang=lang)
@@ -1424,18 +1558,23 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
     )
 
 
-def _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=None):
+def _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=None, recent_badge_map=None):
     """Full 100's (and Australia's own) labelled bottom-shelf section
     (point 3) - companies with no Research Score can't be interleaved
     with rated ones, so they sit here, ordered by Value Score among
     themselves (already the caller's own sort key). Renders nothing
     when there's nothing to shelve. `origin_badge_fn` (Top 20 Australia
     guaranteed-twenty): None on Full 100; Australia's own caller passes
-    a row->badge-html function."""
+    a row->badge-html function. `recent_badge_map` (TASK 30, Part A):
+    {ticker: badge_html} - None/missing ticker renders no badge,
+    same per-ticker dict-lookup convention finer_industry already
+    uses everywhere else on this page."""
     if not shelf_rows:
         return
+    recent_badge_map = recent_badge_map or {}
     rows_html = "".join(
-        _shelf_row_html(r, lang, origin_badge_html=(origin_badge_fn(r) if origin_badge_fn else None))
+        _shelf_row_html(r, lang, origin_badge_html=(origin_badge_fn(r) if origin_badge_fn else None),
+                         recent_badge_html=recent_badge_map.get(r["ticker"]))
         for r in shelf_rows
     )
     st.markdown(
@@ -2002,6 +2141,20 @@ def render_top100_page(lang="en"):
     _show_foreign_tab = _foreign_tab_live or _is_owner_for_refresh()
     _foreign_tickers = set(_foreign_home_country) if _show_foreign_tab else None
 
+    # TASK 30 (Director-directed, 4 Nov 2026, Part A): "Recently added"
+    # badges, computed ONCE over the FULL universe (global pool + ASX
+    # extension - every ticker that can render as a card on ANY tab,
+    # incl. the Australia tab's own extension-only members) and passed
+    # down to every tab below, same "load once, look up per row"
+    # convention finer_industry already uses. recent_badge_map() itself
+    # returns {} entirely (no badges, for anyone) while TOP200_RECENT_
+    # BADGE_LIVE is closed and the current viewer isn't the owner.
+    _recent_badge_tickers = (
+        {r["ticker"] for r in enriched}
+        | {r["ticker"] for r in top100_store.current_asx_extension()}
+    )
+    _recent_badges = recent_badge_map(_recent_badge_tickers, lang)
+
     # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
     # Mixed/Australia/USA/Full 200 exactly as they were (same four
     # render calls, same positions relative to each other); rule 2
@@ -2021,21 +2174,25 @@ def render_top100_page(lang="en"):
     )
     tabs = st.tabs(tab_labels)
     with tabs[0]:
-        _render_top20_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
+        _render_top20_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
+                           recent_badge_map=_recent_badges)
     with tabs[1]:
-        _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
+        _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
+                                     recent_badge_map=_recent_badges)
     with tabs[2]:
         _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
-                           exclude_tickers=_foreign_tickers)
+                           exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges)
     _next_tab = 3
     if _show_foreign_tab:
         with tabs[_next_tab]:
             _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
-                               only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country)
+                               only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country,
+                               recent_badge_map=_recent_badges)
         _next_tab += 1
     for offset, (group_key, market_rows) in enumerate(market_plan):
         with tabs[_next_tab + offset]:
             _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows,
-                                      group_key, filters=filters)
+                                      group_key, filters=filters, recent_badge_map=_recent_badges)
     with tabs[_next_tab + len(market_plan)]:
-        _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
+        _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
+                             recent_badge_map=_recent_badges)

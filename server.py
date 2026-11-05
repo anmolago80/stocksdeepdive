@@ -575,6 +575,17 @@ _pulse_known_human_pages_day: str | None = None
 # the right day's bucket even if its flush lands just after rollover.
 _pending_visitor_hashes: set[tuple[str, str]] = set()
 
+# TASK 30 (Director-directed, 4 Nov 2026, Part B): (day, visitor_hash)
+# pairs for the SEPARATE 30-day-rotating-salt hash (admin_metrics_store.
+# _visitor_hash_30d()), awaiting the same periodic flush as
+# _pending_visitor_hashes above - computed from the EXACT SAME ip/ua
+# already read at the point below, under the EXACT SAME owner-IP-
+# exclusion gate, so this table inherits that exclusion for free. Never
+# joined with or substituted for _pending_visitor_hashes - see
+# _visitor_hash_30d()'s own docstring for why these are two independent
+# hashes answering two different questions.
+_pending_visitor_hashes_30d: set[tuple[str, str]] = set()
+
 # Admin Dashboard Analytics Commit 4 (26 Sep 2026): the asset-fetch
 # promotion heuristic's in-memory, day-scoped state - "a real browser
 # requests a page AND its manifest, icons or service worker within the
@@ -887,6 +898,8 @@ def _pulse_flush_once():
         _pulse_counts.clear()
         visitor_batch = set(_pending_visitor_hashes)
         _pending_visitor_hashes.clear()
+        visitor_batch_30d = set(_pending_visitor_hashes_30d)
+        _pending_visitor_hashes_30d.clear()
         human_batch = set(_pending_human_hashes)
         _pending_human_hashes.clear()
     if admin_metrics_store is None:
@@ -901,6 +914,11 @@ def _pulse_flush_once():
             admin_metrics_store.record_visitor_hashes(visitor_batch)
         except Exception:
             log.warning("visitor-hash flush failed - this interval's unique-visitor hashes are lost")
+    if visitor_batch_30d:
+        try:
+            admin_metrics_store.record_visitor_hashes_30d(visitor_batch_30d)
+        except Exception:
+            log.warning("30d-visitor-hash flush failed - this interval's returning-visitor hashes are lost")
     if human_batch:
         try:
             admin_metrics_store.record_human_hashes(human_batch)
@@ -1050,8 +1068,10 @@ async def _pulse_counting_middleware(request: Request, call_next):
             ) and ip and ua and not (is_owner_ip and _OWNER_TRAFFIC_EXCLUDE):
                 day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 h = admin_metrics_store._visitor_hash(ip, ua, day)
+                h30 = admin_metrics_store._visitor_hash_30d(ip, ua, day)
                 with _pulse_lock:
                     _pending_visitor_hashes.add((day, h))
+                    _pending_visitor_hashes_30d.add((day, h30))
                 is_asset_fetch = visitor_classify.is_asset_fetch_path(path)
                 if is_page_view:
                     if h in _promoted_human_hashes_today:

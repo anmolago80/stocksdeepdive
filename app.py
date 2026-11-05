@@ -1464,6 +1464,41 @@ if st.session_state.pop("_pending_auth_cookie_clear", False):
     paywall_engine.write_auth_cookie(None)
 paywall_engine.restore_email_session()
 
+# TASK 30 (Director-directed, 4 Nov 2026, Part B2) - owner-session
+# exclusion for the returning-visitor hash (admin_metrics_store.
+# _visitor_hash_30d() - see that function's own docstring). Placed HERE,
+# not at the note_streamlit_activity() hook above: this needs ai_gate.
+# is_owner()/current_user_email() to be accurate, and those only start
+# returning a real value once restore_email_session() (just above) has
+# run this script - the exact same ordering constraint the "Mega-batch
+# Part 35.3" owner-unlock block right below already relies on. Runs on
+# every rerun, no @st.cache_resource, same "every page view/interaction,
+# every session" cadence note_streamlit_activity() documents, because
+# the owner's ip/ua (and so their 30-day hash) can change rerun to
+# rerun. Mirrors server.py's own _client_ip() extraction (first hop of
+# X-Forwarded-For, else nothing - st.context.headers is the same
+# case-insensitive header-lookup API this file already uses above for
+# Accept-Language/cookies) so the SAME (ip, ua) pair the HTTP middleware
+# already hashed produces the SAME hash here. This is independent of
+# and in addition to server.py's IP-only OWNER_TRAFFIC_IPS exclusion -
+# it catches the owner identified BY SIGN-IN, on any device/network.
+# Writes only the one-way hash digest - never the raw ip/ua - into a
+# small exclusion table that returning_visitor_stats() reads from at
+# render time; never raises, never blocks page render.
+try:
+    if ai_gate.is_owner(paywall_engine.current_user_email()):
+        _owner_xff = st.context.headers.get("X-Forwarded-For") or ""
+        _owner_ip = _owner_xff.split(",")[0].strip() if _owner_xff else ""
+        _owner_ua = st.context.headers.get("User-Agent") or ""
+        if _owner_ip and _owner_ua:
+            _owner_hash_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            _owner_hash30 = admin_metrics_store._visitor_hash_30d(
+                _owner_ip, _owner_ua, _owner_hash_day
+            )
+            admin_metrics_store.record_owner_visitor_hash(_owner_hash30, _owner_hash_day)
+except Exception:
+    pass
+
 # Mega-batch Part 35.3: owner auto-unlock - the owner's own signed-in
 # email always gets full_view_unlocked with no key prompt, on any
 # device, instead of needing to know/type ADMIN_REFRESH_KEY on a fresh
@@ -32872,6 +32907,29 @@ def _render_top200_coverage_panel():
         st.write("No pool selected yet.")
         return
 
+    # TASK 30 (Director-directed, 4 Nov 2026, Part A5) - how many current
+    # pool members would show the new "Recently added" badge today.
+    # Computed live with the EXACT SAME function the Top 200 page itself
+    # calls (top100_render.recent_badge_map()), over the SAME ticker set
+    # (_rows, just computed above) - not a separately re-derived count,
+    # so this can never drift from what a viewer with the gate open
+    # actually sees. Owner-only read, no write.
+    try:
+        _recent_badges_today = top100_render.recent_badge_map(
+            {r["ticker"] for r in _rows}, "en"
+        )
+        st.metric("\"Recently added\" badge today (TASK 30, Part A5)", len(_recent_badges_today))
+        st.caption(
+            "Current pool + Australia extension members whose continuous "
+            "selection-run streak started within the last 7 Brisbane "
+            "calendar days - i.e. would show the new badge right now if "
+            "TOP200_RECENT_BADGE_LIVE were set to \"1\". Always computed "
+            "live (owner view bypasses the gate the same way the Top 200 "
+            "page itself does), never cached or stale."
+        )
+    except Exception as e:
+        st.caption(f"Badge count unavailable: {e}")
+
     try:
         _coverage = top100_engine.coverage_for_rows(_rows, model=top100_engine.MODEL_TOP100)
     except Exception as e:
@@ -36340,6 +36398,61 @@ def page_admin_dashboard():
                 "Every request regardless of classification, not "
                 "filtered to human traffic only."
             )
+
+    # --- RETURNING VISITORS (TASK 30, Director-directed, 4 Nov 2026,
+    # Part B - test stage, pending owner approval before go-live) -------
+    # Reads admin_metrics_store.returning_visitor_stats() - a completely
+    # SEPARATE hash/table from visitor_panel_for_day() above (see
+    # admin_metrics_store._visitor_hash_30d()'s own docstring for why):
+    # a 30-day ROTATING salt, not a per-day one, so the SAME (ip, ua)
+    # pair hashes the same across ~30 days, making "did the same
+    # visitor come back" answerable for the first time - the EXISTING
+    # day-rotated figures above are completely unchanged by this
+    # section (Part B3). The owner's own signed-in session (ai_gate.
+    # is_owner(), any device/network - see the recording hook near
+    # restore_email_session() above) is excluded from every figure
+    # below, IN ADDITION to server.py's IP-only OWNER_TRAFFIC_IPS
+    # exclusion that already keeps owner traffic out of the figures
+    # above. Owner-only, same as this entire page - measurement only
+    # per the task's own instruction: nothing here changes site
+    # behavior, and it is not yet promoted anywhere public.
+    st.markdown("---")
+    st.markdown("### Returning visitors (test stage)")
+    st.caption(
+        "New measurement, pending owner review before any further "
+        "rollout - not yet a permanent fixture of this dashboard. Owner "
+        "sessions are excluded from every number below."
+    )
+    try:
+        _rv = admin_metrics_store.returning_visitor_stats()
+    except Exception:
+        _rv = None
+    if not _rv:
+        st.caption("Returning-visitor data unavailable.")
+    else:
+        _rv_c1, _rv_c2, _rv_c3 = st.columns(3)
+        with _rv_c1:
+            st.metric("Unique visitors (7d)", _rv["unique_visitors_7d"])
+        with _rv_c2:
+            st.metric("Unique visitors (30d)", _rv["unique_visitors_30d"])
+        with _rv_c3:
+            st.metric("Returned on 2+ days (30d)", _rv["returning_2plus_days"])
+        st.caption(
+            "Same IP+user-agent hash construction as \"Unique visitors\" "
+            "above, but salted to a window that rotates every ~30 days "
+            "instead of every day - the same (device, browser) pair "
+            "hashes the same for that whole window, then to an "
+            "unrelated value. Still no IP or user-agent is ever stored "
+            "- only this one-way digest."
+        )
+        _rv_daily = _rv["daily"]
+        if _rv_daily:
+            _rv_df = pd.DataFrame(_rv_daily).rename(
+                columns={"day": "Day", "new": "New", "returning": "Returning"}
+            )
+            st.bar_chart(_rv_df.set_index("Day")[["New", "Returning"]])
+        else:
+            st.caption("No returning-visitor data yet.")
 
     # --- ACCOUNTS & TRAFFIC DETAIL (everything the old Stats popover
     # showed that doesn't have its own tile above - kept in full so

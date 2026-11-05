@@ -719,6 +719,79 @@ def current_backfill_set_aside():
     return [dict(r) for r in rows]
 
 
+# TASK 30 (Director-directed, 4 Nov 2026, Part A2) - "Recently added"
+# badge: base "continuous" on consecutive SELECTION RUNS (this
+# table's own distinct as_of snapshots), never on calendar-day
+# arithmetic. update_pool_presence()'s own consecutive_nights above
+# is NOT reused for this - it resets to 1 on any calendar-day gap > 1
+# (gap_days == 1 required to extend the streak), which is exactly
+# the bug this task warns against: a single missed selection night
+# would reset EVERY current member's streak and badge the whole
+# list. Walking this table's own STORED as_of dates instead is
+# immune to that by construction - a night the selection didn't run
+# simply has no row here at all, so it can never appear as a "gap"
+# in the sequence of rows actually being walked.
+def current_streak_start_dates(tickers, limit=POOL_SNAPSHOT_RETENTION):
+    """{ticker: as_of} - for each ticker in `tickers` that is a member
+    of the LATEST stored selection snapshot, the as_of date of the
+    EARLIEST entry in its current unbroken run of appearances -
+    walking backward through up to the last `limit` stored as_of
+    dates (default: POOL_SNAPSHOT_RETENTION, the most this table ever
+    keeps) and stopping at the first snapshot the ticker is missing
+    from. A ticker present through EVERY one of the `limit` snapshots
+    checked (its TRUE first appearance may be older still - this
+    table only retains POOL_SNAPSHOT_RETENTION of them) gets the
+    OLDEST of those `limit` dates as a safe lower bound: good enough
+    for "is this streak younger than N days" (what the badge actually
+    needs), never a claim this is the ticker's literal first-ever
+    appearance (see pool_presence/first_seen_utc_date for that, a
+    SEPARATE, calendar-day-based record this function deliberately
+    does not touch or reuse). A ticker absent from the latest snapshot
+    entirely (not currently in the pool) is skipped - absent from the
+    returned dict, same contract pool_presence_map() already uses for
+    "never seen" vs "seen".
+
+    Checks BOTH the global pool AND the ASX-extension rows (asx_
+    extension 0 or 1) - everything except backfill_set_aside=1 (a
+    set-aside row never renders as a card at all, so it can never
+    earn this badge either) - a ticker can move between the global
+    pool and the extension night to night without that counting as a
+    gap, matching this task's own "shown on every Top 200 card"
+    scope, not just the global-pool-only shape current_pool() itself
+    returns."""
+    if not tickers:
+        return {}
+    dates = _distinct_as_of_dates(limit=limit)
+    if not dates:
+        return {}
+    wanted = set(tickers)
+    with _conn() as conn:
+        placeholders_dates = ",".join("?" * len(dates))
+        rows = conn.execute(
+            f"SELECT as_of, ticker FROM top100_pool WHERE as_of IN ({placeholders_dates}) "
+            "AND backfill_set_aside = 0",
+            dates,
+        ).fetchall()
+    membership_by_date = {}
+    for as_of, ticker in rows:
+        if ticker in wanted:
+            membership_by_date.setdefault(as_of, set()).add(ticker)
+
+    starts = {}
+    latest = dates[0]
+    for ticker in wanted:
+        if ticker not in membership_by_date.get(latest, ()):
+            continue
+        start = latest
+        for as_of in dates[1:]:
+            if ticker in membership_by_date.get(as_of, ()):
+                start = as_of
+            else:
+                break
+        starts[ticker] = start
+    return starts
+
+
 # -----------------------------------------------------------------
 # Scores (AI qualitative scoring cache).
 # -----------------------------------------------------------------

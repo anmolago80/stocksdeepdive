@@ -2242,6 +2242,18 @@ def _run_volume_check(log):
             admin_metrics_store.prune_old_human_hashes(log=log)
         except Exception as e:
             log(f"[scheduler] human-hash prune failed: {e}")
+        # TASK 30 (Director-directed, 4 Nov 2026, Part B): same nightly
+        # slot, same 90-day retention - see admin_metrics_store.
+        # prune_old_visitor_hashes_30d()/prune_old_owner_visitor_hashes_30d()'s
+        # own docstrings.
+        try:
+            admin_metrics_store.prune_old_visitor_hashes_30d(log=log)
+        except Exception as e:
+            log(f"[scheduler] 30d-visitor-hash prune failed: {e}")
+        try:
+            admin_metrics_store.prune_old_owner_visitor_hashes_30d(log=log)
+        except Exception as e:
+            log(f"[scheduler] owner-visitor-hash prune failed: {e}")
         try:
             admin_metrics_store.prune_old_counters(log=log)
         except Exception as e:
