@@ -1500,6 +1500,34 @@ def ebit_ttm(bundle, is_financials, revenue=None, info=None, force_switch=None, 
     return _plausible_operating_income(raw, revenue, info)
 
 
+# TASK 34 (Director-directed, owner-reported, 5 Nov 2026, MFF.AX live
+# case): a Listed Investment Company (and, in principle, any ticker
+# whose statements genuinely carry near-zero EBIT) reports almost no
+# "Operating Income" - profit flows through net income/investment
+# gains instead. A near-zero EBIT divided into anything (NOPAT/
+# invested capital for ROIC, EBIT itself for Operating Income Ratio,
+# FCF/EBIT for EBIT to FCF Conversion) produces a 0.0%/absurd-percent
+# reading that looks like a real measurement but isn't one - confirmed
+# on MFF.AX: ROIC 0.0%, Operating Income Ratio 0.0%, EBIT to FCF
+# Conversion 89,368%, all three following directly from one near-zero
+# EBIT input. "Near zero" is relative to revenue (1% - comfortably
+# below even a genuinely thin-margin operating company's real EBIT
+# margin) when revenue is on file; an absolute near-exact-zero floor
+# otherwise (an LIC's own "revenue" row can be as sparse as its EBIT
+# row), so a real, if unusually thin, operating margin is never
+# mistaken for "no EBIT at all".
+_EBIT_NEAR_ZERO_REVENUE_PCT = 0.01
+_EBIT_NEAR_ZERO_ABS_FLOOR = 1e-6
+
+
+def _ebit_near_zero(operating_income, revenue):
+    if operating_income is None:
+        return False
+    if revenue:
+        return abs(operating_income) < _EBIT_NEAR_ZERO_REVENUE_PCT * abs(revenue)
+    return abs(operating_income) < _EBIT_NEAR_ZERO_ABS_FLOOR
+
+
 def _statement_col_dates(df):
     """[(column_label, datetime.date), ...] for statement columns whose
     label carries a parseable YYYY-MM-DD end date, newest first. Column
@@ -2236,6 +2264,34 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
     value, source, growth_used, meta = result
     if source != "dcf" or not value or value <= 0:
         return None
+    # TASK 34 item 2 (5 Nov 2026, ELS.AX live case, Director-approved:
+    # "diagnostic logging only, no behaviour change"): prints one line
+    # per Fair Value DCF computation so this path's inputs can be
+    # compared against deep_dive_engine.py's own [dcf_diag] line for
+    # the same ticker - Deep Dive and the Fair Value tab are documented
+    # as calling the same resolve_intrinsic_value(), but were seen to
+    # disagree live (ELS.AX), and this is the evidence-gathering step
+    # before any fix. Nothing below this is changed or removed by this
+    # log line - same `result`/`meta`/return value as before.
+    _dcf_diag_price = _basics(bundle)["price"]
+    _dcf_diag_shares = _basics(bundle)["shares"]
+    _dcf_diag_cache_age = None
+    _dcf_diag_fetched_at = (bundle.get("meta") or {}).get("fetched_at")
+    if _dcf_diag_fetched_at:
+        try:
+            _dcf_diag_cache_age = (
+                datetime.datetime.now(datetime.timezone.utc)
+                - datetime.datetime.fromisoformat(_dcf_diag_fetched_at)
+            ).total_seconds()
+        except Exception:
+            _dcf_diag_cache_age = None
+    print(
+        f"[dcf_diag] {ticker} path=fairvalue price={_dcf_diag_price} iv={value} "
+        f"growth={growth_used} growth_source={meta.get('growth_source')} "
+        f"discount={meta.get('discount_rate_used')} "
+        f"fcf_base={meta.get('fcf_base_used') if meta.get('fcf_base_used') is not None else meta.get('fcf_base_raw')} "
+        f"shares={_dcf_diag_shares} cache_age={_dcf_diag_cache_age}"
+    )
     return {
         "value": value,
         "growth": growth_used,
@@ -2521,14 +2577,32 @@ def _build_fundamentals(bundle, ticker, ref):
     # shown with the same red-asterisk "don't take this number at face
     # value" treatment as every other fragile ratio on this page rather
     # than silently presented as a normal band.
+    #
+    # TASK 34 (5 Nov 2026, MFF.AX live case): a near-zero but POSITIVE
+    # EBIT was never caught by the <=0 check above - dividing FCF by a
+    # near-zero denominator still produces a huge, meaningless
+    # percentage (MFF.AX: 89,368%) that reads as a real cash-conversion
+    # figure. Shown as the literal text "not meaningful" instead,
+    # applied for EVERY ticker (not just financials-mode) - the guard
+    # is about the DENOMINATOR's own magnitude, not what kind of
+    # business this is.
     ebit_fcf_conversion = (fcf / operating_income) if (fcf is not None and operating_income) else None
-    add("EBIT to FCF Conversion", ebit_fcf_conversion, "pct",
-        flagged=bool(operating_income_estimated or (operating_income is not None and operating_income <= 0)),
-        fallback="Free Cash Flow divided by Operating Income (EBIT). Above 80% = exceptional cash "
-                  "conversion, very low capital intensity. 50-80% = normal - some earnings absorbed by "
-                  "working capital or capex. Below 50% = weak - earnings aren't converting well to cash.",
-        thresholds=[
-            [None, 0.50, "red", "Weak - earnings heavily tied up in working capital or capex"],
+    _ebit_fcf_near_zero = fcf is not None and _ebit_near_zero(operating_income, revenue)
+    if _ebit_fcf_near_zero:
+        add("EBIT to FCF Conversion", "not meaningful - EBIT is near zero", "raw", flagged=True,
+            fallback="Free Cash Flow divided by Operating Income (EBIT) - not shown as a number "
+                      "because EBIT is near zero for this company (common for investment companies/"
+                      "funds, whose profit flows through net income rather than a traditional "
+                      "operating-income line); dividing by a near-zero figure produces a meaningless "
+                      "ratio rather than a real cash-conversion read.")
+    else:
+        add("EBIT to FCF Conversion", ebit_fcf_conversion, "pct",
+            flagged=bool(operating_income_estimated or (operating_income is not None and operating_income <= 0)),
+            fallback="Free Cash Flow divided by Operating Income (EBIT). Above 80% = exceptional cash "
+                      "conversion, very low capital intensity. 50-80% = normal - some earnings absorbed by "
+                      "working capital or capex. Below 50% = weak - earnings aren't converting well to cash.",
+            thresholds=[
+                [None, 0.50, "red", "Weak - earnings heavily tied up in working capital or capex"],
             [0.50, 0.80, "amber", "Average - normal operating cash generation"],
             [0.80, None, "green", "Exceptional - converts almost all EBIT into cash"],
         ])
@@ -2612,11 +2686,24 @@ def _build_fundamentals(bundle, ticker, ref):
     rota = (net_income / (total_assets - (goodwill_intangibles or 0))) if (net_income is not None and total_assets is not None) else None
     add("Return on Tangible Assets", rota, "pct")
     add("ROE", (net_income / equity) if (net_income is not None and equity) else None, "pct")
-    add("Operating Income Ratio", (operating_income / revenue) if (operating_income is not None and revenue) else None, "pct",
-        flagged=operating_income_estimated,
-        fallback="Operating income divided by revenue; when the statement figure is implausible "
-                  "against the company's own reported operating margin, it's estimated from that "
-                  "margin instead and shown in red.")
+    # TASK 34 (5 Nov 2026, MFF.AX live case, Director-approved): scoped
+    # to financials-mode tickers only - the Director's own instruction
+    # names the universal (every-ticker) near-zero guard for EBIT to
+    # FCF Conversion specifically, not this metric. For a genuine
+    # operating company a thin-but-real EBIT margin is still a
+    # meaningful (if unflattering) number; for a financials-mode
+    # ticker (bank/insurer/investment company/fund) EBIT itself isn't a
+    # meaningful figure to divide revenue by in the first place.
+    if is_financials and _ebit_near_zero(operating_income, revenue):
+        add("Operating Income Ratio", "not meaningful - EBIT is near zero", "raw", flagged=True,
+            fallback="Operating income divided by revenue - not shown as a number because EBIT is "
+                      "near zero for this company (common for investment companies/funds).")
+    else:
+        add("Operating Income Ratio", (operating_income / revenue) if (operating_income is not None and revenue) else None, "pct",
+            flagged=operating_income_estimated,
+            fallback="Operating income divided by revenue; when the statement figure is implausible "
+                      "against the company's own reported operating margin, it's estimated from that "
+                      "margin instead and shown in red.")
     add("PFCF Ratio", (mcap / fcf) if (mcap and fcf) else None, "x",
         flagged=dual_class_mcap_fix)
 
@@ -2637,8 +2724,22 @@ def _build_fundamentals(bundle, ticker, ref):
     # the "% Income Paid on Taxes" display metric (see effective_tax_
     # rate()'s own docstring for why that one is left alone).
     nopat = (operating_income * (1 - effective_tax_rate(tax_provision, pretax_income))) if operating_income is not None else None
-    add("ROIC", (nopat / invested_capital) if (nopat is not None and invested_capital) else None, "pct",
-        flagged=True, fallback="NOPAT (operating income after an estimated tax rate) divided by invested capital (equity + total debt).")
+    # TASK 34 (5 Nov 2026, MFF.AX live case, Director-approved): for a
+    # financials-mode ticker (bank/insurer/investment company), EBIT-
+    # based NOPAT/invested-capital ROIC is structurally unreliable -
+    # same reasoning moat_engine.py's _year_return_series() already
+    # applies to its own ROE-for-ROIC substitution ("a bank/insurer's
+    # balance sheet IS the business"). Reusing that exact formula here
+    # rather than re-deriving it, per the Director's explicit
+    # instruction ("as moat_engine.py does").
+    roic_value = (net_income / equity) if (is_financials and equity and net_income is not None) \
+        else ((nopat / invested_capital) if (nopat is not None and invested_capital) else None)
+    add("ROIC", roic_value, "pct",
+        flagged=True,
+        fallback="Return on equity (net income divided by equity), used in place of NOPAT/invested "
+                  "capital for a financial-services or investment company, whose EBIT-based figure "
+                  "isn't meaningful." if is_financials else
+                  "NOPAT (operating income after an estimated tax rate) divided by invested capital (equity + total debt).")
 
     add("Debt to Assets", (total_debt / total_assets) if (total_debt is not None and total_assets) else None, "pct")
     add("Quick Ratio", ((current_assets - (inventory or 0)) / current_liabilities) if (current_assets is not None and current_liabilities) else None, "x")
@@ -3426,6 +3527,10 @@ def _build_cost_of_capital(bundle, ticker, ref):
     cash_by_year = dict(_series(bundle["balance"], "cash"))
     interest_by_year = dict(_series(bundle["income"], "interest_expense"))
     op_income_by_year = dict(ebit_series(bundle, is_financials))
+    # TASK 34 (5 Nov 2026, MFF.AX live case, Director-approved): only
+    # read when is_financials - same ROE-for-ROIC substitution
+    # precedent as moat_engine.py's _year_return_series().
+    net_income_by_year = dict(_series(bundle["income"], "net_income"))
     years_desc = [y for y, _ in _series(bundle["balance"], "stockholders_equity")]
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
 
@@ -3443,6 +3548,15 @@ def _build_cost_of_capital(bundle, ticker, ref):
         return weight_e * cost_of_equity + weight_d * cost_of_debt, (ltd_flagged or int_val is None)
 
     def _roic_for(year):
+        # TASK 34 (5 Nov 2026, MFF.AX live case, Director-approved): for
+        # a financials-mode ticker, substitute ROE (net income / equity)
+        # for the EBIT-based NOPAT/invested-capital formula below - same
+        # precedent as moat_engine.py's _year_return_series() reuses for
+        # its own ROE-for-ROIC substitution.
+        if is_financials:
+            ni = net_income_by_year.get(year)
+            eq = equity_by_year.get(year)
+            return (ni / eq) if (eq and ni is not None) else None
         op_inc = op_income_by_year.get(year)
         if op_inc is None:
             return None
@@ -3462,7 +3576,16 @@ def _build_cost_of_capital(bundle, ticker, ref):
         ltd_ttm_flagged or interest_expense_flagged or interest_expense_estimated,
     )
     roic_ttm = _roic_for(years_desc[0]) if years_desc else None
-    if roic_ttm is None and operating_income is not None and years_desc:
+    if roic_ttm is None and years_desc and is_financials:
+        # TASK 34 (5 Nov 2026): same year-label-mismatch recovery as the
+        # non-financials branch below, but via the ROE substitution -
+        # falling through to the EBIT-based recovery there would defeat
+        # the whole point of the financials-mode substitution above.
+        ni_ttm = net_income_by_year.get(years_desc[0])
+        eq_ttm = equity_by_year.get(years_desc[0])
+        if eq_ttm and ni_ttm is not None:
+            roic_ttm = ni_ttm / eq_ttm
+    elif roic_ttm is None and operating_income is not None and years_desc:
         # _roic_for() looks operating income up by the BALANCE SHEET's own
         # newest year label, in a dict keyed by the INCOME STATEMENT's own
         # year labels - normally the same year, but when the two

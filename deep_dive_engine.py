@@ -34,6 +34,8 @@ still comes from resolve_quality_score()). If that formula ever changes,
 this mirror needs updating too - see the comment on _quality_breakdown().
 """
 
+import datetime
+
 import pandas as pd
 
 from resolver_engine import (
@@ -43,6 +45,7 @@ from resolver_engine import (
 from ranking_engine import calculate_long_score, MOS_CLAMP, PSY_CLAMP, DISCOVERY_CAP
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
+import auto_quality_engine
 import fcf_valuation_engine
 import financials_classifier
 import financials_income_store
@@ -317,6 +320,14 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # to resolve currency from saves UNCONVERTED, so this is never
     # assumed True just because the table came from the store.
     _income_df_currency_converted = False
+    # TASK 34 item 2 (5 Nov 2026, ELS.AX live case): best-effort cache-
+    # age proxy for the [dcf_diag] log below - only set when a cached
+    # fundamentals bundle happens to be read on this path anyway (the
+    # peek_cached_bundle() branch below); None otherwise, since this
+    # path's own info/df fetch (see this function's docstring on the
+    # "COMPLETELY SEPARATE path") carries no fetched-at timestamp of
+    # its own to read.
+    _dcf_diag_cache_age = None
     if _financials_mode_live:
         _fin_entry = financials_income_store.get(ticker)
         if _fin_entry is not None:
@@ -334,6 +345,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     else:
         _bundle = fundamentals_data.peek_cached_bundle(ticker)
         if _bundle:
+            _dcf_diag_fetched_at = (_bundle.get("meta") or {}).get("fetched_at")
+            if _dcf_diag_fetched_at:
+                try:
+                    _dcf_diag_cache_age = (
+                        datetime.datetime.now(datetime.timezone.utc)
+                        - datetime.datetime.fromisoformat(_dcf_diag_fetched_at)
+                    ).total_seconds()
+                except Exception:
+                    _dcf_diag_cache_age = None
             income_df = _bundle.get("income")
             # Audit fix C1 / Fable finding V2 (10 Oct 2026, instruction_
             # combined_10oct.md PART C): fundamentals_data.get_bundle()'s
@@ -376,6 +396,22 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         income_df_currency_converted=_income_df_currency_converted,
     )
 
+    # TASK 34 item 2 (5 Nov 2026, ELS.AX live case, Director-approved:
+    # "diagnostic logging only, no behaviour change"): prints one line
+    # per Deep Dive DCF computation so this path's inputs can be
+    # compared against auto_compounder_engine.py's own [dcf_diag] line
+    # for the same ticker - both are documented as calling the same
+    # resolve_intrinsic_value(), but were seen to disagree live
+    # (ELS.AX), and this is the evidence-gathering step before any fix.
+    # Nothing below this is changed or removed by this log line.
+    print(
+        f"[dcf_diag] {ticker} path=deepdive price={current_price} "
+        f"iv={intrinsic_value} growth={dcf_growth} growth_source={iv_meta.get('growth_source')} "
+        f"discount={iv_meta.get('discount_rate_used')} "
+        f"fcf_base={iv_meta.get('fcf_base_used') if iv_meta.get('fcf_base_used') is not None else iv_meta.get('fcf_base_raw')} "
+        f"shares={info.get('sharesOutstanding')} cache_age={_dcf_diag_cache_age}"
+    )
+
     # Stage 1b (3 Oct 2026, Director-directed, section 6 carry-over):
     # the price_unit_suspect guard already withholds IV/MOS on the Fair
     # Value tab (auto_compounder_engine.build_sections() returning None
@@ -406,6 +442,24 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     fomo_score = max(greed_score + max(weekly_change, 0), 0)
     psychology_score = fear_score - greed_score - fomo_score
     activity_score = abs(weekly_change)
+
+    # TASK 34 item 1 (5 Nov 2026, BKNG live case, Director-approved:
+    # "diagnostic logging only, no behaviour change"): the Director
+    # verified BKNG's stored S&P 500/Nasdaq 100 scan rows both used
+    # Quality 65-66.5, below the Top 200 cut-off - correct selection -
+    # while this Deep Dive view's own live "Scanner & Top 200 score"
+    # implies Quality ~85, via the SAME resolve_quality_score() call.
+    # This line lets the live Quality/psychology inputs here be
+    # compared directly against the nightly scan path's own matching
+    # line (nightly_scan.py's analyze_ticker_lite()) for the same
+    # ticker - no label or value change.
+    _quality_diag_inputs = auto_quality_engine.quality_score_inputs(info)
+    print(
+        f"[quality_diag] {ticker} path=deepdive quality={quality_score} "
+        f"defaulted={quality_default} inputs={_quality_diag_inputs} "
+        f"psychology={psychology_score} fear={fear_score} greed={greed_score} "
+        f"fomo={fomo_score}"
+    )
 
     avg_volume = window_3mo["Volume"].mean()
     _vol_series = window_3mo["Volume"].dropna()

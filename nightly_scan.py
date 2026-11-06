@@ -42,6 +42,7 @@ import yfinance as yf
 import admin_metrics_store
 import alert_engine
 import auto_compounder_engine
+import auto_quality_engine
 import capm_engine
 import fcf_valuation_engine
 import financials_classifier
@@ -1073,6 +1074,21 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     fomo = max(greed + max(weekly, 0), 0)
     psychology = fear - greed - fomo
     activity = abs(weekly)
+
+    # TASK 34 item 1 (5 Nov 2026, BKNG live case, Director-approved:
+    # "diagnostic logging only, no behaviour change"): the matching
+    # nightly-scan-side line for deep_dive_engine.analyze()'s own
+    # "[quality_diag] ... path=deepdive" log - same ticker, same
+    # resolve_quality_score()/fear/greed/fomo/psychology formulas, so
+    # the two paths' real inputs can be compared from production logs
+    # for a ticker like BKNG where they were seen to disagree. No
+    # value here changes because of this line.
+    log(
+        f"[quality_diag] {ticker} path=nightly_scan quality={quality} "
+        f"defaulted={quality_default} inputs={auto_quality_engine.quality_score_inputs(info)} "
+        f"psychology={psychology} fear={fear} greed={greed} fomo={fomo}"
+    )
+
     avg_vol = window_3mo["Volume"].mean()
     vol_ratio = (window_3mo["Volume"].iloc[-1] / avg_vol) if avg_vol > 0 else 0
     discovery = activity + vol_ratio * 10  # price/volume attention, always included

@@ -1,6 +1,58 @@
 import yfinance as yf
 
 
+def quality_score_inputs(info):
+    """TASK 34 item 1 (5 Nov 2026, BKNG live case, Director-approved
+    diagnostic-logging-only follow-up): the raw inputs get_quality_score()
+    itself derives from `info`, factored out as a read-only helper so
+    deep_dive_engine.py's and nightly_scan.py's own "[quality_diag]" log
+    lines can report the EXACT same numbers get_quality_score() actually
+    weighted, rather than a second, drifting re-derivation. Pure read, no
+    side effects, not called by get_quality_score() itself (which keeps
+    its own inline locals unchanged) - this never changes what any
+    existing caller of get_quality_score() gets back.
+
+    Returns {"roic", "roe", "profitMargins", "revenueGrowth",
+    "earningsGrowth", "fcf", "debtToEquity"} - roic is the SAME derived
+    (marketCap/priceToBook -> book equity -> + totalDebt -> invested
+    capital -> netIncomeToCommon/invested capital, clamped to +-100%)
+    figure get_quality_score() computes internally; the rest are the
+    plain info fields it reads (revenueGrowth/earningsGrowth reported
+    here BEFORE the +-50% growth clamp get_quality_score() applies
+    before weighting, since this is for comparing against the live
+    Yahoo figures a reader would otherwise look up directly)."""
+    try:
+        roe = info.get("returnOnEquity", 0) or 0
+        profit_margin = info.get("profitMargins", 0) or 0
+        revenue_growth = info.get("revenueGrowth", 0) or 0
+        earnings_growth = info.get("earningsGrowth", 0) or 0
+        debt_to_equity = info.get("debtToEquity", 0) or 0
+        free_cash_flow = info.get("freeCashflow", 0) or 0
+        net_income = info.get("netIncomeToCommon", 0) or 0
+
+        roic = 0.0
+        market_cap = info.get("marketCap", 0) or 0
+        price_to_book = info.get("priceToBook", 0) or 0
+        total_debt = info.get("totalDebt", 0) or 0
+        if market_cap > 0 and price_to_book > 0:
+            book_equity = market_cap / price_to_book
+            invested_capital = book_equity + total_debt
+            if invested_capital > 0:
+                roic = max(-1.0, min(net_income / invested_capital, 1.0))
+
+        return {
+            "roic": roic, "roe": roe, "profitMargins": profit_margin,
+            "revenueGrowth": revenue_growth, "earningsGrowth": earnings_growth,
+            "fcf": free_cash_flow, "debtToEquity": debt_to_equity,
+        }
+    except Exception:
+        return {
+            "roic": None, "roe": None, "profitMargins": None,
+            "revenueGrowth": None, "earningsGrowth": None,
+            "fcf": None, "debtToEquity": None,
+        }
+
+
 def get_quality_score(ticker, info=None):
     """
     Expanded quality score computed from the stock's own fundamentals.
