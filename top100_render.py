@@ -23,6 +23,7 @@ import quote_snapshot_store
 import resolver_engine
 import scan_store
 import snapshot_store
+import support_levels_store
 import top100_engine
 import top100_store
 import trading_cost_engine
@@ -393,6 +394,126 @@ def _dcf_unreliable_chip_html(row, lang):
         f"border-radius:999px;padding:1px 9px;font-size:10.5px;font-weight:700;"
         f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
         f"{html.escape(_t('dcf_unreliable_chip', lang))}</span>"
+    )
+
+
+_MONTH_ABBR_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_MONTH_ABBR_ES = ["ene", "feb", "mar", "abr", "may", "jun",
+                   "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _month_year_str(date_obj, lang):
+    """"Nov 2025" (EN) / "nov 2025" (ES, lowercase - Spanish month-name
+    convention) for a date. This codebase has no existing locale-aware
+    month formatter (every strftime elsewhere is English-only, via
+    Python's C locale) - TASK 36's support chip needs its own small
+    EN/ES abbreviation map. "" (never raises) for a None date."""
+    if date_obj is None:
+        return ""
+    months = _MONTH_ABBR_ES if lang == "es" else _MONTH_ABBR_EN
+    return f"{months[date_obj.month - 1]} {date_obj.year}"
+
+
+def _full_date_str(date_obj, lang):
+    """"4 Mar 2026" / "4 mar 2026" - the same "D Mon YYYY" shape as
+    every other date in this codebase, for the support chip's own
+    hover-tooltip "week of <D Mon YYYY>" detail. "" for a None date."""
+    if date_obj is None:
+        return ""
+    months = _MONTH_ABBR_ES if lang == "es" else _MONTH_ABBR_EN
+    return f"{date_obj.day} {months[date_obj.month - 1]} {date_obj.year}"
+
+
+def _support_chip_live():
+    """TOP200_SUPPORT_CHIP_LIVE gate (TASK 36, Director-directed, 6 Nov
+    2026, test stage - owner approval before go-live): unset/"0" - the
+    owner alone sees the support chip, every other viewer sees today's
+    card with no chip at all; "1" - live for everyone. Same shape as
+    _recent_badge_live() above - the owner flips this on Railway by
+    hand after reviewing test-stage results; this task never sets it."""
+    return os.environ.get("TOP200_SUPPORT_CHIP_LIVE", "0").strip() == "1"
+
+
+# Support-chip colours (TASK 36, owner-approved mock): purple for a
+# real, surviving weekly pivot-low floor under price; orange for "no
+# support below" (the lowest-since fallback) - two distinct read-at-a-
+# glance verdicts, built on the same pill shape every other shelf chip
+# in this module uses.
+_SHELF_CHIP_SUPPORT = ("#241a33", "#5b3f8f", "#c9a7f5")
+_SHELF_CHIP_NO_SUPPORT = ("#33230f", "#8a5a10", "#fbbf24")
+
+
+def _support_chip_html(row, lang):
+    """TASK 36's own card chip - the owner's TradingView weekly pivot-
+    low (3,3) support levels, DISPLAY ONLY (never read by any score or
+    selection anywhere in this codebase - support_levels_store.py's
+    own docstring repeats that same promise). Gated exactly like the
+    Director's own TEST GATE instruction: closed TOP200_SUPPORT_CHIP_
+    LIVE + a non-owner viewer = "" (no chip at all, not a placeholder).
+    Reads support_levels_store.get(ticker) directly - the same simple,
+    self-contained per-row disk lookup _tradability_spread_pct() above
+    already establishes as this module's precedent, rather than a
+    precomputed map threaded through every tab function.
+
+    Two variants, exact wording from the Director's own approved mock:
+      purple  "Support Nov 2025 · A$12.40 · +3% above · -41% from
+               12-month high"
+      orange  "No support below - lowest since Mar 2020 · -58% from
+               12-month high"
+    "" when there is no stored entry for this ticker at all (cold, or
+    not currently a Top 200 pool/ASX-extension member)."""
+    if not (_support_chip_live() or _is_owner_for_refresh()):
+        return ""
+    entry = support_levels_store.get(row["ticker"])
+    if not entry:
+        return ""
+
+    symbol = compounder_ui._currency_symbol_for_ticker(row["ticker"])
+    drop = entry.get("drop_from_12m_high")
+    drop_suffix = _t("support_drop_suffix", lang, drop=f"{drop:.0f}") if drop is not None else ""
+
+    if entry.get("has_support"):
+        price_str = compounder_ui._fmt_money(entry.get("support_price"), symbol)
+        pct_above = entry.get("pct_above_support") or 0.0
+        text = _t(
+            "support_chip", lang,
+            month_year=_month_year_str(entry.get("support_date"), lang),
+            price=price_str, pct_above=f"{pct_above:.0f}",
+        ) + drop_suffix
+        bg, border, color = _SHELF_CHIP_SUPPORT
+        if entry.get("next_support_price") is not None:
+            next_support = (
+                compounder_ui._fmt_money(entry.get("next_support_price"), symbol)
+                + f" ({_month_year_str(entry.get('next_support_date'), lang)})"
+            )
+        else:
+            next_support = "—"
+        tooltip = _t(
+            "support_tooltip", lang,
+            price=compounder_ui._fmt_money(row.get("price"), symbol),
+            support=price_str,
+            support_date=_full_date_str(entry.get("support_date"), lang),
+            next_support=next_support,
+        )
+    else:
+        text = _t(
+            "no_support_chip", lang,
+            month_year=_month_year_str(entry.get("lowest_since_date"), lang),
+        ) + drop_suffix
+        bg, border, color = _SHELF_CHIP_NO_SUPPORT
+        tooltip = _t(
+            "no_support_tooltip", lang,
+            price=compounder_ui._fmt_money(row.get("price"), symbol),
+            lowest_since_date=_month_year_str(entry.get("lowest_since_date"), lang),
+            lowest_since=compounder_ui._fmt_money(entry.get("lowest_since_price"), symbol),
+        )
+
+    return (
+        "<span title='" + html.escape(tooltip) + "' style='display:inline-flex;align-items:center;"
+        f"border-radius:999px;padding:1px 9px;font-size:10.5px;font-weight:700;"
+        f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
+        f"{html.escape(text)}</span>"
     )
 
 
@@ -1076,6 +1197,9 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     dcf_unreliable_chip = _dcf_unreliable_chip_html(row, lang)
     if dcf_unreliable_chip:
         header_bits.append(dcf_unreliable_chip)
+    support_chip = _support_chip_html(row, lang)
+    if support_chip:
+        header_bits.append(support_chip)
 
     spread_pct = _tradability_spread_pct(ticker)
     tradable_chip = ""
@@ -1543,10 +1667,11 @@ def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
         )
     stale_chip = _stale_valuation_chip_html(row, lang)
     dcf_unreliable_chip = _dcf_unreliable_chip_html(row, lang)
+    support_chip = _support_chip_html(row, lang)
     return (
         "<div style='display:flex;gap:10px;align-items:baseline;font-size:12.5px;"
         "padding:4px 0;color:#8aa0b8;flex-wrap:wrap;'>"
-        + chip + stale_chip + dcf_unreliable_chip +
+        + chip + stale_chip + dcf_unreliable_chip + support_chip +
         f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
         "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
         f"{html.escape(ticker)}</a>"

@@ -4256,6 +4256,32 @@ EN = {
         "Model value more than 3× the price — treated as a data "
         "artefact, not a discount."
     ),
+    # TASK 36 (Director-directed, owner-reported, 6 Nov 2026): the
+    # weekly-pivot-low support-levels chip - a port of the owner's own
+    # TradingView levels (ta.pivotlow(3,3), broken only after two
+    # consecutive weekly closes below). {month_year}/{price} are
+    # pre-formatted strings (top100_render.py's own month-abbreviation
+    # map and currency_symbol-prefixed price string - no further
+    # i18n.t() formatting needed on them); {pct_above}/{drop} are
+    # plain numbers, formatted inline below with their own sign/
+    # percent symbol.
+    "top100.support_chip": "Support {month_year} · {price} · +{pct_above}% above",
+    "top100.no_support_chip": "No support below - lowest since {month_year}",
+    "top100.support_drop_suffix": " · {drop}% from 12-month high",
+    "top100.support_tooltip": (
+        "Weekly pivot low (3,3), unbroken (2-close rule) - same logic "
+        "as your TradingView levels.\n"
+        "Price {price} · support {support} (week of {support_date}) · "
+        "next support below: {next_support}\n"
+        "Check your chart for the authority."
+    ),
+    "top100.no_support_tooltip": (
+        "Weekly pivot low (3,3), unbroken (2-close rule) - same logic "
+        "as your TradingView levels.\n"
+        "Price {price} · no confirmed pivot low survives below it - "
+        "lowest weekly close since {lowest_since_date}: {lowest_since}\n"
+        "Check your chart for the authority."
+    ),
     # TASK B (MOS% display rule): shown by display_mos_pct() (snapshot_
     # store.py) in place of a margin-of-safety percentage, at every
     # human-facing site, whenever the row's dcf_unreliable_symmetric
@@ -8059,6 +8085,24 @@ ES = {
     "top100.dcf_unreliable_tooltip": (
         "Valor del modelo superior a 3× el precio — se trata como un "
         "artefacto de datos, no un descuento."
+    ),
+    "top100.support_chip": "Soporte {month_year} · {price} · +{pct_above}% por encima",
+    "top100.no_support_chip": "Sin soporte por debajo - mínimo desde {month_year}",
+    "top100.support_drop_suffix": " · {drop}% desde el máximo de 12 meses",
+    "top100.support_tooltip": (
+        "Mínimo pivote semanal (3,3), no roto (regla de 2 cierres) - la "
+        "misma lógica que tus niveles de TradingView.\n"
+        "Precio {price} · soporte {support} (semana del {support_date}) "
+        "· próximo soporte por debajo: {next_support}\n"
+        "Consulta tu gráfico para la autoridad."
+    ),
+    "top100.no_support_tooltip": (
+        "Mínimo pivote semanal (3,3), no roto (regla de 2 cierres) - la "
+        "misma lógica que tus niveles de TradingView.\n"
+        "Precio {price} · ningún mínimo pivote confirmado sobrevive por "
+        "debajo - mínimo cierre semanal desde {lowest_since_date}: "
+        "{lowest_since}\n"
+        "Consulta tu gráfico para la autoridad."
     ),
     "mos.model_unreliable": "Modelo no confiable",
     "top100.previous_rubric_chip": "rúbrica anterior",

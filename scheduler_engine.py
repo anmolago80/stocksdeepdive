@@ -2029,6 +2029,24 @@ def _run_top100(log, scan_day=None):
     _log_mem(log, "after top100 nightly-only cache clear")
     _malloc_trim_and_log(log, "after top100 nightly-only cache clear")
 
+    # TASK 36 (Director-directed, owner-reported, 6 Nov 2026): the
+    # weekly-pivot-low support-levels job - runs AFTER the pool/
+    # extension re-selection above so top100_store.current_pool()/
+    # current_asx_extension() are both fresh for tonight. Display-only
+    # (card chip), never fed into any score/selection - a failure here
+    # must never take down the Top 100 job as a whole (that job's own
+    # success is what the _loop() retry-cap/day-done bookkeeping
+    # depends on - see this function's own docstring, "let it raise ...
+    # only marks the day done on a genuine success" - that contract is
+    # about THIS job's real work, select_top100_pool()/the AI-scoring
+    # pipeline, not this separate, purely-cosmetic add-on), so it is
+    # explicitly caught and logged rather than left to propagate.
+    try:
+        import support_levels_job
+        support_levels_job.compute_and_store_support_levels_for_pool(log=log)
+    except Exception as e:
+        log(f"[scheduler] support levels job failed (non-fatal, display-only): {e}")
+
 
 def _run_top100_poll(log):
     """Top 100 Commit 2 (25 Sep 2026, owner-reported): hourly check in
