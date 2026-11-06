@@ -1993,6 +1993,51 @@ def _pe_avg_3y_by_eps(bundle):
 # DCF (existing engine - called, never modified)
 # -----------------------------------
 
+def _dcf_info_with_verified_currency_override(bundle, currency):
+    """TASK 35 item B (6 Nov 2026, Director-directed, ELS.AX live case):
+    _run_dcf()/_run_canonical_dcf() both used to override dcf_info[
+    "financialCurrency"] = currency UNCONDITIONALLY whenever it differed
+    from the listing currency, to stop dcf_intrinsic_value()'s own
+    internal fin_ccy-vs-listing_ccy conversion block from double-
+    converting this bundle's ALREADY fx-converted cashflow_df (see
+    fundamentals_data.get_bundle()'s own "_convert_statement_currency"
+    conversion). That assumption was never actually VERIFIED against
+    this specific bundle - confirmed via fixture (a bundle whose
+    cashflow is genuinely still in financialCurrency, info[
+    "financialCurrency"]="USD"/currency="AUD", reproduces the live
+    ELS.AX symptom EXACTLY: deepdive iv/fairvalue iv ratio == the real
+    USD->AUD fx_rate(), because the blind override suppressed dcf_
+    intrinsic_value()'s own conversion while the cashflow numbers
+    themselves were never actually converted).
+
+    Returns (dcf_info, income_df_currency_converted): dcf_info has
+    financialCurrency overridden to `currency` ONLY when this bundle's
+    own meta.flags confirms get_bundle() actually ran its currency
+    conversion ("currency_converted" - see that function's own flags.
+    append() call) - never assumed. When NOT confirmed (the flag is
+    absent and the two currencies genuinely differ), dcf_info is
+    returned UNMODIFIED, so dcf_intrinsic_value()'s own internal
+    conversion block runs and converts the (still-unconverted)
+    cashflow_df itself - the exact same outcome deep_dive_engine.py's
+    own raw (never pre-converted) cashflow fetch already gets. Same
+    currency (or either missing) -> no override needed either way,
+    dcf_info returned unmodified, income_df_currency_converted=False
+    (nothing to flag - the pre-existing, non-currency-dependent
+    behaviour for every ticker that reports in its own listing
+    currency, the overwhelming majority, is completely unchanged)."""
+    info = bundle.get("info") or {}
+    fin_ccy = (info.get("financialCurrency") or "").upper()
+    listing_ccy = (currency or "").upper()
+    if not fin_ccy or not listing_ccy or fin_ccy == listing_ccy:
+        return info, False
+    _converted = "currency_converted" in ((bundle.get("meta") or {}).get("flags") or [])
+    if not _converted:
+        return info, False
+    dcf_info = dict(info)
+    dcf_info["financialCurrency"] = currency
+    return dcf_info, True
+
+
 def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None):
     """Runs the SAME dcf_intrinsic_value() the main site's Deep Dive page
     uses for its own headline Intrinsic Value/Margin of Safety - not a
@@ -2020,32 +2065,28 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
     # is already populated (the overwhelming majority of tickers).
     currency = fcf_valuation_engine.trading_currency_for(ticker, info)
 
-    # Double-FX-conversion fix: fundamentals_data.get_bundle() already
-    # converts every statement DataFrame in this bundle (including
-    # "cashflow") from the company's reporting currency to its listing
-    # currency whenever they differ - e.g. CSL.AX/RMD.AX-style ASX names
-    # that report in USD despite trading in AUD (see
-    # _convert_statement_currency in fundamentals_data.py). That's correct
-    # for every OTHER section built from this bundle (Fundamentals,
-    # Retained Earnings, the IV/BV series's own TTM FCF point, etc.), which
-    # read the DataFrame directly and have no FX logic of their own.
+    # Double-FX-conversion fix: fundamentals_data.get_bundle() converts
+    # every statement DataFrame in this bundle (including "cashflow")
+    # from the company's reporting currency to its listing currency
+    # whenever they differ - e.g. CSL.AX/RMD.AX-style ASX names that
+    # report in USD despite trading in AUD (see
+    # _convert_statement_currency in fundamentals_data.py). That's
+    # correct for every OTHER section built from this bundle
+    # (Fundamentals, Retained Earnings, the IV/BV series's own TTM FCF
+    # point, etc.), which read the DataFrame directly and have no FX
+    # logic of their own.
     #
     # dcf_intrinsic_value() is different: it does its OWN
-    # financialCurrency-vs-currency conversion internally (designed for the
-    # main site's caller, which always passes a RAW, un-converted
-    # cashflow_df). Handed this bundle's already-converted cashflow_df
-    # alongside the unmodified info["financialCurrency"], it can't tell the
-    # conversion already happened - it sees the same currency mismatch and
-    # applies the SAME fx rate a second time, squaring the effective
-    # conversion for any ticker where the two currencies differ. Passing a
-    # copy of `info` with financialCurrency overridden to match the
-    # listing currency (only for this one call - the bundle's real info,
-    # used everywhere else, is untouched) tells it "already converted, skip
-    # it" instead.
-    dcf_info = info
-    if (info.get("financialCurrency") or "").upper() != currency.upper():
-        dcf_info = dict(info)
-        dcf_info["financialCurrency"] = currency
+    # financialCurrency-vs-currency conversion internally (designed for
+    # the main site's caller, which always passes a RAW, un-converted
+    # cashflow_df). TASK 35 item B (6 Nov 2026, ELS.AX live case):
+    # _dcf_info_with_verified_currency_override() (above) only tells it
+    # "already converted, skip it" when this bundle's own meta
+    # genuinely confirms that conversion ran - rather than assuming it
+    # always did, which silently under/over-valued a ticker whenever
+    # that assumption didn't hold (see that helper's own docstring for
+    # the confirmed fixture reproduction).
+    dcf_info, _income_df_currency_converted = _dcf_info_with_verified_currency_override(bundle, currency)
 
     # Audit fix B2.7 (27 Sep 2026, owner-directed, CONFIRMED BUG): manual_fcf
     # is a raw, user-typed number - unlike bundle["cashflow"], it is NEVER
@@ -2118,6 +2159,14 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         # cross-check. See fcf_valuation_engine.normalized_base_and_
         # series()'s own docstring.
         income_df=bundle.get("income"),
+        # TASK 35 item B (6 Nov 2026): the SAME verified flag _dcf_
+        # info_with_verified_currency_override() just confirmed for
+        # cashflow_df applies equally to this bundle's income_df (both
+        # statements are converted together, in the same get_bundle()
+        # call, by the same _convert_statement_currency() calls) -
+        # passed through so the financials-mode/EBITDA-bridge income_df
+        # -based FCF paths don't double-convert either.
+        income_df_currency_converted=_income_df_currency_converted,
     )
     if not result:
         return {
@@ -2204,10 +2253,13 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
     intrinsic_value()'s own signature has no such parameter) - matching
     that exactly, not this bundle's own pre-corrected share count, is
     what makes this genuinely the SAME value as those pages for the same
-    ticker/overrides, not just a similar one. Same FX double-conversion
-    guard as _run_dcf() (this bundle's cashflow_df is already FX-
-    converted; a manual override needs converting here for the same
-    reason - see _run_dcf()'s own docstring for the full mechanism).
+    ticker/overrides, not just a similar one. Same verified FX double-
+    conversion guard as _run_dcf() (see _dcf_info_with_verified_currency_
+    override()'s own docstring - TASK 35 item B, 6 Nov 2026, ELS.AX live
+    case: this bundle's cashflow_df is normally already FX-converted,
+    but that is now CONFIRMED via this bundle's own meta flags rather
+    than assumed); a manual override needs converting here for the same
+    reason - see _run_dcf()'s own docstring for the full mechanism.
 
     Returns None when DCF isn't a usable method for this name (P/E-blend
     fallback fired instead, or no value at all) - the caller then simply
@@ -2222,10 +2274,7 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
     # for() swap as _run_dcf() above.
     currency = fcf_valuation_engine.trading_currency_for(ticker, info)
 
-    dcf_info = info
-    if (info.get("financialCurrency") or "").upper() != currency.upper():
-        dcf_info = dict(info)
-        dcf_info["financialCurrency"] = currency
+    dcf_info, _income_df_currency_converted = _dcf_info_with_verified_currency_override(bundle, currency)
 
     _dcf_manual_fcf = manual_fcf
     if manual_fcf is not None and manual_fcf > 0:
@@ -2258,6 +2307,7 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         # _run_dcf()'s (see this function's own docstring, "one value
         # everywhere").
         income_df=bundle.get("income"),
+        income_df_currency_converted=_income_df_currency_converted,
     )
     if not result:
         return None
@@ -2273,6 +2323,19 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
     # disagree live (ELS.AX), and this is the evidence-gathering step
     # before any fix. Nothing below this is changed or removed by this
     # log line - same `result`/`meta`/return value as before.
+    #
+    # TASK 35 item B (6 Nov 2026, Director-directed follow-up): the
+    # [dcf_diag] line's own "fcf_base" field used meta.get("fcf_base_
+    # used")/"fcf_base_raw" - both None whenever the one-off-detection/
+    # normalization branch never fired (the common case), making the
+    # exact ELS.AX-style mismatch invisible in the log. meta["fcf_used"]
+    # is the one key dcf_intrinsic_value() ALWAYS sets once a DCF value
+    # is produced ("the actual base FCF (listing currency, post-FX) fed
+    # into the model" - see that function's own meta docstring) - used
+    # here instead. fin_ccy/listing_ccy/fx now logged too, so a USD-
+    # reports/AUD-trades mismatch like ELS.AX's is visible directly in
+    # the log rather than only inferable from the ratio between two
+    # separate lines.
     _dcf_diag_price = _basics(bundle)["price"]
     _dcf_diag_shares = _basics(bundle)["shares"]
     _dcf_diag_cache_age = None
@@ -2285,12 +2348,14 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
             ).total_seconds()
         except Exception:
             _dcf_diag_cache_age = None
+    _dcf_diag_fin_ccy = (dcf_info.get("financialCurrency") or currency or "").upper()
     print(
         f"[dcf_diag] {ticker} path=fairvalue price={_dcf_diag_price} iv={value} "
         f"growth={growth_used} growth_source={meta.get('growth_source')} "
         f"discount={meta.get('discount_rate_used')} "
-        f"fcf_base={meta.get('fcf_base_used') if meta.get('fcf_base_used') is not None else meta.get('fcf_base_raw')} "
-        f"shares={_dcf_diag_shares} cache_age={_dcf_diag_cache_age}"
+        f"fcf_base={meta.get('fcf_used')} "
+        f"shares={_dcf_diag_shares} cache_age={_dcf_diag_cache_age} "
+        f"fin_ccy={_dcf_diag_fin_ccy} listing_ccy={currency} fx={meta.get('fx_rate_used')}"
     )
     return {
         "value": value,

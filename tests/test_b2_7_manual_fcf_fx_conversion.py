@@ -39,6 +39,16 @@ import fcf_valuation_engine as fve
 BUNDLE = {
     "info": {"currency": "AUD", "financialCurrency": "USD", "sharesOutstanding": 1_000_000.0},
     "cashflow": object(),  # opaque - dcf_intrinsic_value is mocked, never actually reads this
+    # TASK 35 (Director-directed, 6 Nov 2026, ELS.AX live case):
+    # _dcf_info_with_verified_currency_override() now only overrides
+    # financialCurrency when this bundle's own meta genuinely confirms
+    # fundamentals_data.get_bundle() ran its currency conversion - this
+    # fixture represents the NORMAL case (CSL.AX-style, cashflow really
+    # is already converted), so the flag is set, same as every other
+    # test's own CSL/same-currency fixtures. The MISSING-flag case (the
+    # ELS.AX bug this task fixed) is covered separately in tests/
+    # test_director_task35_moat_blend_and_dcf_currency.py.
+    "meta": {"flags": ["currency_converted"]},
 }
 MANUAL_FCF_RAW = 200_000.0  # a raw, user-typed number - documented convention: same unit as the auto-derived figure, i.e. USD (financial currency)
 _FX_RATE = 1.5  # USD->AUD, made up but fixed, so the expected converted value is exact

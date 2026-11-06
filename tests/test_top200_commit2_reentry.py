@@ -321,7 +321,13 @@ finally:
 # _build_best_by_ticker() now also carries on every row, purely
 # additive and never read by select_top100_pool()'s own sort/slice.
 # 007d669 predates this task, so they're stripped before comparing.
-_TASK32_SHADOW_KEYS = ("quality", "quality_v2", "quality_v2_meta", "value_score_v2")
+_TASK32_SHADOW_KEYS = (
+    "quality", "quality_v2", "quality_v2_meta", "value_score_v2",
+    # TASK 35 (Director-directed, 6 Nov 2026) - same purely-additive,
+    # shadow-only status as the TASK 32 keys above, for the moat-blend
+    # scenarios. 007d669 predates this task too.
+    "moat", "value_score_moat", "value_score_v2_moat",
+)
 
 
 def _canon(pool):

@@ -229,7 +229,12 @@ for _fixture_i in range(9):
     # purely additive and never read by select_top100_pool()'s own
     # sort/slice. 007d669 predates this task, so they're stripped
     # before comparing.
-    _task32_shadow_keys = ("quality", "quality_v2", "quality_v2_meta", "value_score_v2")
+    _task32_shadow_keys = (
+        "quality", "quality_v2", "quality_v2_meta", "value_score_v2",
+        # TASK 35 (Director-directed, 6 Nov 2026) - same purely-
+        # additive, shadow-only status as the TASK 32 keys above.
+        "moat", "value_score_moat", "value_score_v2_moat",
+    )
     _canon = lambda p: json.dumps(
         [{k: v for k, v in row.items() if k not in _task32_shadow_keys} for row in p],
         sort_keys=True, default=str,

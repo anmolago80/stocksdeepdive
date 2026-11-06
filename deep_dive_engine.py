@@ -42,6 +42,7 @@ from resolver_engine import (
     resolve_quality_score, resolve_intrinsic_value, resolve_stock_type,
     dcf_looks_unreliable,
 )
+import ranking_engine
 from ranking_engine import calculate_long_score, MOS_CLAMP, PSY_CLAMP, DISCOVERY_CAP
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
@@ -384,12 +385,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
                 _income_df_currency_converted = True
         else:
             income_df = None
+    # Stage 1a (3 Oct 2026, Director-directed): trading_currency_for()
+    # adds the .L/.TO suffix fallback this bare info.get() never had -
+    # a no-op whenever info["currency"] is populated. Computed once
+    # (was inline below) so the [dcf_diag] log line below can log the
+    # exact same listing currency the DCF call itself used.
+    _dcf_diag_listing_ccy = fcf_valuation_engine.trading_currency_for(ticker, info)
     intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
         ticker, quality_score, info=info, cashflow_df=cashflow_df,
-        # Stage 1a (3 Oct 2026, Director-directed): trading_currency_
-        # for() adds the .L/.TO suffix fallback this bare info.get()
-        # never had - a no-op whenever info["currency"] is populated.
-        currency=fcf_valuation_engine.trading_currency_for(ticker, info),
+        currency=_dcf_diag_listing_ccy,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
         income_df=income_df,
@@ -404,12 +408,20 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # resolve_intrinsic_value(), but were seen to disagree live
     # (ELS.AX), and this is the evidence-gathering step before any fix.
     # Nothing below this is changed or removed by this log line.
+    #
+    # TASK 35 item B (6 Nov 2026, Director-directed follow-up): same
+    # fix as auto_compounder_engine._run_canonical_dcf()'s own matching
+    # [dcf_diag] line - iv_meta["fcf_used"] (always set once a DCF
+    # value is produced) replaces fcf_base_used/fcf_base_raw (often
+    # both None), and fin_ccy/listing_ccy/fx are now logged directly.
     print(
         f"[dcf_diag] {ticker} path=deepdive price={current_price} "
         f"iv={intrinsic_value} growth={dcf_growth} growth_source={iv_meta.get('growth_source')} "
         f"discount={iv_meta.get('discount_rate_used')} "
-        f"fcf_base={iv_meta.get('fcf_base_used') if iv_meta.get('fcf_base_used') is not None else iv_meta.get('fcf_base_raw')} "
-        f"shares={info.get('sharesOutstanding')} cache_age={_dcf_diag_cache_age}"
+        f"fcf_base={iv_meta.get('fcf_used')} "
+        f"shares={info.get('sharesOutstanding')} cache_age={_dcf_diag_cache_age} "
+        f"fin_ccy={(info.get('financialCurrency') or _dcf_diag_listing_ccy or '').upper()} "
+        f"listing_ccy={_dcf_diag_listing_ccy} fx={iv_meta.get('fx_rate_used')}"
     )
 
     # Stage 1b (3 Oct 2026, Director-directed, section 6 carry-over):
@@ -491,28 +503,49 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # Top 100 number is shown directly beneath it"). `long_score`
     # (measured, live attention) is completely UNCHANGED - still the
     # headline `dd["long_score"]`, still what feeds Trade Setup's gate
-    # evaluation below. `long_score_lite` is a new, additional value -
-    # the identical discovery_measured=False formula top100_engine.
-    # _recompute_value_score() and nightly_scan.py's attention_lite path
-    # use - computed alongside it purely so app.py can show it as an
-    # informational second line, never substituting for the headline.
+    # evaluation below, still its own direct calculate_long_score() call
+    # (discovery_measured=True, moat-blended whenever MOAT_IN_VALUE_SCORE
+    # is on) - A2 below only touches the SUBLINE, never the headline.
     if moat_engine.MOAT_IN_VALUE_SCORE:
         long_score = calculate_long_score(
             quality_score, margin_of_safety, psychology_score, discovery_score,
             mode="moat_blend", moat_score=_moat["score"],
         )
-        long_score_lite = calculate_long_score(
-            quality_score, margin_of_safety, psychology_score, discovery_score,
-            mode="moat_blend", moat_score=_moat["score"], discovery_measured=False,
-        )
     else:
         long_score = calculate_long_score(
             quality_score, margin_of_safety, psychology_score, discovery_score
         )
-        long_score_lite = calculate_long_score(
-            quality_score, margin_of_safety, psychology_score, discovery_score,
-            discovery_measured=False,
-        )
+
+    # TASK 35 item A2 (6 Nov 2026, Director-directed, BKNG live case):
+    # `long_score_lite` ("Scanner & Top 200 score", the subline) used
+    # to recompute calculate_long_score() a SECOND time here, with its
+    # own independent moat_blend branch gated only on MOAT_IN_VALUE_
+    # SCORE - the exact mechanism behind the live BKNG mismatch TASK 34
+    # found (this subline showed a moat-blended figure the Top 200's
+    # own selection, which never applied moat_blend at all, didn't
+    # actually rank on). Now calls ranking_engine.recompute_value_
+    # score() - the SAME shared function top100_engine._recompute_
+    # value_score() calls - on a row shaped from this view's own live
+    # Quality/MOS/Psychology/Moat, so this line always shows EXACTLY
+    # what the Top 200 ranks on, never a parallel formula.
+    _dd_value_score_row = {
+        "Quality": quality_score, "MOS %": margin_of_safety,
+        "Psychology": psychology_score, "Discovery (lite)": 0,
+        "Moat": _moat["score"],
+    }
+    _dd_moat_blend_live = ranking_engine.top200_moat_blend_live() and moat_engine.MOAT_IN_VALUE_SCORE
+    long_score_lite = ranking_engine.recompute_value_score(_dd_value_score_row, moat_blend=_dd_moat_blend_live)
+    # Director's own explicit A2 instruction: while TOP200_MOAT_BLEND_
+    # LIVE is OFF (the Top 200 isn't ranking on the moat yet), ALSO
+    # show what this same row's score WOULD be once the switch flips -
+    # labelled distinctly ("with moat (pending Top 200 switch)") by
+    # app.py's own render, never conflated with the line above. None
+    # while the switch is already on (long_score_lite above already IS
+    # that figure - nothing extra to show).
+    long_score_lite_moat_pending = (
+        None if _dd_moat_blend_live
+        else ranking_engine.recompute_value_score(_dd_value_score_row, moat_blend=True)
+    )
 
     if intrinsic_value <= 0:
         valuation = "N/A"
@@ -871,6 +904,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # input) is completely unchanged; nothing reads "long_score_lite"
         # except app.py's new blue sub-line beneath the Value Score tile.
         "long_score_lite": round(long_score_lite, 2),
+        # TASK 35 item A2 (6 Nov 2026, Director-directed): the
+        # hypothetical moat-blended figure for this SAME row, shown
+        # alongside "long_score_lite" labelled "with moat (pending Top
+        # 200 switch)" ONLY while TOP200_MOAT_BLEND_LIVE is off (None
+        # here otherwise - "long_score_lite" above already IS that
+        # figure once the switch is on, nothing extra to show).
+        "long_score_lite_moat_pending": (
+            round(long_score_lite_moat_pending, 2) if long_score_lite_moat_pending is not None else None
+        ),
 
         # Points each factor actually contributed to the final Long Score
         # (clamped value x its weight) - the bars sum to long_score.

@@ -360,7 +360,14 @@ finally:
 #     comparing - every LIVE field (above all "value_score" itself,
 #     and the selected pool's own membership/order) is still compared
 #     byte-for-byte.
-_TASK32_SHADOW_KEYS = ("quality", "quality_v2", "quality_v2_meta", "value_score_v2")
+_TASK32_SHADOW_KEYS = (
+    "quality", "quality_v2", "quality_v2_meta", "value_score_v2",
+    # TASK 35 (Director-directed, 6 Nov 2026) - same purely-additive,
+    # shadow-only, never-read-by-sort/slice status as the TASK 32 keys
+    # above, for the moat-blend scenarios - "moat"/"value_score_moat"/
+    # "value_score_v2_moat". 007d669 predates this task too.
+    "moat", "value_score_moat", "value_score_v2_moat",
+)
 
 
 def _canon(pool):

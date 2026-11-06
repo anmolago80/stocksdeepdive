@@ -405,6 +405,14 @@ EN = {
     "dd.kpi.value_score_subline": (
         "Scanner & Top 200 score: {score} (without today's live attention)"
     ),
+    # TASK 35 item A2 (6 Nov 2026, Director-directed): shown as a SECOND
+    # subline, only while TOP200_MOAT_BLEND_LIVE is off - same literal
+    # "{score}" placeholder convention as dd.kpi.value_score_subline
+    # above (app.py's _dd_value_score_lite_subline_html() substitutes
+    # the bold number span itself).
+    "dd.kpi.value_score_subline_moat_pending": (
+        "with moat (pending Top 200 switch): {score}"
+    ),
 
     "dd.gauge.quality": "Quality - {label}",
     "dd.gauge.psychology": "Psychology - {label}",
@@ -4781,6 +4789,9 @@ ES = {
     ),
     "dd.kpi.value_score_subline": (
         "Puntuación en Scanner y Top 200: {score} (sin la atención de hoy)"
+    ),
+    "dd.kpi.value_score_subline_moat_pending": (
+        "con moat (pendiente del interruptor del Top 200): {score}"
     ),
 
     "dd.gauge.quality": "Calidad - {label}",

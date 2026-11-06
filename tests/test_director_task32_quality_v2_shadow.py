@@ -320,6 +320,13 @@ _NON_LIVE_FIELDS = (
     # above all "value_score" itself) is untouched - never that the
     # shadow fields themselves vanish.
     "quality", "quality_v2", "quality_v2_meta", "value_score_v2",
+    # TASK 35 (Director-directed, 6 Nov 2026): the moat-blend shadow
+    # fields are additive the exact same way - "value_score_v2_moat"
+    # in particular depends on "Quality V2" (None here, a real number
+    # in the "with v2" fixture), so it's SUPPOSED to differ between
+    # these two scenarios too, same reasoning as "value_score_v2"
+    # itself just above.
+    "moat", "value_score_moat", "value_score_v2_moat",
 )
 
 

@@ -84,6 +84,7 @@ import fcf_valuation_engine
 import financials_classifier
 import fundamentals_data
 import market_readiness_engine
+import moat_engine
 import nightly_scan
 import peer_context
 import ranking_engine
@@ -657,6 +658,50 @@ def _eligible_scan_payloads(log=print):
     return out
 
 
+def moat_coverage(log=print):
+    """TASK 35 item A5 (6 Nov 2026, Director-directed): "confirm every
+    scan row carries a Moat score... report coverage %; rows without a
+    moat must not be unfairly penalised." Reads the SAME eligible scan
+    payloads _build_best_by_ticker()/select_top100_pool() themselves
+    read (_eligible_scan_payloads() - never a second, independently-
+    resolved universe list), one pass over every row in every eligible
+    universe's own saved file - read-only, no network, no write.
+
+    The "not unfairly penalised" half of A5 is a code-level guarantee,
+    not a number this function reports: recompute_value_score()'s
+    moat_blend=True path always passes moat_score=row.get("Moat") (None
+    for a row with no stored Moat) straight into calculate_long_score(),
+    whose own moat_blend branch falls through to its existing missing-
+    moat reweighting whenever moat_score is None (see that function's
+    own docstring) - a row with no Moat is reweighted across its OTHER
+    four components, never scored as if Moat were zero.
+
+    Returns {"overall": {"with_moat": int, "total": int, "pct": float},
+    "by_universe": {universe: {"with_moat", "total", "pct"}}} - `pct`
+    is None for a universe with zero rows (nothing to divide by)."""
+    payloads = _eligible_scan_payloads(log=log)
+    by_universe = {}
+    overall_with_moat = 0
+    overall_total = 0
+    for universe, payload in payloads.items():
+        rows = payload.get("rows") or []
+        total = len(rows)
+        with_moat = sum(1 for r in rows if r.get("Moat") is not None)
+        by_universe[universe] = {
+            "with_moat": with_moat, "total": total,
+            "pct": (with_moat / total * 100.0) if total else None,
+        }
+        overall_with_moat += with_moat
+        overall_total += total
+    return {
+        "overall": {
+            "with_moat": overall_with_moat, "total": overall_total,
+            "pct": (overall_with_moat / overall_total * 100.0) if overall_total else None,
+        },
+        "by_universe": by_universe,
+    }
+
+
 def _recompute_value_score(row):
     """Top 100 selection freshness fix, 2.2 (30 Sep 2026, owner-
     directed): "one ranking rule" - Long Score recomputed from the
@@ -670,10 +715,23 @@ def _recompute_value_score(row):
     row for the same company under two different formulas). Never
     raises - a row missing Quality/MOS entirely (shouldn't happen for
     anything that reached this far) resolves via calculate_long_score's
-    own None-tolerant clamping, same as every other caller."""
-    return ranking_engine.calculate_long_score(
-        row.get("Quality"), row.get("MOS %") or 0.0, row.get("Psychology"),
-        row.get("Discovery (lite)") or 0, discovery_measured=False,
+    own None-tolerant clamping, same as every other caller.
+
+    TASK 35 item A1 (6 Nov 2026, Director-directed, BKNG live case): a
+    thin wrapper around ranking_engine.recompute_value_score() (the ONE
+    shared "what does the Top 200 rank this row on" formula - see that
+    function's own docstring) - moat_blend only when BOTH
+    TOP200_MOAT_BLEND_LIVE (re-read every call) AND moat_engine.MOAT_
+    IN_VALUE_SCORE are on. Neither is ever set by Claude Code - the
+    Director flips TOP200_MOAT_BLEND_LIVE on Railway only after
+    reviewing the 12 Nov shadow preview (simulate_pool_moat()/
+    simulate_pool_v2_moat() below). With it unset (the default), this
+    function's return value is byte-identical to before this task -
+    every one of this function's 3 existing call sites (selection,
+    preview_candidates_by_country(), _prescore_candidates()) is
+    unaffected until the Director flips the switch."""
+    return ranking_engine.recompute_value_score(
+        row, moat_blend=ranking_engine.top200_moat_blend_live() and moat_engine.MOAT_IN_VALUE_SCORE,
     )
 
 
@@ -700,6 +758,39 @@ def _recompute_value_score_v2(row):
         quality_v2, row.get("MOS %") or 0.0, row.get("Psychology"),
         row.get("Discovery (lite)") or 0, discovery_measured=False,
     )
+
+
+def _recompute_value_score_moat(row):
+    """TASK 35 item A3 (6 Nov 2026, Director-directed) - SHADOW MODE /
+    TEST ONLY: the live Quality, blended with this row's stored "Moat"
+    score (mode="moat_blend"), computed UNCONDITIONALLY regardless of
+    TOP200_MOAT_BLEND_LIVE/moat_engine.MOAT_IN_VALUE_SCORE - same "always
+    compute the shadow field, only the live selection itself is gated"
+    pattern as "quality_v2"/"value_score_v2" above. A row with no stored
+    Moat score (missing from this universe's own nightly scan - see A5's
+    coverage check) falls through to calculate_long_score()'s own
+    missing-moat reweighting (moat_score=None), same as the live gated
+    path would. Never read by select_top100_pool()'s own sort/slice -
+    consumed solely by simulate_pool_moat() below for the owner's "Moat
+    blend preview" admin panel."""
+    return ranking_engine.recompute_value_score(row, moat_blend=True)
+
+
+def _recompute_value_score_v2_moat(row):
+    """TASK 35 item A3 (6 Nov 2026, Director-directed) - SHADOW MODE /
+    TEST ONLY: the COMBINED scenario - "Quality V2" (quality_v2_
+    engine.py's through-the-cycle score) blended with this row's stored
+    "Moat" score, both at once. None when this row has no "Quality V2"
+    yet (same guard as _recompute_value_score_v2() above) - a missing
+    Moat score alone does not withhold this (it falls through to
+    calculate_long_score()'s own missing-moat reweighting instead, same
+    as _recompute_value_score_moat() above)."""
+    quality_v2 = row.get("Quality V2")
+    if quality_v2 is None:
+        return None
+    row_with_quality_v2 = dict(row)
+    row_with_quality_v2["Quality"] = quality_v2
+    return ranking_engine.recompute_value_score(row_with_quality_v2, moat_blend=True)
 
 
 def _build_best_by_ticker(log=print):
@@ -974,6 +1065,22 @@ def _build_best_by_ticker(log=print):
                     "quality_v2": row.get("Quality V2"),
                     "quality_v2_meta": row.get("Quality V2 Meta"),
                     "value_score_v2": _recompute_value_score_v2(row),
+                    # TASK 35 item A3 (6 Nov 2026, Director-directed) -
+                    # SHADOW MODE / TEST ONLY: same "always compute the
+                    # shadow fields, only live selection is gated"
+                    # pattern as quality_v2/value_score_v2 just above -
+                    # "moat" (display/debug only, None if this scan row
+                    # has no stored Moat score - see _attach_moat()'s
+                    # own docstring), "value_score_moat" (live Quality +
+                    # Moat blend) and "value_score_v2_moat" (Quality V2
+                    # + Moat blend, the combined scenario). NEVER read
+                    # by the sort/slice two lines below this function's
+                    # own caller uses ("value_score" only) - consumed
+                    # solely by simulate_pool_moat()/simulate_pool_v2_
+                    # moat() below for the owner's shadow preview panel.
+                    "moat": row.get("Moat"),
+                    "value_score_moat": _recompute_value_score_moat(row),
+                    "value_score_v2_moat": _recompute_value_score_v2_moat(row),
                 }
 
     _dedupe_share_classes(best_by_ticker, log=log)
@@ -991,6 +1098,25 @@ def _value_score_v2_sort_key(row):
     the lowest possible value or crashing the sort on a None."""
     v2 = row.get("value_score_v2")
     return v2 if v2 is not None else row["value_score"]
+
+
+def _value_score_moat_sort_key(row):
+    """TASK 35 item A3 - same "fall back to the live value_score when
+    the shadow figure isn't set" pattern as _value_score_v2_sort_key()
+    above, for the moat-blend-only scenario. value_score_moat() is
+    never actually None in practice (missing-moat reweighting always
+    produces a value, even with no stored Moat score at all), but the
+    same fallback is kept for symmetry/defensiveness with its sibling."""
+    vm = row.get("value_score_moat")
+    return vm if vm is not None else row["value_score"]
+
+
+def _value_score_v2_moat_sort_key(row):
+    """TASK 35 item A3 - the combined (Quality V2 + Moat) scenario's own
+    sort key, same fallback pattern as _value_score_v2_sort_key()/
+    _value_score_moat_sort_key() above."""
+    v2m = row.get("value_score_v2_moat")
+    return v2m if v2m is not None else row["value_score"]
 
 
 def simulate_pool_v2(log=print):
@@ -1123,6 +1249,71 @@ def _quality_v2_main_driver(ticker, row, log=print):
     except Exception as e:
         log(f"[top100] quality_v2 main-driver lookup failed for {ticker}: {e}")
         return None
+
+
+def _simulate_pool_generic(sort_key, log=print):
+    """TASK 35 item A3 (6 Nov 2026, Director-directed): the shared body
+    simulate_pool_v2()/simulate_pool_moat()/simulate_pool_v2_moat() all
+    use - built on _build_best_by_ticker() (the EXACT SAME eligibility
+    filtering/dedupe select_top100_pool() itself uses tonight, so none
+    of these simulations' candidate universe can ever drift from the
+    real one), differing only in which sort key ranks the candidates.
+    Read-only: never writes anything, same safety profile as every
+    other simulate_pool_* function. Returns {"eligible_count",
+    "backfill_live", "rows", "pool_tickers", "extension_tickers",
+    "cutoff"} - see simulate_pool_v2()'s own docstring for what each
+    key means (unchanged shape, just generic names)."""
+    best_by_ticker, eligible_count = _build_best_by_ticker(log=log)
+
+    merit_ordered = sorted(best_by_ticker.values(), key=sort_key, reverse=True)
+    pool_rows = merit_ordered[:POOL_SIZE]
+    pool_tickers = {r["ticker"] for r in pool_rows}
+    cutoff = sort_key(pool_rows[-1]) if pool_rows else None
+
+    au_in_pool = sum(1 for t in pool_tickers if t.endswith(".AX"))
+    extension_tickers = set()
+    if au_in_pool < TOP20_AU_TARGET:
+        needed = TOP20_AU_TARGET - au_in_pool
+        au_candidates = sorted(
+            (r for t, r in best_by_ticker.items() if t.endswith(".AX") and t not in pool_tickers),
+            key=sort_key, reverse=True,
+        )[:needed]
+        extension_tickers = {r["ticker"] for r in au_candidates}
+
+    return {
+        "eligible_count": eligible_count,
+        "backfill_live": is_backfill_live(),
+        "rows": best_by_ticker,
+        "pool_tickers": pool_tickers,
+        "extension_tickers": extension_tickers,
+        "cutoff": cutoff,
+    }
+
+
+def simulate_pool_moat(log=print):
+    """TASK 35 item A3 (6 Nov 2026, Director-directed) - SHADOW MODE /
+    TEST ONLY: a SIMULATED Top 200 (+ Top 20 Australia ASX extension
+    top-up) built from "value_score_moat" (live Quality blended with
+    each row's stored Moat score, mode="moat_blend") instead of today's
+    plain Value Score - the "moat blend" half of the owner's 12 Nov
+    shadow-preview review (the other half is simulate_pool_v2() above;
+    simulate_pool_v2_moat() below is the combined scenario). NOT
+    simulated: TOP200_BACKFILL_LIVE's own standin/set-aside mechanics -
+    same documented scope limit as simulate_pool_v2()'s own docstring.
+    Read-only, never writes, never read by select_top100_pool() itself.
+    See _simulate_pool_generic()'s own docstring for the returned
+    shape."""
+    return _simulate_pool_generic(_value_score_moat_sort_key, log=log)
+
+
+def simulate_pool_v2_moat(log=print):
+    """TASK 35 item A3 (6 Nov 2026, Director-directed) - SHADOW MODE /
+    TEST ONLY: the COMBINED scenario - a SIMULATED Top 200 built from
+    "value_score_v2_moat" (Quality V2 blended with each row's stored
+    Moat score, both at once). Same scope limits/safety profile as
+    simulate_pool_moat()/simulate_pool_v2() above - see those functions'
+    own docstrings."""
+    return _simulate_pool_generic(_value_score_v2_moat_sort_key, log=log)
 
 
 def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):
@@ -4938,6 +5129,69 @@ def degenerate_accepted_rows(model=MODEL_TOP100):
         })
     out.sort(key=lambda r: r["ticker"])
     return out
+
+
+def pool_change_impact_and_cost(sim_result, log=print):
+    """TASK 35 item A4 (6 Nov 2026, Director-directed): the "impact +
+    cost" row for ONE shadow-preview option (Quality v2, moat blend, or
+    the combined scenario) - `sim_result` is simulate_pool_v2()/
+    simulate_pool_moat()/simulate_pool_v2_moat()'s own return dict
+    (whichever "rows"/"rows_v2" key it carries - both are read
+    tolerantly below), compared against the LIVE pool (top100_store.
+    current_pool()).
+
+    Returns {
+      "entrants": int, "dropouts": int, "changed_count": int,
+      "changed_pct_of_200": float,         # (entrants + dropouts) / 200 * 100
+      "entrants_unscored": [ticker, ...],  # entrants with NO stored
+                                            # Claude research score yet,
+                                            # under ANY rubric version -
+                                            # top100_store.latest_score_
+                                            # for_ticker() is None
+      "estimated_scoring_cost_usd": float, # same packed-request
+                                            # estimate submit_nightly_
+                                            # batch() itself logs as
+                                            # "[top100] estimated cost
+                                            # for tonight's batch" -
+                                            # estimate_degenerate_
+                                            # resend_cost_usd()'s own
+                                            # reusable pattern, applied
+                                            # to entrants_unscored
+    }
+    Nothing here writes anything or touches the live pool/selection -
+    read-only, same safety profile as every simulate_pool_* function."""
+    rows = sim_result.get("rows") or sim_result.get("rows_v2") or {}
+    new_pool_tickers = (
+        sim_result.get("pool_tickers") or sim_result.get("pool_v2_tickers") or set()
+    )
+    live_pool_tickers = {r["ticker"] for r in top100_store.current_pool()}
+    dropouts = live_pool_tickers - new_pool_tickers
+    entrants = new_pool_tickers - live_pool_tickers
+    changed_count = len(entrants) + len(dropouts)
+
+    entrants_unscored = []
+    for t in sorted(entrants):
+        try:
+            if top100_store.latest_score_for_ticker(t, MODEL_TOP100) is None:
+                entrants_unscored.append(t)
+        except Exception as e:
+            log(f"[top100] pool_change_impact_and_cost: score lookup failed for {t}: {e}")
+            entrants_unscored.append(t)
+
+    unscored_rows = [
+        {"ticker": t, "company_name": (rows.get(t) or {}).get("company_name") or t}
+        for t in entrants_unscored
+    ]
+    estimated_scoring_cost_usd = estimate_degenerate_resend_cost_usd(unscored_rows)
+
+    return {
+        "entrants": len(entrants),
+        "dropouts": len(dropouts),
+        "changed_count": changed_count,
+        "changed_pct_of_200": round(changed_count / POOL_SIZE * 100.0, 1),
+        "entrants_unscored": entrants_unscored,
+        "estimated_scoring_cost_usd": round(estimated_scoring_cost_usd, 2),
+    }
 
 
 def estimate_degenerate_resend_cost_usd(rows):

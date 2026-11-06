@@ -11138,6 +11138,13 @@ def page_deep_dive():
             _dd_score_lite is not None
             and abs(_dd_score_lite - _dd["long_score"]) >= 0.1
         )
+        # TASK 35 item A2 (6 Nov 2026, Director-directed): the
+        # hypothetical moat-blended figure for this same row - only
+        # ever non-None while TOP200_MOAT_BLEND_LIVE is off (see
+        # deep_dive_engine.py's own "long_score_lite_moat_pending"
+        # docstring) - shown as a second, distinctly-labelled subline
+        # right under the one above.
+        _dd_score_lite_moat_pending = _dd.get("long_score_lite_moat_pending")
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
             _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
@@ -11176,6 +11183,15 @@ def page_deep_dive():
                         ),
                         unsafe_allow_html=True,
                     )
+            if _dd_score_lite_moat_pending is not None:
+                with _m4:
+                    st.markdown(
+                        _dd_value_score_lite_subline_html(
+                            i18n.t("dd.kpi.value_score_subline_moat_pending", _dd_lang),
+                            f"{_dd_score_lite_moat_pending:.1f}",
+                        ),
+                        unsafe_allow_html=True,
+                    )
         else:
             _m1, _m2, _m3, _m4, _m5 = st.columns(5)
             _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
@@ -11208,6 +11224,15 @@ def page_deep_dive():
                         _dd_value_score_lite_subline_html(
                             i18n.t("dd.kpi.value_score_subline", _dd_lang),
                             f"{_dd_score_lite:.1f}",
+                        ),
+                        unsafe_allow_html=True,
+                    )
+            if _dd_score_lite_moat_pending is not None:
+                with _m4:
+                    st.markdown(
+                        _dd_value_score_lite_subline_html(
+                            i18n.t("dd.kpi.value_score_subline_moat_pending", _dd_lang),
+                            f"{_dd_score_lite_moat_pending:.1f}",
                         ),
                         unsafe_allow_html=True,
                     )
@@ -33372,6 +33397,136 @@ def _quality_v2_diff_table(tickers, rows_v2):
     return out
 
 
+def _pool_shadow_diff_table(tickers, rows, value_score_key, extra_cols):
+    """TASK 35 item A3 (6 Nov 2026, Director-directed): generalized form
+    of _quality_v2_diff_table() above - one row per ticker, {"Ticker",
+    "Company", <extra_cols labels>, "Value Score", "Value Score (<option>)"}
+    - used for the moat-blend and combined shadow options below, so
+    their own diff/per-market/Top-20-AU tables don't duplicate this
+    logic a second and third time. `rows` is whichever simulate_pool_*
+    result's own "rows"/"rows_v2" dict applies; `extra_cols` is
+    [(column_label, row_key), ...] - which additional stored fields
+    (e.g. "Moat", "Quality V2") this option's table should show beyond
+    Value Score/Value Score (option). A ticker not present in `rows` at
+    all shows "(not eligible tonight)", same as _quality_v2_diff_table()."""
+    out = []
+    for t in sorted(tickers):
+        row = rows.get(t)
+        if row is None:
+            entry = {"Ticker": t, "Company": "(not eligible tonight)"}
+            for label, _key in extra_cols:
+                entry[label] = None
+            entry["Value Score"] = None
+            entry[value_score_key[0]] = None
+            out.append(entry)
+            continue
+        entry = {"Ticker": t, "Company": row.get("company_name") or t}
+        for label, key in extra_cols:
+            entry[label] = row.get(key)
+        entry["Value Score"] = row.get("value_score")
+        entry[value_score_key[0]] = row.get(value_score_key[1])
+        out.append(entry)
+    return out
+
+
+def _render_pool_shadow_option_section(title, sim_result, value_score_key, extra_cols,
+                                        named_tickers=("CSL.AX", "OCL.AX")):
+    """TASK 35 item A3 (6 Nov 2026, Director-directed): the a-e section
+    set ("drop-outs/entrants", "per-market split", "Top 20 Australia
+    entries/exits", named tickers) for ONE shadow-preview option (moat
+    blend, or the combined Quality v2 + moat blend scenario) - the
+    SAME structure _render_quality_v2_preview_panel()'s own inline v2
+    sections already use, generalized so it isn't duplicated a second
+    and third time. `sim_result` is simulate_pool_moat()/simulate_pool_
+    v2_moat()'s own return dict; `value_score_key` is (column_label,
+    row_key) for this option's own Value Score field (e.g. ("Value
+    Score (moat)", "value_score_moat")); `extra_cols` as in
+    _pool_shadow_diff_table() above."""
+    rows = sim_result.get("rows") or sim_result.get("rows_v2") or {}
+    live_pool_tickers = {r["ticker"] for r in top100_store.current_pool()}
+    live_ext_tickers = {r["ticker"] for r in top100_store.current_asx_extension()}
+    new_pool_tickers = sim_result.get("pool_tickers") or sim_result.get("pool_v2_tickers") or set()
+    new_ext_tickers = sim_result.get("extension_tickers") or sim_result.get("extension_v2_tickers") or set()
+    cutoff_new = sim_result.get("cutoff")
+    if cutoff_new is None:
+        cutoff_new = sim_result.get("cutoff_v2")
+
+    st.markdown(f"#### {title}")
+    if sim_result.get("backfill_live"):
+        st.warning(
+            "TOP200_BACKFILL_LIVE is currently ON - this preview does NOT "
+            "simulate backfill's own standin/set-aside mechanics, so "
+            "comparing it directly against today's live pool may "
+            "overstate the difference. Treat the numbers below as "
+            "directional."
+        )
+
+    dropped = live_pool_tickers - new_pool_tickers
+    entered = new_pool_tickers - live_pool_tickers
+    cutoff_live = top100_engine.pool_value_score_cutoff()
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Would drop out", len(dropped))
+    with c2:
+        st.metric("Would newly enter", len(entered))
+    with c3:
+        if cutoff_live is not None and cutoff_new is not None:
+            st.metric("Cut-off change", f"{cutoff_new - cutoff_live:+.1f}",
+                      help=f"Live {cutoff_live:.1f} -> {cutoff_new:.1f}")
+        else:
+            st.metric("Cut-off change", "n/a")
+    st.markdown("**Would drop out**")
+    st.table(_pool_shadow_diff_table(dropped, rows, value_score_key, extra_cols) or [{"Ticker": "(none)"}])
+    st.markdown("**Would newly enter**")
+    st.table(_pool_shadow_diff_table(entered, rows, value_score_key, extra_cols) or [{"Ticker": "(none)"}])
+
+    st.markdown("**Per-market split**")
+    foreign_home_country = top100_render._foreign_us_listed_home_country_by_ticker()
+    market_counts = {}
+    for t in dropped:
+        m = _quality_v2_market_label(t, foreign_home_country)
+        market_counts.setdefault(m, {"dropped": 0, "entered": 0})["dropped"] += 1
+    for t in entered:
+        m = _quality_v2_market_label(t, foreign_home_country)
+        market_counts.setdefault(m, {"dropped": 0, "entered": 0})["entered"] += 1
+    market_order = ["Australia", "USA", "Foreign US-listed", "United Kingdom", "Canada", "Europe"]
+    other_markets = sorted(m for m in market_counts if m not in market_order)
+    st.table([
+        {"Market": m, "Would drop out": market_counts.get(m, {}).get("dropped", 0),
+         "Would newly enter": market_counts.get(m, {}).get("entered", 0)}
+        for m in market_order + other_markets
+        if m in market_counts
+    ] or [{"Market": "(no change in any market)"}])
+
+    st.markdown("**Top 20 Australia: entries / exits**")
+    live_au = {t for t in live_pool_tickers if t.endswith(".AX")} | live_ext_tickers
+    new_au = {t for t in new_pool_tickers if t.endswith(".AX")} | new_ext_tickers
+    au_left = live_au - new_au
+    au_entered = new_au - live_au
+    st.markdown("Would leave Top 20 Australia:")
+    st.table(_pool_shadow_diff_table(au_left, rows, value_score_key, extra_cols) or [{"Ticker": "(none)"}])
+    st.markdown("Would enter Top 20 Australia:")
+    st.table(_pool_shadow_diff_table(au_entered, rows, value_score_key, extra_cols) or [{"Ticker": "(none)"}])
+
+    st.markdown(f"**{'/'.join(named_tickers)} (named in the Director's own evidence)**")
+    named_rows = []
+    for t in named_tickers:
+        row = rows.get(t)
+        entry = {
+            "Ticker": t,
+            "In live pool": t in live_pool_tickers,
+            "In live AU extension": t in live_ext_tickers,
+            "In this option's pool": t in new_pool_tickers,
+            "In this option's AU extension": t in new_ext_tickers,
+        }
+        for label, key in extra_cols:
+            entry[label] = row.get(key) if row else None
+        entry["Value Score"] = row.get("value_score") if row else None
+        entry[value_score_key[0]] = row.get(value_score_key[1]) if row else None
+        named_rows.append(entry)
+    st.table(named_rows)
+
+
 def _render_quality_v2_preview_panel():
     """TASK 32 (Director-directed, owner request, 5 Nov 2026) - SHADOW
     MODE / TEST ONLY, owner approval required before any go-live.
@@ -33384,25 +33539,98 @@ def _render_quality_v2_preview_panel():
     the live selection, Quality, or Value Score, and nothing happens
     until the button is clicked - same "no gate of its own, button-
     triggered, in-process, read-only" pattern as every panel on this
-    page."""
-    st.markdown("### Quality v2 preview (SHADOW MODE - test only)")
+    page.
+
+    TASK 35 items A3/A4 (6 Nov 2026, Director-directed, BKNG live
+    case): extended in place (same button, same click) with two more
+    simulated options - moat blend alone (simulate_pool_moat()) and
+    Quality v2 + moat blend combined (simulate_pool_v2_moat()) - plus
+    an impact/cost summary table covering all three options, and the
+    Moat-coverage report (A5). Owner approval required before ANY of
+    the three goes live (TOP200_MOAT_BLEND_LIVE stays off until the
+    Director reviews this panel on 12 Nov)."""
+    st.markdown("### Quality v2 / Moat blend preview (SHADOW MODE - test only)")
     st.caption(
         "Owner-only. SHADOW MODE / TEST ONLY - owner approval required "
         "before any go-live. Computes, in-process, what the Top 200 "
-        "would look like under quality_v2_engine.py's \"through-the-"
-        "cycle\", one-off-excluded Quality score instead of today's "
-        "point-in-time one, from already-scanned candidates carrying "
-        "the shadow \"Quality V2\" field - without writing anything or "
-        "changing the live selection in any way."
+        "would look like under three options - quality_v2_engine.py's "
+        "\"through-the-cycle\" Quality score, a moat_blend ranking "
+        "formula using each row's stored Moat score, and both "
+        "combined - without writing anything or changing the live "
+        "selection in any way."
     )
-    if not st.button("Compute Quality v2 preview", key="admin_dash_quality_v2_preview_button"):
+    if not st.button("Compute Quality v2 / Moat blend preview", key="admin_dash_quality_v2_preview_button"):
         return
     try:
         _sim = top100_engine.simulate_pool_v2(log=print)
+        _sim_moat = top100_engine.simulate_pool_moat(log=print)
+        _sim_v2_moat = top100_engine.simulate_pool_v2_moat(log=print)
     except Exception as e:
         st.caption(f"Preview failed: {e}")
         return
 
+    # --- TASK 35 item A5: Moat coverage - confirms every scan row
+    # carries a Moat score (nightly_scan._attach_moat()); rows without
+    # one are never penalised (missing-moat reweighting, see ranking_
+    # engine.recompute_value_score()'s own docstring) - reported here
+    # purely for visibility.
+    st.markdown("#### Moat coverage (A5)")
+    try:
+        _moat_cov = top100_engine.moat_coverage(log=print)
+        _cov_overall = _moat_cov["overall"]
+        st.metric(
+            "Overall Moat coverage",
+            f"{_cov_overall['pct']:.1f}%" if _cov_overall["pct"] is not None else "n/a",
+            help=f"{_cov_overall['with_moat']} of {_cov_overall['total']} eligible rows carry a stored Moat score",
+        )
+        st.table([
+            {"Universe": u, "With Moat": c["with_moat"], "Total": c["total"],
+             "Coverage %": f"{c['pct']:.1f}%" if c["pct"] is not None else "n/a"}
+            for u, c in sorted(_moat_cov["by_universe"].items())
+        ] or [{"Universe": "(none)"}])
+    except Exception as e:
+        st.caption(f"Moat coverage check failed: {e}")
+
+    # --- TASK 35 item A4: impact + cost summary table, one row per
+    # option - companies changed (+ % of 200), entrants with no stored
+    # Claude research score yet, and the estimated one-time scoring
+    # cost for those entrants (same per-company batch estimate the
+    # nightly "[top100] estimated cost for tonight's batch" line uses).
+    st.markdown("#### Impact + cost summary (A4)")
+    st.caption(
+        "\"Companies changed\" = entrants + drop-outs vs the live pool. "
+        "\"Estimated one-time scoring cost\" only covers entrants with "
+        "NO stored Claude research score under any rubric version yet - "
+        "cross-check this estimate against a real recent ingested "
+        "batch's own logged cost (e.g. the nightly \"[top100] ingested "
+        "...\" cost line) before relying on it for a go-live decision. "
+        "Ongoing nightly re-score cost: the pool stays sized at 200 "
+        "regardless of which option is live, so turnover mainly shifts "
+        "WHICH companies are periodically re-scored, not how many - "
+        "\"companies changed\" above is the best available proxy for "
+        "that ongoing-cost impact, not a separate dollar figure."
+    )
+    try:
+        _impact_rows = []
+        for _label, _sim_result in (
+            ("Quality v2", _sim), ("Moat blend", _sim_moat), ("Quality v2 + Moat blend", _sim_v2_moat),
+        ):
+            _impact = top100_engine.pool_change_impact_and_cost(_sim_result, log=print)
+            _impact_rows.append({
+                "Option": _label,
+                "Companies changed": _impact["changed_count"],
+                "% of 200": f"{_impact['changed_pct_of_200']:.1f}%",
+                "Entrants": _impact["entrants"],
+                "Drop-outs": _impact["dropouts"],
+                "Entrants needing a score": len(_impact["entrants_unscored"]),
+                "Est. one-time scoring cost": f"${_impact['estimated_scoring_cost_usd']:.2f}",
+            })
+        st.table(_impact_rows)
+    except Exception as e:
+        st.caption(f"Impact/cost summary failed: {e}")
+
+    st.markdown("---")
+    st.markdown("### Option 1: Quality v2 alone")
     _rows_v2 = _sim["rows_v2"]
     _live_pool_tickers = {r["ticker"] for r in top100_store.current_pool()}
     _live_ext_tickers = {r["ticker"] for r in top100_store.current_asx_extension()}
@@ -33509,6 +33737,27 @@ def _render_quality_v2_preview_panel():
          "Δ": round(m["delta"], 1), "Main driver": m["driver"] or "n/a"}
         for m in _movers["fallers"]
     ] or [{"Ticker": "(none)"}])
+
+    # --- TASK 35 item A3 (6 Nov 2026, Director-directed): Option 2
+    # (moat blend alone) and Option 3 (Quality v2 + moat blend
+    # combined) - same a-e section set as Option 1 above, generalized
+    # via _render_pool_shadow_option_section() so this isn't a third
+    # copy-paste of the same five sections.
+    st.markdown("---")
+    st.markdown("### Option 2: Moat blend alone")
+    _render_pool_shadow_option_section(
+        "Top 200: drop-outs / new entrants (moat blend)", _sim_moat,
+        value_score_key=("Value Score (moat)", "value_score_moat"),
+        extra_cols=[("Moat", "moat")],
+    )
+
+    st.markdown("---")
+    st.markdown("### Option 3: Quality v2 + Moat blend combined")
+    _render_pool_shadow_option_section(
+        "Top 200: drop-outs / new entrants (Quality v2 + moat blend)", _sim_v2_moat,
+        value_score_key=("Value Score (v2+moat)", "value_score_v2_moat"),
+        extra_cols=[("Quality v2", "quality_v2"), ("Moat", "moat")],
+    )
 
 
 def _render_top200_schema_mode_panel():

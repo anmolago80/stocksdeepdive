@@ -31,6 +31,7 @@ NOTE: the clamps here only affect SCORING. The true, uncapped MOS / Psychology
 / Discovery numbers are still shown in the tables - we cap their INFLUENCE, not
 their reported value.
 """
+import os
 
 # Scoring clamps (see module docstring).
 MOS_CLAMP = 50.0
@@ -207,4 +208,69 @@ def calculate_long_score(
             + disc_c * 0.20
         ),
         2
+    )
+
+
+def top200_moat_blend_live():
+    """TASK 35 item A1 (6 Nov 2026, Director-directed, BKNG live case):
+    the switch that puts the Top 200's own selection/cut-off/previews
+    onto mode="moat_blend" (via recompute_value_score() below), instead
+    of today's plain formula. Re-read on every call (same unset/""/0/
+    off=OFF, 1/on=ON pattern as scan_store.is_private_universe() and
+    every other live switch in this codebase) rather than cached, so
+    a changed Railway variable takes effect on the very next
+    selection run without a redeploy - DELIBERATELY NOT the same
+    pattern moat_engine.MOAT_IN_VALUE_SCORE itself uses (a module-level
+    constant read once at import) - that one needs a redeploy to pick
+    up a change; this one shouldn't, since the Director wants to be
+    able to flip it live after reviewing the 12 Nov shadow preview.
+    Claude Code never sets this - the Director does, on Railway, only
+    after that review."""
+    raw = (os.environ.get("TOP200_MOAT_BLEND_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
+def recompute_value_score(row, moat_blend=False):
+    """TASK 35 item A1/A2 (6 Nov 2026, Director-directed, BKNG live
+    case): the ONE "Top 200 selection formula" - every caller that
+    needs "what does the Top 200 actually rank this row on" (top100_
+    engine.py's own selection/cut-off/previews/prescoring, and deep_
+    dive_engine.py's "Scanner & Top 200 score" line) must go through
+    this, never a parallel/second calculate_long_score() call of its
+    own. This closes the exact live BKNG mismatch TASK 34 found: Deep
+    Dive's own line used to recompute calculate_long_score() a SECOND
+    time, with its own independent moat_blend branch gated only on
+    moat_engine.MOAT_IN_VALUE_SCORE, while top100_engine._recompute_
+    value_score() (what the real Top 200 selection/cut-off actually
+    used) never applied moat_blend at all - so Deep Dive showed a
+    moat-blended score for a row the Top 200 had ranked on the plain
+    one.
+
+    `row` needs the same four/five keys every existing caller's row
+    already carries (a live scan_store.py row, or a Deep-Dive-built
+    row shaped the same way): "Quality", "MOS %", "Psychology",
+    "Discovery (lite)", and - only read when moat_blend=True -
+    "Moat". discovery_measured is always False here (the one existing
+    rule this function's callers already shared, "Top 100 selection
+    freshness fix 2.2" - see top100_engine._recompute_value_score()'s
+    own retained docstring for why).
+
+    moat_blend=False (the default): today's plain formula - byte-
+    identical to calling calculate_long_score() directly with no mode
+    override, used whenever TOP200_MOAT_BLEND_LIVE is off (unset) or
+    moat_engine.MOAT_IN_VALUE_SCORE is off.
+    moat_blend=True: mode="moat_blend" using row.get("Moat") - a row
+    with no stored Moat score (an older scan, or a universe scanned
+    before TASK 35) falls through to calculate_long_score()'s own
+    existing missing-moat reweighting (moat_score=None), never scored
+    as if Moat were zero/penalised for lacking one."""
+    if moat_blend:
+        return calculate_long_score(
+            row.get("Quality"), row.get("MOS %") or 0.0, row.get("Psychology"),
+            row.get("Discovery (lite)") or 0, mode="moat_blend",
+            moat_score=row.get("Moat"), discovery_measured=False,
+        )
+    return calculate_long_score(
+        row.get("Quality"), row.get("MOS %") or 0.0, row.get("Psychology"),
+        row.get("Discovery (lite)") or 0, discovery_measured=False,
     )
