@@ -95,6 +95,7 @@ import property_vs_index_engine
 import tools_store
 import ledger_import_engine
 import i18n
+import point_in_time_replay
 
 
 def _section_why(label):
@@ -33874,6 +33875,142 @@ def _render_quality_exception_section(sim_result, value_score_key, named_tickers
     )
 
 
+def _replay_find_holding_default(ticker):
+    """TASK 38 (Director-directed, 7 Nov 2026): the owner's own first
+    portfolio holding of `ticker`, across every one of their
+    portfolios (oldest-created portfolio first, same order list_
+    portfolios() already returns) - used only to default the "Replay
+    at date" panel's own date input to that holding's baseline_date,
+    and to supply its baseline dict when the typed date matches. None/
+    None for a ticker the owner doesn't hold at all (the panel still
+    works - price/IV/Quality v1 are simply unavailable, per point_in_
+    time_replay.py's own documented limitations)."""
+    email = paywall_engine.current_user_email()
+    if not email or not ticker:
+        return None, None
+    for portfolio in portfolio_store.list_portfolios(email):
+        holding = portfolio_store.get_holding(email, portfolio, ticker)
+        if holding:
+            return holding.get("baseline") or {}, holding.get("baseline_date")
+    return None, None
+
+
+def _render_replay_at_date_panel():
+    """TASK 38 (Director-directed, 7 Nov 2026) - owner-only, READ-ONLY,
+    display only: "Replay at date" - reconstructs, as far as this
+    codebase's own stored/fetchable data allows, a ticker's Top 200
+    inputs and Value Score(s) on a PAST date (point_in_time_replay.
+    replay_at_date() - see that module's own docstring for exactly
+    what is and isn't reconstructable, and why). Validates the owner's
+    own key objective: would the Top 200 have caught a "good company,
+    temporary drop" case like CSL.AX (A$120, 16 Jul 2026) at the time?
+
+    Fetches a fresh fundamentals bundle + 2-year daily price history
+    for the typed ticker ON COMPUTE (the existing public get_price_
+    history() cache only keeps 6 months, not enough lookback for a
+    replay date several months in the past - see this function's own
+    network calls below) - never written anywhere, never cached
+    beyond this one render. No baseline/pool/holding write of any
+    kind - same safety profile as every other owner-only preview panel
+    on this page."""
+    st.markdown("### Replay at date (point-in-time Top 200 validation)")
+    st.caption(
+        "Owner-only. READ-ONLY / DISPLAY ONLY. Reconstructs what this ticker's "
+        "Top 200 inputs and Value Score(s) would have read on a past date, using "
+        "ONLY data this codebase can actually reconstruct for that date - see the "
+        "limitations list below the result for exactly what could NOT be "
+        "reconstructed. Nothing here changes any baseline, holding, or the live "
+        "Top 200 selection."
+    )
+    _default_ticker = st.session_state.get("admin_replay_ticker", "CSL.AX")
+    _ticker = st.text_input("Ticker", value=_default_ticker, key="admin_replay_ticker_input").strip().upper()
+    _default_baseline, _default_baseline_date = _replay_find_holding_default(_ticker) if _ticker else (None, None)
+    try:
+        _default_date = (
+            _date.fromisoformat(_default_baseline_date) if _default_baseline_date
+            else _date.today()
+        )
+    except ValueError:
+        _default_date = _date.today()
+    _date = st.date_input("Date", value=_default_date, key="admin_replay_date_input")
+    if _default_baseline_date:
+        st.caption(f"Defaulted to {_ticker}'s own locked baseline date ({_default_baseline_date}).")
+
+    if not st.button("Run replay", key="admin_replay_button"):
+        return
+    if not _ticker:
+        st.caption("Enter a ticker first.")
+        return
+
+    try:
+        bundle = fundamentals_data.get_bundle(_ticker)
+    except Exception as e:
+        st.caption(f"Could not fetch fundamentals bundle for {_ticker}: {e}")
+        bundle = None
+    try:
+        _hist = yf.Ticker(_ticker).history(period="2y")
+        daily_closes_with_dates = (
+            [(d.date() if hasattr(d, "date") else d, float(c)) for d, c in _hist["Close"].dropna().items()]
+            if _hist is not None and not _hist.empty else []
+        )
+    except Exception as e:
+        st.caption(f"Could not fetch 2-year daily price history for {_ticker}: {e}")
+        daily_closes_with_dates = []
+
+    try:
+        today_cutoff = top100_engine.pool_value_score_cutoff()
+    except Exception:
+        today_cutoff = None
+
+    result = point_in_time_replay.replay_at_date(
+        _ticker, _date, baseline=_default_baseline, baseline_date=_default_baseline_date,
+        bundle=bundle, daily_closes_with_dates=daily_closes_with_dates,
+        today_cutoff=today_cutoff, log=print,
+    )
+
+    st.markdown(f"#### {result['ticker']} as of {result['date']}")
+    _psych = result["psychology"]
+    st.table([{
+        "Price": result["price"], "Price source": result["price_source"],
+        "Intrinsic Value": result["intrinsic_value"], "IV source": result["intrinsic_value_source"],
+        "MOS %": f"{result['mos_pct']:.1f}%" if result["mos_pct"] is not None else None,
+        "Fear": f"{_psych['fear']:.1f}" if _psych.get("fear") is not None else None,
+        "Greed": f"{_psych['greed']:.1f}" if _psych.get("greed") is not None else None,
+        "FOMO": f"{_psych['fomo']:.1f}" if _psych.get("fomo") is not None else None,
+        "Weekly change %": f"{_psych['weekly_change_pct']:.1f}%" if _psych.get("weekly_change_pct") is not None else None,
+        "Psychology": f"{_psych['psychology']:.1f}" if _psych.get("psychology") is not None else None,
+    }])
+    st.table([{
+        "Quality v1": result["quality_v1"], "Quality v1 source": result["quality_v1_source"],
+        "Quality v2": result["quality_v2"], "Moat": result["moat"],
+    }])
+
+    st.markdown("**Value Score under each formula, vs today's cut-off**")
+    _vs = result["value_score"]
+    _wp = result["would_be_in_pool"]
+    _labels = {
+        "current_formula": "Current formula", "moat_blend": "Moat blend",
+        "quality_v2": "Quality v2", "quality_v2_moat_blend": "Quality v2 + moat blend",
+    }
+    st.table([
+        {"Formula": label, "Value Score": _vs[key],
+         "Today's cut-off": f"{result['today_cutoff']:.1f}" if result["today_cutoff"] is not None else "n/a",
+         "Would be IN today's pool": _wp[key],
+         "Note": "" if result["today_cutoff"] is not None else "the Top 200 didn't exist then"}
+        for key, label in _labels.items()
+    ])
+
+    st.markdown("**3x-rule / TASK 37 exception**")
+    st.table([{
+        "DCF Unreliable (>3x)": result["dcf_unreliable"],
+        "Quality exception thresholds met (Moat/Quality only)": result["quality_exception_thresholds_met"],
+    }])
+
+    st.markdown("**What could not be reconstructed point-in-time**")
+    for _lim in result["limitations"]:
+        st.caption(f"- {_lim}")
+
+
 def _render_top200_schema_mode_panel():
     """COMMIT 4 of instruction_top200_unrated_and_blank_replies_
     combined.md (5 Oct 2026, Director-directed, switch TOP200_SCHEMA_
@@ -37249,6 +37386,12 @@ def page_admin_dashboard():
     # section of this page" pattern as every panel above.
     st.markdown("---")
     _render_quality_v2_preview_panel()
+
+    # --- REPLAY AT DATE (TASK 38, Director-directed, 7 Nov 2026) - see
+    # _render_replay_at_date_panel()'s own docstring. Same "no gate of
+    # its own, final section of this page" pattern as every panel above.
+    st.markdown("---")
+    _render_replay_at_date_panel()
 
     # --- TOP 200 SCHEMA MODE (COMMIT 4 of instruction_top200_unrated_
     # and_blank_replies_combined.md, 5 Oct 2026, Director-directed) -
