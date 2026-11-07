@@ -269,6 +269,26 @@ def _conn():
         conn.execute("ALTER TABLE top100_pool ADD COLUMN backfill_set_aside_status TEXT")
     except sqlite3.OperationalError:
         pass
+    # TASK 37 (Director-directed, 6 Nov 2026, ADBE case): True for a row
+    # admitted to the pool by the high-quality exception to the 3x
+    # DCF-unreliable exclusion (top100_engine._build_best_by_ticker()'s
+    # own "quality_exception_admitted" - only ever True when TOP200_
+    # QUALITY_EXCEPTION_LIVE is on AND the row passed _quality_
+    # exception_admits()). Display only (top100_render.py's own
+    # "Admitted: ..." chip) - never read by any sort/selection. Same
+    # guarded-ALTER-TABLE, NOT NULL DEFAULT 0 pattern as asx_extension/
+    # backfill_set_aside above, so every pre-existing row reads
+    # unambiguously False rather than NULL, and - with the switch OFF,
+    # this task's own live state - no row is ever saved with this True,
+    # so every existing reader of current_pool()/current_asx_extension()
+    # is completely untouched by this column's existence.
+    try:
+        conn.execute(
+            "ALTER TABLE top100_pool ADD COLUMN quality_exception_admitted "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_scores (
             ticker TEXT NOT NULL,
@@ -568,8 +588,8 @@ def save_pool(rows, as_of):
                   dividend_yield_pct, most_recent_quarter, also_trades_as, asx_extension,
                   generated_at, source_universe_generated_at, stale_valuation,
                   value_score_source_row, pool_selection_rule, backfill_set_aside,
-                  backfill_set_aside_status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  backfill_set_aside_status, quality_exception_admitted)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -590,7 +610,8 @@ def save_pool(rows, as_of):
                  value_score_source_row = excluded.value_score_source_row,
                  pool_selection_rule = excluded.pool_selection_rule,
                  backfill_set_aside = excluded.backfill_set_aside,
-                 backfill_set_aside_status = excluded.backfill_set_aside_status""",
+                 backfill_set_aside_status = excluded.backfill_set_aside_status,
+                 quality_exception_admitted = excluded.quality_exception_admitted""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
@@ -600,7 +621,7 @@ def save_pool(rows, as_of):
                  r.get("generated_at"), r.get("source_universe_generated_at"),
                  int(bool(r.get("stale_valuation"))), r.get("value_score_source_row"),
                  r.get("pool_selection_rule"), int(bool(r.get("backfill_set_aside"))),
-                 r.get("backfill_set_aside_status"))
+                 r.get("backfill_set_aside_status"), int(bool(r.get("quality_exception_admitted"))))
                 for r in rows
             ],
         )
@@ -692,6 +713,27 @@ def current_asx_extension():
             (as_of,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def is_quality_exception_admitted(ticker):
+    """TASK 37 (Director-directed, 6 Nov 2026, ADBE case): True when
+    `ticker`'s CURRENT Top 200 pool or ASX-extension row was admitted
+    by the high-quality exception to the 3x DCF-unreliable exclusion
+    (the stored "quality_exception_admitted" column - see save_pool()'s
+    own docstring). False for a ticker with no current row at all
+    (never in the pool, or the latest selection dropped it) - never
+    fabricates an answer. A small, single-ticker lookup (reads the SAME
+    current_pool()/current_asx_extension() every other per-ticker Top
+    200 check already reads) so deep_dive_engine.py/app.py's own Deep
+    Dive view can show the "Admitted: ..." chip there too, without a
+    second, independently-built query."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return False
+    for row in current_pool() + current_asx_extension():
+        if row.get("ticker") == ticker:
+            return bool(row.get("quality_exception_admitted"))
+    return False
 
 
 def current_backfill_set_aside():

@@ -397,6 +397,37 @@ def _dcf_unreliable_chip_html(row, lang):
     )
 
 
+# TASK 37 (Director-directed, 6 Nov 2026, ADBE case): a distinct green
+# chip family for "admitted by the high-quality exception" - never the
+# amber NOT-RATED family above (that's the data-quality warning this
+# chip is additive to, not a replacement for it) and never the purple
+# support-chip family (TASK 36, a different task entirely) below.
+_SHELF_CHIP_QUALITY_EXCEPTION = ("#0f2a1f", "#1f6b45", "#4ade80")
+
+
+def _quality_exception_chip_html(row, lang):
+    """TASK 37's own card chip - "Admitted: high quality + moat
+    (valuation > 3x price)" (EN+ES). row["quality_exception_admitted"]
+    is a stored top100_pool column (top100_store.save_pool()), only
+    ever truthy when top100_engine.top200_quality_exception_live() was
+    ON at selection time AND this row passed top100_engine._quality_
+    exception_admits() - so this chip is itself gated by the SAME
+    TOP200_QUALITY_EXCEPTION_LIVE switch, one level removed (through
+    what actually got persisted), never a second env read here.
+    Additive to _dcf_unreliable_chip_html() above, never a replacement
+    for it - the Director's own explicit "keeps its warning visible"
+    instruction, so both chips show side by side on an admitted row."""
+    if not row.get("quality_exception_admitted"):
+        return ""
+    bg, border, color = _SHELF_CHIP_QUALITY_EXCEPTION
+    return (
+        "<span style='display:inline-flex;align-items:center;"
+        f"border-radius:999px;padding:1px 9px;font-size:10.5px;font-weight:700;"
+        f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
+        f"{html.escape(_t('quality_exception_chip', lang))}</span>"
+    )
+
+
 _MONTH_ABBR_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 _MONTH_ABBR_ES = ["ene", "feb", "mar", "abr", "may", "jun",
@@ -1197,6 +1228,9 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     dcf_unreliable_chip = _dcf_unreliable_chip_html(row, lang)
     if dcf_unreliable_chip:
         header_bits.append(dcf_unreliable_chip)
+    quality_exception_chip = _quality_exception_chip_html(row, lang)
+    if quality_exception_chip:
+        header_bits.append(quality_exception_chip)
     support_chip = _support_chip_html(row, lang)
     if support_chip:
         header_bits.append(support_chip)
@@ -1667,11 +1701,12 @@ def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
         )
     stale_chip = _stale_valuation_chip_html(row, lang)
     dcf_unreliable_chip = _dcf_unreliable_chip_html(row, lang)
+    quality_exception_chip = _quality_exception_chip_html(row, lang)
     support_chip = _support_chip_html(row, lang)
     return (
         "<div style='display:flex;gap:10px;align-items:baseline;font-size:12.5px;"
         "padding:4px 0;color:#8aa0b8;flex-wrap:wrap;'>"
-        + chip + stale_chip + dcf_unreliable_chip + support_chip +
+        + chip + stale_chip + dcf_unreliable_chip + quality_exception_chip + support_chip +
         f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
         "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
         f"{html.escape(ticker)}</a>"

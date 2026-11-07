@@ -230,6 +230,103 @@ def _is_dcf_unreliable(row):
     return bool(row.get("DCF Unreliable"))
 
 
+def top200_quality_exception_live():
+    """TASK 37 (Director-directed, 6 Nov 2026, ADBE case): the switch
+    admitting a DCF-unreliable (>DCF_SANITY_MULTIPLE price) row into
+    the Top 200 pool's own eligibility check when it is a genuinely
+    high-quality, well-moated business that the 3x rule would
+    otherwise eject purely for a big price fall (ADBE, 5 Nov 2026
+    S&P 500 scan: price 246.44, intrinsic value 750.64 = 3.05x, MOS
+    67.2%, Quality 87, Moat 95 - Top 200 score would be 62.8, well
+    inside the pool, but DCF Unreliable=True excludes it today). MOS
+    is already CLAMPED at 50 in the Value Score (ranking_engine.
+    MOS_CLAMP), so admitting such a row can never inflate its score
+    beyond what any normal row could already reach - the exception
+    only lets a genuinely strong business back IN, it never rewards
+    the inflated multiple itself.
+
+    Re-read on every call (same unset/""/0/off=OFF, 1/on=ON pattern as
+    ranking_engine.top200_moat_blend_live()) so the Director can flip
+    it live after reviewing the 12 Nov preview, without a redeploy.
+    Claude Code never sets this - the Director does, on Railway, only
+    after that review."""
+    raw = (os.environ.get("TOP200_QUALITY_EXCEPTION_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
+# TASK 37's own eligibility thresholds - named constants per the
+# Director's own explicit instruction ("Constants named").
+QUALITY_EXCEPTION_MIN_MOAT = 80.0
+QUALITY_EXCEPTION_MIN_QUALITY = 70.0
+# fcf_valuation_engine.py's own three non-statement-derived fcf_source
+# values (see normalized_base_and_series()/_ocf_based_base_and_series()'s
+# own docstrings) - every OTHER value ("ocf-normcapex", "fcf-median",
+# "net_income_financials", "ocf_fallback_financials") IS real
+# statement-derived history, which is what the Director's own "FCF
+# source is real statement history (not 'info'/'none'/manual)"
+# condition means.
+_QUALITY_EXCEPTION_NON_STATEMENT_FCF_SOURCES = ("info", "none", "manual", None)
+
+
+def _quality_exception_admits(row):
+    """TASK 37's own eligibility test for the high-quality exception to
+    the 3x DCF-unreliable exclusion. Independent of the env gate
+    (top200_quality_exception_live()) - callers check the gate
+    separately, same split moat_blend keeps between its own gate and
+    the pure math. Admits a row ONLY when ALL of:
+      - Moat >= QUALITY_EXCEPTION_MIN_MOAT (row's own stored "Moat")
+      - Quality >= QUALITY_EXCEPTION_MIN_QUALITY (row's own "Quality" -
+        the SAME v1 input ranking_engine.recompute_value_score()/
+        calculate_long_score() read for the active Top 200 formula
+        today; Quality V2 is not wired into that formula at all yet -
+        see ranking_engine.recompute_value_score()'s own docstring -
+        so there is nothing else to read here. If/when Quality V2 ever
+        becomes the active formula input, THIS must be updated to read
+        whichever input is active then, per the Director's own "v1
+        today, Quality v2 if/when that goes live" instruction.)
+      - "Share Count Flagged" is not truthy (nightly_scan.py's own
+        fcf_valuation_engine share-count-estimation disclosure flag)
+      - "FCF Source" is real statement history, not one of
+        _QUALITY_EXCEPTION_NON_STATEMENT_FCF_SOURCES
+      - not _is_flagged_stale(row) (Trading Status != "stale")
+      - "Intrinsic Source" == "dcf" (a pe-blend/none valuation was
+        never a real DCF to begin with - the 3x sanity check doesn't
+        meaningfully apply there, and admitting it would be reasoning
+        from a number this exception isn't built to evaluate)
+    Never raises - a missing/None field on ANY of these simply fails
+    that one condition (never defaults to "admit")."""
+    moat = row.get("Moat")
+    quality = row.get("Quality")
+    if moat is None or quality is None:
+        return False
+    if moat < QUALITY_EXCEPTION_MIN_MOAT or quality < QUALITY_EXCEPTION_MIN_QUALITY:
+        return False
+    if row.get("Share Count Flagged"):
+        return False
+    if row.get("FCF Source") in _QUALITY_EXCEPTION_NON_STATEMENT_FCF_SOURCES:
+        return False
+    if _is_flagged_stale(row):
+        return False
+    if row.get("Intrinsic Source") != "dcf":
+        return False
+    return True
+
+
+def quality_exception_admitted_rows(rows):
+    """TASK 37's own report helper - the subset of a simulate_pool_*
+    result's "rows"/"rows_v2" dict that the high-quality DCF-unreliable
+    exception actually admitted (row["quality_exception_admitted"] is
+    only ever True when _build_best_by_ticker() ran with the exception
+    forced/switched on AND the row itself was DCF-unreliable AND
+    passed _quality_exception_admits() - see that function's own
+    docstring). Each entry already carries ticker/company_name/price/
+    intrinsic_value/quality/moat/value_score (and, on the combined-
+    setup simulation, value_score_v2_moat) - a caller wanting "the
+    multiple" computes intrinsic_value/price itself, never stored as
+    its own field (trivially derived, never worth letting go stale)."""
+    return [r for r in (rows or {}).values() if r.get("quality_exception_admitted")]
+
+
 def _is_fallback_financials(row):
     """Commit 4 of instruction_financials_income_store_and_top200_
     guard.md (4 Oct 2026, Director-directed), switch-gated: True when
@@ -793,8 +890,18 @@ def _recompute_value_score_v2_moat(row):
     return ranking_engine.recompute_value_score(row_with_quality_v2, moat_blend=True)
 
 
-def _build_best_by_ticker(log=print):
-    """The deduped, eligibility-filtered candidate pool select_top100_
+def _build_best_by_ticker(log=print, quality_exception_override=None):
+    """`quality_exception_override` (TASK 37, 6 Nov 2026, Director-
+    directed): None (every existing caller, unchanged) reads the real
+    env gate (top200_quality_exception_live()) - today's live
+    behaviour, switch off. True/False lets a shadow-preview simulation
+    force the exception on/off WITHOUT touching the env var itself
+    (simulate_pool_quality_exception()/simulate_pool_v2_moat_and_
+    exception() below pass True) - no env mutation, so nothing here
+    ever risks leaving TOP200_QUALITY_EXCEPTION_LIVE set from a
+    preview run.
+
+    The deduped, eligibility-filtered candidate pool select_top100_
     pool() builds every call - extracted into its own function (COMMIT
     3 of instruction_top200_unrated_and_blank_replies_combined.md, 5
     Oct 2026) purely so backfill_preview() can read the SAME merit-
@@ -840,6 +947,21 @@ def _build_best_by_ticker(log=print):
     dcf_unreliable_excluded_tickers = []
     dcf_unreliable_by_stored_flag = 0
     dcf_unreliable_by_current_price = 0
+    # TASK 37 (6 Nov 2026, Director-directed, ADBE case): resolved ONCE
+    # per call (quality_exception_override lets a shadow preview force
+    # it without touching the env var - see this function's own
+    # docstring). quality_exception_shadow_tickers tracks every row
+    # that WOULD pass _quality_exception_admits() regardless of
+    # whether the gate actually admitted it - this is what the preview
+    # simulations (always called with override=True) surface; with
+    # the gate OFF (today's live state) nothing here changes which
+    # rows reach best_candidate, only this shadow bookkeeping.
+    quality_exception_live = (
+        top200_quality_exception_live() if quality_exception_override is None
+        else quality_exception_override
+    )
+    quality_exception_admitted_count = 0
+    quality_exception_shadow_tickers = []
     # TASK 4 (Director, 16 Oct 2026, "keep funds/investment trusts out
     # of the Top 200"): nightly_scan.py already sets row["Is Fund"] for
     # a non-US/non-AU row whose Sector matches _FUND_SECTOR_NAMES (its
@@ -888,15 +1010,38 @@ def _build_best_by_ticker(log=print):
                 stored_unreliable = _is_dcf_unreliable(row)
                 current_unreliable = resolver_engine.dcf_looks_unreliable(
                     row.get("Intrinsic Value"), row.get("Price"))
+                exception_admitted_row = False
                 if stored_unreliable or current_unreliable:
-                    dcf_unreliable_excluded_count += 1
-                    if stored_unreliable:
-                        dcf_unreliable_by_stored_flag += 1
+                    # TASK 37 (6 Nov 2026, Director-directed): the
+                    # high-quality exception - checked BEFORE this row
+                    # is excluded, never after (there's no "after" for
+                    # a `continue`d row). _quality_exception_admits()
+                    # is evaluated regardless of the gate so the
+                    # shadow bookkeeping below always reflects "would
+                    # this row pass", even with the gate off; only
+                    # exception_admitted_row (gate AND eligible) ever
+                    # lets the row fall through to normal eligibility
+                    # instead of being excluded.
+                    exception_eligible = _quality_exception_admits(row)
+                    if exception_eligible and ticker not in quality_exception_shadow_tickers:
+                        quality_exception_shadow_tickers.append(ticker)
+                    if quality_exception_live and exception_eligible:
+                        exception_admitted_row = True
+                        quality_exception_admitted_count += 1
+                        _iv, _price = row.get("Intrinsic Value"), row.get("Price")
+                        _mult = (_iv / _price) if (_iv and _price) else None
+                        _mult_str = f"{_mult:.2f}" if _mult is not None else "n/a"
+                        log(f"[top100] quality exception: {ticker} iv/price={_mult_str} "
+                            f"quality={row.get('Quality')} moat={row.get('Moat')}")
                     else:
-                        dcf_unreliable_by_current_price += 1
-                    if ticker not in dcf_unreliable_excluded_tickers:
-                        dcf_unreliable_excluded_tickers.append(ticker)
-                    continue
+                        dcf_unreliable_excluded_count += 1
+                        if stored_unreliable:
+                            dcf_unreliable_by_stored_flag += 1
+                        else:
+                            dcf_unreliable_by_current_price += 1
+                        if ticker not in dcf_unreliable_excluded_tickers:
+                            dcf_unreliable_excluded_tickers.append(ticker)
+                        continue
                 if row.get("Is Fund"):
                     fund_excluded_count += 1
                     if ticker not in fund_excluded_tickers:
@@ -910,7 +1055,7 @@ def _build_best_by_ticker(log=print):
                 prev = best_candidate.get(ticker)
                 key = (gen_dt, row_long_score)
                 if prev is None or key > (prev[0], prev[1]):
-                    best_candidate[ticker] = (gen_dt, row_long_score, row, universe, gen_raw)
+                    best_candidate[ticker] = (gen_dt, row_long_score, row, universe, gen_raw, exception_admitted_row)
             except Exception as e:
                 log(f"[top100] selection: skipping row with eligibility-check "
                     f"error ({row.get('Ticker', '?')!r} in {universe}): {e}")
@@ -922,6 +1067,10 @@ def _build_best_by_ticker(log=print):
         log(f"[top100] selection: excluded {dcf_unreliable_excluded_count} "
             f"DCF-unreliable row(s) ({dcf_unreliable_by_stored_flag} by stored flag, "
             f"{dcf_unreliable_by_current_price} by current price): {', '.join(_shown)}{_more}")
+
+    if quality_exception_admitted_count:
+        log(f"[top100] quality exception: admitted {quality_exception_admitted_count} "
+            f"otherwise-DCF-unreliable row(s) tonight")
 
     if fund_excluded_count:
         _fund_shown = fund_excluded_tickers[:20]
@@ -938,7 +1087,7 @@ def _build_best_by_ticker(log=print):
             f"fallback-financials row(s): {', '.join(_fshown)}{_fmore}")
 
     best_by_ticker = {}
-    for ticker, (gen_dt, row_long_score, row, universe, gen_raw) in best_candidate.items():
+    for ticker, (gen_dt, row_long_score, row, universe, gen_raw, exception_admitted_row) in best_candidate.items():
         age_days = (now - gen_dt).total_seconds() / 86400.0
         stale_valuation = age_days > POOL_MAX_FULL_SCAN_AGE_DAYS
         recomputed_value_score = _recompute_value_score(row)
@@ -1081,6 +1230,16 @@ def _build_best_by_ticker(log=print):
                     "moat": row.get("Moat"),
                     "value_score_moat": _recompute_value_score_moat(row),
                     "value_score_v2_moat": _recompute_value_score_v2_moat(row),
+                    # TASK 37 (6 Nov 2026, Director-directed, ADBE
+                    # case): True only when THIS winning row was
+                    # DCF-unreliable AND the quality exception's gate
+                    # was on (real or forced via quality_exception_
+                    # override) AND it passed _quality_exception_
+                    # admits() - set in the per-row loop above, never
+                    # re-derived here. Display only (top100_render.py's
+                    # own "Admitted: ..." chip) - never read by the
+                    # sort/slice this function's own caller uses.
+                    "quality_exception_admitted": exception_admitted_row,
                 }
 
     _dedupe_share_classes(best_by_ticker, log=log)
@@ -1251,7 +1410,7 @@ def _quality_v2_main_driver(ticker, row, log=print):
         return None
 
 
-def _simulate_pool_generic(sort_key, log=print):
+def _simulate_pool_generic(sort_key, log=print, quality_exception_override=None):
     """TASK 35 item A3 (6 Nov 2026, Director-directed): the shared body
     simulate_pool_v2()/simulate_pool_moat()/simulate_pool_v2_moat() all
     use - built on _build_best_by_ticker() (the EXACT SAME eligibility
@@ -1262,8 +1421,16 @@ def _simulate_pool_generic(sort_key, log=print):
     other simulate_pool_* function. Returns {"eligible_count",
     "backfill_live", "rows", "pool_tickers", "extension_tickers",
     "cutoff"} - see simulate_pool_v2()'s own docstring for what each
-    key means (unchanged shape, just generic names)."""
-    best_by_ticker, eligible_count = _build_best_by_ticker(log=log)
+    key means (unchanged shape, just generic names).
+
+    `quality_exception_override` (TASK 37, 6 Nov 2026, Director-
+    directed): passed straight through to _build_best_by_ticker() -
+    None (every pre-TASK-37 caller) reads the real env gate; simulate_
+    pool_quality_exception()/simulate_pool_v2_moat_and_exception()
+    below pass True to force the high-quality exception on for this
+    simulation only, without touching TOP200_QUALITY_EXCEPTION_LIVE."""
+    best_by_ticker, eligible_count = _build_best_by_ticker(
+        log=log, quality_exception_override=quality_exception_override)
 
     merit_ordered = sorted(best_by_ticker.values(), key=sort_key, reverse=True)
     pool_rows = merit_ordered[:POOL_SIZE]
@@ -1314,6 +1481,30 @@ def simulate_pool_v2_moat(log=print):
     simulate_pool_moat()/simulate_pool_v2() above - see those functions'
     own docstrings."""
     return _simulate_pool_generic(_value_score_v2_moat_sort_key, log=log)
+
+
+def simulate_pool_quality_exception(log=print):
+    """TASK 37 (Director-directed, 6 Nov 2026, ADBE case) - SHADOW MODE
+    / TEST ONLY: a SIMULATED Top 200 with the high-quality DCF-
+    unreliable exception FORCED ON (quality_exception_override=True),
+    today's plain Value Score formula otherwise completely unchanged -
+    the "current setup" half of the owner's 12 Nov review (the final
+    combined scenario is simulate_pool_v2_moat_and_exception() below).
+    Read-only, never writes, never read by select_top100_pool() itself.
+    Every row in this result's "rows" with row["quality_exception_
+    admitted"]==True is one the exception actually let back in versus
+    today's real exclusion - see quality_exception_admitted_rows()."""
+    return _simulate_pool_generic(lambda r: r["value_score"], log=log, quality_exception_override=True)
+
+
+def simulate_pool_v2_moat_and_exception(log=print):
+    """TASK 37 (Director-directed, 6 Nov 2026) - SHADOW MODE / TEST
+    ONLY: the FINAL COMBINED scenario the owner's 12 Nov review covers
+    - Quality V2 + Moat blend + the high-quality DCF-unreliable
+    exception, all three at once (quality_exception_override=True on
+    top of _value_score_v2_moat_sort_key). Same scope limits/safety
+    profile as every other simulate_pool_* function above."""
+    return _simulate_pool_generic(_value_score_v2_moat_sort_key, log=log, quality_exception_override=True)
 
 
 def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):

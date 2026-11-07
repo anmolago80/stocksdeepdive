@@ -11564,6 +11564,26 @@ def page_deep_dive():
                 "price).</div>",
                 unsafe_allow_html=True,
             )
+            # TASK 37 (Director-directed, 6 Nov 2026, ADBE case): the
+            # warning above stays exactly as-is (the Director's own
+            # "keeps its warning visible" instruction) - this chip is
+            # purely additive, shown only when this ticker's CURRENT
+            # Top 200 pool/extension row was actually admitted by the
+            # high-quality exception (top100_store.is_quality_
+            # exception_admitted() - a single-ticker lookup, same
+            # pattern as every other per-ticker Top 200 check on this
+            # page). A ticker outside the pool, or whose row predates
+            # the exception, never shows this.
+            if top100_store.is_quality_exception_admitted(_dd.get("ticker")):
+                st.markdown(
+                    "<span style='display:inline-flex;align-items:center;"
+                    "border-radius:999px;padding:1px 9px;font-size:10.5px;"
+                    "font-weight:700;background:#0f2a1f;border:1px solid "
+                    "#1f6b45;color:#4ade80;'>"
+                    f"{html.escape(i18n.t('top100.quality_exception_chip', _dd_lang))}"
+                    "</span>",
+                    unsafe_allow_html=True,
+                )
 
         # Commit 4 of instruction_financials_income_store_and_top200_
         # guard.md (4 Oct 2026, Director-directed): DISPLAY-ONLY caption,
@@ -33565,6 +33585,13 @@ def _render_quality_v2_preview_panel():
         _sim = top100_engine.simulate_pool_v2(log=print)
         _sim_moat = top100_engine.simulate_pool_moat(log=print)
         _sim_v2_moat = top100_engine.simulate_pool_v2_moat(log=print)
+        # TASK 37 (Director-directed, 6 Nov 2026, ADBE case): the
+        # high-quality exception's own two preview scenarios -
+        # "current setup" (today's plain formula, exception forced
+        # on) and the "final combined setup" (Quality v2 + moat blend
+        # + exception, all three at once).
+        _sim_exception = top100_engine.simulate_pool_quality_exception(log=print)
+        _sim_v2_moat_exception = top100_engine.simulate_pool_v2_moat_and_exception(log=print)
     except Exception as e:
         st.caption(f"Preview failed: {e}")
         return
@@ -33614,6 +33641,12 @@ def _render_quality_v2_preview_panel():
         _impact_rows = []
         for _label, _sim_result in (
             ("Quality v2", _sim), ("Moat blend", _sim_moat), ("Quality v2 + Moat blend", _sim_v2_moat),
+            # TASK 37 (Director-directed, 6 Nov 2026): the exception's
+            # own impact/cost rows, same table - "current setup" is
+            # today's plain formula with the exception forced on;
+            # "final combined setup" adds Quality v2 + moat blend too.
+            ("Current + Quality exception", _sim_exception),
+            ("Quality v2 + Moat blend + Quality exception (final combined)", _sim_v2_moat_exception),
         ):
             _impact = top100_engine.pool_change_impact_and_cost(_sim_result, log=print)
             _impact_rows.append({
@@ -33757,6 +33790,87 @@ def _render_quality_v2_preview_panel():
         "Top 200: drop-outs / new entrants (Quality v2 + moat blend)", _sim_v2_moat,
         value_score_key=("Value Score (v2+moat)", "value_score_v2_moat"),
         extra_cols=[("Quality v2", "quality_v2"), ("Moat", "moat")],
+    )
+
+    # --- TASK 37 (Director-directed, 6 Nov 2026, ADBE case): Option 4
+    # (the exception alone, on top of today's plain formula) and
+    # Option 5 (the exception on top of the final combined scenario) -
+    # each shows the list of companies the high-quality exception
+    # would admit, for its own setup, plus ADBE named explicitly per
+    # the Director's own instruction (shown whether or not it's
+    # actually in this sandbox's own eligible-tonight candidate set -
+    # see _quality_exception_named_table()'s own docstring).
+    st.markdown("---")
+    st.markdown("### Option 4: Quality exception alone (current setup)")
+    _render_quality_exception_section(_sim_exception, value_score_key=("Value Score", "value_score"))
+
+    st.markdown("---")
+    st.markdown("### Option 5: Quality v2 + Moat blend + Quality exception (final combined)")
+    _render_quality_exception_section(
+        _sim_v2_moat_exception, value_score_key=("Value Score (v2+moat)", "value_score_v2_moat"),
+    )
+
+
+def _quality_exception_named_table(rows, value_score_key, named_tickers=("ADBE",)):
+    """TASK 37 (Director-directed, 6 Nov 2026): one row per admitted
+    company (top100_engine.quality_exception_admitted_rows(rows)) -
+    ticker, price, intrinsic value, the multiple (intrinsic_value /
+    price, trivially derived here, never stored as its own field - see
+    quality_exception_admitted_rows()'s own docstring), Quality, Moat,
+    and this setup's own Value Score column. Every ticker in
+    `named_tickers` (ADBE, the Director's own evidence ticker) is
+    FORCED into the output even when it isn't actually admitted (or
+    isn't even eligible tonight) - "(not admitted)"/"(not eligible
+    tonight)" rather than silently omitting the one ticker the
+    Director explicitly asked to see."""
+    admitted = top100_engine.quality_exception_admitted_rows(rows)
+    admitted_by_ticker = {r["ticker"]: r for r in admitted}
+    out = []
+    for r in admitted:
+        price, iv = r.get("price"), r.get("intrinsic_value")
+        multiple = (iv / price) if (price and iv) else None
+        out.append({
+            "Ticker": r["ticker"], "Company": r.get("company_name") or r["ticker"],
+            "Price": price, "Intrinsic Value": iv,
+            "Multiple": f"{multiple:.2f}x" if multiple is not None else None,
+            "Quality": r.get("quality"), "Moat": r.get("moat"),
+            value_score_key[0]: r.get(value_score_key[1]),
+        })
+    for t in named_tickers:
+        if t in admitted_by_ticker:
+            continue
+        row = (rows or {}).get(t)
+        if row is None:
+            out.append({"Ticker": t, "Company": "(not eligible tonight)", "Price": None,
+                        "Intrinsic Value": None, "Multiple": None, "Quality": None,
+                        "Moat": None, value_score_key[0]: None})
+        else:
+            price, iv = row.get("price"), row.get("intrinsic_value")
+            multiple = (iv / price) if (price and iv) else None
+            out.append({
+                "Ticker": t, "Company": (row.get("company_name") or t) + " (not admitted)",
+                "Price": price, "Intrinsic Value": iv,
+                "Multiple": f"{multiple:.2f}x" if multiple is not None else None,
+                "Quality": row.get("quality"), "Moat": row.get("moat"),
+                value_score_key[0]: row.get(value_score_key[1]),
+            })
+    return out
+
+
+def _render_quality_exception_section(sim_result, value_score_key, named_tickers=("ADBE",)):
+    """TASK 37 (Director-directed, 6 Nov 2026): "the list of companies
+    it would let back in" for ONE quality-exception scenario -
+    `sim_result` is simulate_pool_quality_exception()/simulate_pool_v2_
+    moat_and_exception()'s own return dict. Companies admitted +
+    ADBE named explicitly (see _quality_exception_named_table()'s own
+    docstring) - read-only, nothing here writes or changes the live
+    pool."""
+    rows = sim_result.get("rows") or {}
+    admitted = top100_engine.quality_exception_admitted_rows(rows)
+    st.metric("Would be admitted by the exception", len(admitted))
+    st.table(
+        _quality_exception_named_table(rows, value_score_key, named_tickers=named_tickers)
+        or [{"Ticker": "(none)"}]
     )
 
 

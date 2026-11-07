@@ -234,6 +234,12 @@ for _fixture_i in range(9):
         # TASK 35 (Director-directed, 6 Nov 2026) - same purely-
         # additive, shadow-only status as the TASK 32 keys above.
         "moat", "value_score_moat", "value_score_v2_moat",
+        # TASK 37 (Director-directed, 6 Nov 2026, ADBE case) - same
+        # purely-additive, never-read-by-sort/slice status: "quality_
+        # exception_admitted" (only ever True with TOP200_QUALITY_
+        # EXCEPTION_LIVE on, which this test never sets). 007d669
+        # predates this task too.
+        "quality_exception_admitted",
     )
     _canon = lambda p: json.dumps(
         [{k: v for k, v in row.items() if k not in _task32_shadow_keys} for row in p],

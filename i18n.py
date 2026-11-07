@@ -4256,6 +4256,12 @@ EN = {
         "Model value more than 3× the price — treated as a data "
         "artefact, not a discount."
     ),
+    # TASK 37 (Director-directed, 6 Nov 2026, ADBE case): a row
+    # admitted to the Top 200 by the high-quality exception to the 3x
+    # DCF-unreliable exclusion keeps its "DCF unreliable" warning
+    # visible (above) AND shows this extra chip, so a reader never
+    # mistakes it for a clean valuation.
+    "top100.quality_exception_chip": "Admitted: high quality + moat (valuation > 3x price)",
     # TASK 36 (Director-directed, owner-reported, 6 Nov 2026): the
     # weekly-pivot-low support-levels chip - a port of the owner's own
     # TradingView levels (ta.pivotlow(3,3), broken only after two
@@ -8086,6 +8092,7 @@ ES = {
         "Valor del modelo superior a 3× el precio — se trata como un "
         "artefacto de datos, no un descuento."
     ),
+    "top100.quality_exception_chip": "Admitida: alta calidad + foso (valoración > 3x precio)",
     "top100.support_chip": "Soporte {month_year} · {price} · +{pct_above}% por encima",
     "top100.no_support_chip": "Sin soporte por debajo - mínimo desde {month_year}",
     "top100.support_drop_suffix": " · {drop}% desde el máximo de 12 meses",

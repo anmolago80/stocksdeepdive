@@ -367,6 +367,12 @@ _TASK32_SHADOW_KEYS = (
     # above, for the moat-blend scenarios - "moat"/"value_score_moat"/
     # "value_score_v2_moat". 007d669 predates this task too.
     "moat", "value_score_moat", "value_score_v2_moat",
+    # TASK 37 (Director-directed, 6 Nov 2026, ADBE case) - same
+    # purely-additive, never-read-by-sort/slice status: "quality_
+    # exception_admitted" (only ever True with TOP200_QUALITY_
+    # EXCEPTION_LIVE on, which this test never sets). 007d669
+    # predates this task too.
+    "quality_exception_admitted",
 )
 
 
