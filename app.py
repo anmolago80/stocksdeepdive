@@ -33412,7 +33412,13 @@ def _quality_v2_diff_table(tickers, rows_v2):
             continue
         out.append({
             "Ticker": t, "Company": row.get("company_name") or t,
-            "Quality": row.get("quality"), "Quality v2": row.get("quality_v2"),
+            "Quality": row.get("quality"),
+            # TASK 40 (Director-directed, 8 Nov 2026, review finding):
+            # "v2 missing" rather than a bare None/blank cell - names
+            # the EXACT reason "Value Score v2" below is really the
+            # live Quality's own figure (the fallback _recompute_
+            # value_score_v2() now applies), not a computed v2 number.
+            "Quality v2": "v2 missing" if row.get("quality_v2_missing") else row.get("quality_v2"),
             "Value Score": row.get("value_score"), "Value Score v2": row.get("value_score_v2"),
         })
     return out
@@ -33443,7 +33449,13 @@ def _pool_shadow_diff_table(tickers, rows, value_score_key, extra_cols):
             continue
         entry = {"Ticker": t, "Company": row.get("company_name") or t}
         for label, key in extra_cols:
-            entry[label] = row.get(key)
+            # TASK 40 (Director-directed, 8 Nov 2026, review finding):
+            # same "v2 missing" label as _quality_v2_diff_table() above,
+            # for Option 3's own "Quality v2" extra column.
+            entry[label] = (
+                "v2 missing" if key == "quality_v2" and row.get("quality_v2_missing")
+                else row.get(key)
+            )
         entry["Value Score"] = row.get("value_score")
         entry[value_score_key[0]] = row.get(value_score_key[1])
         out.append(entry)
@@ -33932,7 +33944,7 @@ def _render_replay_at_date_panel():
         )
     except ValueError:
         _default_date = _date.today()
-    _date = st.date_input("Date", value=_default_date, key="admin_replay_date_input")
+    _replay_date = st.date_input("Date", value=_default_date, key="admin_replay_date_input")
     if _default_baseline_date:
         st.caption(f"Defaulted to {_ticker}'s own locked baseline date ({_default_baseline_date}).")
 
@@ -33963,9 +33975,22 @@ def _render_replay_at_date_panel():
         today_cutoff = None
 
     result = point_in_time_replay.replay_at_date(
-        _ticker, _date, baseline=_default_baseline, baseline_date=_default_baseline_date,
+        _ticker, _replay_date, baseline=_default_baseline, baseline_date=_default_baseline_date,
         bundle=bundle, daily_closes_with_dates=daily_closes_with_dates,
         today_cutoff=today_cutoff, log=print,
+    )
+    # 7 Nov 2026 follow-up (Director-directed): one summary line per
+    # run, readable from Railway logs without opening this panel -
+    # same "owner-reported, log it" precedent as every other owner-
+    # triggered admin action on this page (e.g. "Recompute this ticker
+    # now").
+    print(
+        f"[replay] {result['ticker']} as_of={result['date']} "
+        f"price={result['price']} ({result['price_source']}) "
+        f"iv={result['intrinsic_value']} ({result['intrinsic_value_source']}) "
+        f"quality_v1={result['quality_v1']} quality_v2={result['quality_v2']} "
+        f"moat={result['moat']} value_score={result['value_score']} "
+        f"today_cutoff={result['today_cutoff']} would_be_in_pool={result['would_be_in_pool']}"
     )
 
     st.markdown(f"#### {result['ticker']} as of {result['date']}")
@@ -34006,9 +34031,56 @@ def _render_replay_at_date_panel():
         "Quality exception thresholds met (Moat/Quality only)": result["quality_exception_thresholds_met"],
     }])
 
-    st.markdown("**What could not be reconstructed point-in-time**")
+    st.markdown("**What could not be reconstructed point-in-time (today's data "
+                "used instead, which biases the result toward today)**")
     for _lim in result["limitations"]:
         st.caption(f"- {_lim}")
+
+    # 7 Nov 2026 follow-up (Director-directed): explicit side-by-side
+    # against the holding's own recorded "At purchase" baseline - read
+    # straight from `_default_baseline` (the SAME baseline dict this
+    # panel already looked up above, never a second query), so any
+    # mismatch between this replay and the stored baseline is visible
+    # at a glance rather than requiring the owner to cross-reference
+    # the two tables above by eye.
+    if _default_baseline:
+        st.markdown("**vs. recorded \"At purchase\" baseline**")
+        _baseline_mos = (
+            ((_default_baseline.get("intrinsic_value") - _default_baseline.get("price"))
+             / _default_baseline.get("intrinsic_value") * 100)
+            if _default_baseline.get("intrinsic_value") and _default_baseline.get("price")
+            else None
+        )
+        def _fmt_replay_cell(v):
+            # Every cell rendered as a plain string (never a bare float)
+            # - the "MOS %" row is a string by necessity (it carries a
+            # "%" suffix), so every OTHER row in the SAME Baseline/
+            # Replay column must be a string too, or pyarrow's own
+            # table-building (st.table()'s backing format) raises a
+            # column-type conversion error building one mixed numeric/
+            # string column out of these 4 rows.
+            return "n/a" if v is None else str(v)
+
+        st.table([
+            {"Field": "Price", "Baseline": _fmt_replay_cell(_default_baseline.get("price")),
+             "Replay": _fmt_replay_cell(result["price"])},
+            {"Field": "Intrinsic Value", "Baseline": _fmt_replay_cell(_default_baseline.get("intrinsic_value")),
+             "Replay": _fmt_replay_cell(result["intrinsic_value"])},
+            {"Field": "MOS %", "Baseline": f"{_baseline_mos:.1f}%" if _baseline_mos is not None else "n/a",
+             "Replay": f"{result['mos_pct']:.1f}%" if result["mos_pct"] is not None else "n/a"},
+            {"Field": "Quality v1", "Baseline": _fmt_replay_cell(_default_baseline.get("quality_score")),
+             "Replay": _fmt_replay_cell(result["quality_v1"])},
+        ])
+        if result["date"] == _default_baseline_date:
+            st.caption("Date matches the baseline's own capture date, so Price/IV/Quality "
+                       "v1 above are the SAME number read twice (this replay sources them "
+                       "directly from the baseline) - any mismatch would indicate a bug, "
+                       "not a genuine discrepancy.")
+        else:
+            st.caption(f"Replay date ({result['date']}) differs from the baseline's own "
+                       f"capture date ({_default_baseline_date}) - Price/IV/Quality v1 "
+                       "are independently sourced (or 'n/a') for this date, so a "
+                       "difference here is expected, not a bug.")
 
 
 def _render_top200_schema_mode_panel():

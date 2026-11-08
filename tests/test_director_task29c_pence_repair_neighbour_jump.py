@@ -316,9 +316,15 @@ print(f"[task29c_t9_call_sites_confirmed] {len(_call_sites)} real call "
 
 # ======================================================================
 # T10 (BUNDLE_VERSION bump): confirmed bumped past TASK 29b's own 8.
+# Same forward-compat ">=" this task's own T11 (in test_director_
+# task29b_...py) already uses, not a hardcoded equality - a later
+# task's own bump (e.g. TASK 40 item 5's 9->10) must not break this
+# check, only ever move it further ahead.
 # ======================================================================
-check("BUNDLE_VERSION bumped to 9", fd.BUNDLE_VERSION == 9)
-print("[task29c_t10_bundle_version] BUNDLE_VERSION == 9 OK")
+check("BUNDLE_VERSION bumped to at least 9 (this task's own bump; a "
+      "later task may have bumped it further)", fd.BUNDLE_VERSION >= 9)
+print(f"[task29c_t10_bundle_version] BUNDLE_VERSION == {fd.BUNDLE_VERSION} "
+      "(>= 9) OK")
 
 
 print()

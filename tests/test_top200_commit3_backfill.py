@@ -240,6 +240,11 @@ for _fixture_i in range(9):
         # EXCEPTION_LIVE on, which this test never sets). 007d669
         # predates this task too.
         "quality_exception_admitted",
+        # TASK 40 (Director-directed, 8 Nov 2026, review finding) -
+        # same purely-additive status: "quality_v2_missing" (set
+        # alongside "quality_v2" on every row). 007d669 predates this
+        # task too.
+        "quality_v2_missing",
     )
     _canon = lambda p: json.dumps(
         [{k: v for k, v in row.items() if k not in _task32_shadow_keys} for row in p],

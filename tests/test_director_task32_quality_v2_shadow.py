@@ -282,10 +282,19 @@ if os.path.exists(ts.DB_PATH):
 scan_store.save_scan("S&P 500", [_scan_row("BBB6", quality=55.0, quality_v2=None)],
                       source_label="test fixture")
 _best7, _ = te._build_best_by_ticker(log=lambda *a, **k: None)
-check("no Quality V2 on this row -> value_score_v2 is None, quality_v2 is None",
-      _best7["BBB6"]["value_score_v2"] is None and _best7["BBB6"]["quality_v2"] is None)
-print("[task32_c7_no_quality_v2_is_none] a row with no Quality V2 gets None for "
-      "both shadow fields, never a crash OK")
+# TASK 40 (Director-directed, 8 Nov 2026, review finding): no Quality
+# V2 -> "quality_v2" itself stays None (never fabricated), but
+# "value_score_v2" now FALLS BACK to the live Quality (matching
+# "value_score" exactly) instead of being None, and "quality_v2_
+# missing" names why - see _recompute_value_score_v2()'s own
+# docstring for the full reasoning.
+check("no Quality V2 on this row -> quality_v2 stays None, quality_v2_missing is True, "
+      "value_score_v2 falls back to the live value_score (never None)",
+      _best7["BBB6"]["quality_v2"] is None and _best7["BBB6"]["quality_v2_missing"] is True
+      and _best7["BBB6"]["value_score_v2"] == _best7["BBB6"]["value_score"])
+print("[task32_c7_no_quality_v2_falls_back] a row with no Quality V2 falls back to the "
+      "live Quality for value_score_v2 (flagged quality_v2_missing), never shows as "
+      "dropped/blank in a direct read OK")
 
 
 # ======================================================================
@@ -320,6 +329,11 @@ _NON_LIVE_FIELDS = (
     # above all "value_score" itself) is untouched - never that the
     # shadow fields themselves vanish.
     "quality", "quality_v2", "quality_v2_meta", "value_score_v2",
+    # TASK 40 (Director-directed, 8 Nov 2026, review finding): same
+    # additive-shadow-field status - "quality_v2_missing" is SUPPOSED
+    # to differ between these two fixtures too (one has Quality V2,
+    # one doesn't).
+    "quality_v2_missing",
     # TASK 35 (Director-directed, 6 Nov 2026): the moat-blend shadow
     # fields are additive the exact same way - "value_score_v2_moat"
     # in particular depends on "Quality V2" (None here, a real number

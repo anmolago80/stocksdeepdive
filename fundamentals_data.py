@@ -119,7 +119,18 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # above _PENCE_HISTORY_NEIGHBOUR_JUMP_RATIO_RANGE for the full
 # writeup. Bumped again for the same reason as every prior bump here -
 # every cached .L bundle/Compounder section must rebuild.
-BUNDLE_VERSION = 9
+# 9->10 (TASK 40 item 5, Director-directed, 8 Nov 2026, ELS.AX live
+# case): flags=["currency_converted"] used to be appended unconditionally
+# once _convert_statement_currency() had been called on all four
+# statements, with no check that the conversion actually succeeded for
+# every one of them - see that function's own docstring and get_bundle()'s
+# call site comment for the full writeup. A bundle cached under the OLD
+# logic may be carrying a false "currency_converted" flag (and therefore
+# a still-raw, unconverted cashflow_df) for any dual-currency ticker
+# whose conversion silently partially failed - bumped so every such
+# cached bundle rebuilds under the honest flag immediately, rather than
+# waiting up to 24h for its own cache TTL.
+BUNDLE_VERSION = 10
 
 
 def _data_dir():
@@ -346,12 +357,42 @@ def _convert_statement_currency(df, from_ccy, to_ccy):
     had moved since. Now converts EACH column at that column's own
     period-end date, via currency_risk_engine.historical_fx_rate() -
     the same cached daily-close series the Currency Risk page already
-    maintains, never a second live fetch per column."""
+    maintains, never a second live fetch per column.
+
+    TASK 40 item 5 (Director-directed, 8 Nov 2026, ELS.AX live case):
+    now returns (converted_df, converted_ok) instead of just
+    converted_df. converted_ok is True only when there was nothing to
+    convert (df is None/empty - trivially nothing to get wrong) or
+    EVERY column's rate actually resolved; False whenever the `except`
+    fallback below fired (returning `df` UNCONVERTED) or even ONE
+    column's rate came back None - see historical_fx_rate()'s own
+    comment on why that can still happen in a rare edge case. This
+    function's one caller (get_bundle(), below) used to append
+    flags=["currency_converted"] UNCONDITIONALLY once it had called
+    this for all four statements, with no check that any of the four
+    calls actually succeeded - a silently-swallowed exception (or a
+    single column's rate lookup quietly falling through to None)
+    left that ONE statement's DataFrame fully or partly UNCONVERTED
+    while the flag still claimed full success. _dcf_info_with_
+    verified_currency_override() (auto_compounder_engine.py, TASK 35
+    item B) trusts that flag to skip re-converting cashflow_df itself
+    - so a false "currency_converted" meant the Fair Value DCF path
+    used ELS.AX's still-raw USD cashflow as if it were already AUD
+    (understating intrinsic value by the USD/AUD fx rate), while the
+    Deep Dive DCF path - which never reads this flag at all, see that
+    module's own [dcf_diag] line - independently fetches a raw
+    cashflow and converts it itself, landing on the correct, larger
+    IV. Returning an honest ok=False here means get_bundle() can stop
+    claiming "currency_converted" for a bundle it didn't actually
+    fully convert, so the Fair Value path falls through to the DCF
+    engine's own internal conversion instead - the same one Deep Dive
+    already uses - rather than skipping it on a false promise."""
     if df is None or df.empty:
-        return df
+        return df, True
     try:
         numeric = df.apply(pd.to_numeric, errors="coerce")
         converted = numeric.copy()
+        ok = True
         for col in numeric.columns:
             rate, _source = currency_risk_engine.historical_fx_rate(from_ccy, to_ccy, col)
             # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
@@ -362,17 +403,22 @@ def _convert_statement_currency(df, from_ccy, to_ccy):
             # why rate can still be None here in a rare edge case).
             # NaN, never a silent 1.0/None-multiply crash, for that one
             # column - same "fails soft, flags rather than invents"
-            # philosophy as every other guard in this module.
+            # philosophy as every other guard in this module. Also
+            # marks the whole conversion not-fully-ok (TASK 40 item 5)
+            # since at least one column is now NaN rather than genuinely
+            # converted - a caller that only checks "did this raise"
+            # would otherwise miss a partial conversion like this one.
             if rate is None:
                 converted[col] = float("nan")
+                ok = False
                 continue
             converted[col] = numeric[col] * rate
         non_monetary = [label for label in numeric.index if _is_non_monetary_row(label)]
         if non_monetary:
             converted.loc[non_monetary] = numeric.loc[non_monetary]
-        return converted
+        return converted, ok
     except Exception:
-        return df
+        return df, False
 
 
 # -----------------------------------
@@ -1797,14 +1843,12 @@ def get_bundle(ticker, force_refresh=False):
         # GEL->GBP fallback 1 (live fetch failed)", a FTSE 100 company
         # reporting in Georgian lari valued as if 1 GEL = 1 GBP. Checked
         # once here, up front, rather than inside _convert_statement_
-        # currency()'s own per-column historical_fx_rate() calls - that
-        # function has many existing callers that all assume it always
-        # returns a DataFrame, so this gates BEFORE calling it rather
-        # than changing its return contract. A pair unresolvable today
-        # is unresolvable for every column regardless of that column's
-        # own period-end date (unresolvability is a property of the
-        # currency pair, not the date - the live/static/cross-rate
-        # checks fx_rate() runs are all date-independent).
+        # currency()'s own per-column historical_fx_rate() calls - a
+        # pair unresolvable today is unresolvable for every column
+        # regardless of that column's own period-end date
+        # (unresolvability is a property of the currency pair, not the
+        # date - the live/static/cross-rate checks fx_rate() runs are
+        # all date-independent).
         _fx_check, _ = fcf_valuation_engine.fx_rate(fin_ccy, list_ccy)
         if _fx_check is None:
             fx_unavailable = True
@@ -1815,11 +1859,29 @@ def get_bundle(ticker, force_refresh=False):
             # inside _convert_statement_currency() - no single up-front
             # `fx` value to gate on any more (see that function's own
             # docstring for why a flat rate here was the bug).
-            income = _convert_statement_currency(income, fin_ccy, list_ccy)
-            balance = _convert_statement_currency(balance, fin_ccy, list_ccy)
-            cashflow = _convert_statement_currency(cashflow, fin_ccy, list_ccy)
-            income_q = _convert_statement_currency(income_q, fin_ccy, list_ccy)
-            flags.append("currency_converted")
+            #
+            # TASK 40 item 5 (Director-directed, 8 Nov 2026, ELS.AX live
+            # case): _convert_statement_currency() now reports whether
+            # it actually converted each statement (see its own
+            # docstring) - this is now the ONLY call site, so changing
+            # its return shape to (df, ok) is safe. flags only gets
+            # "currency_converted" when ALL FOUR genuinely converted;
+            # otherwise "currency_conversion_partial", so a downstream
+            # consumer of this flag (auto_compounder_engine._dcf_info_
+            # with_verified_currency_override(), TASK 35 item B) can no
+            # longer be told a statement was converted when it wasn't -
+            # a false "currency_converted" is exactly what made the
+            # Fair Value DCF path use ELS.AX's still-raw USD cashflow as
+            # if it were already AUD, understating its intrinsic value
+            # against the Deep Dive page's own (correct) figure.
+            income, _income_ok = _convert_statement_currency(income, fin_ccy, list_ccy)
+            balance, _balance_ok = _convert_statement_currency(balance, fin_ccy, list_ccy)
+            cashflow, _cashflow_ok = _convert_statement_currency(cashflow, fin_ccy, list_ccy)
+            income_q, _income_q_ok = _convert_statement_currency(income_q, fin_ccy, list_ccy)
+            if _income_ok and _balance_ok and _cashflow_ok and _income_q_ok:
+                flags.append("currency_converted")
+            else:
+                flags.append("currency_conversion_partial")
 
     # Stage 1a (3 Oct 2026, Director-directed): trailingEps/bookValue
     # re-derivation for a GBp-normalised ticker - see _derive_eps_

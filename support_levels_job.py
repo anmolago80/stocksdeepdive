@@ -163,6 +163,17 @@ def compute_and_store_support_levels_for_pool(log=print):
                 )
                 if len(closes) < SUPPORT_LEVELS_MIN_WEEKLY_BARS:
                     failed += 1
+                    # 7 Nov 2026 follow-up (Director-directed): the
+                    # Director's own nightly log review found "1
+                    # failed/skipped" with no way to tell WHICH ticker
+                    # or why - this path previously had no per-ticker
+                    # log line at all, only the counter above. Named
+                    # here so a bad night's log always answers "which
+                    # one, and how short" directly, no guessing.
+                    log(f"[support_levels] {t}: skipped - only {len(closes)} weekly "
+                        f"bar(s) available (need >= {SUPPORT_LEVELS_MIN_WEEKLY_BARS}) "
+                        f"- likely no/insufficient price history returned for this "
+                        f"ticker tonight (new listing, delisted, or a failed download)")
                     continue
                 result = support_levels_engine.compute_support_levels(dates, highs, lows, closes)
                 support_levels_store.save(t, result, currency=by_ticker[t]["currency"])
@@ -177,6 +188,31 @@ def compute_and_store_support_levels_for_pool(log=print):
     log(f"[support_levels] {len(tickers)} tickers in {n_chunks} chunk(s) of "
         f"<={SUPPORT_LEVELS_CHUNK_SIZE}, {computed} computed, {failed} failed/skipped, "
         f"in {mins}m {secs}s")
+
+    # 7 Nov 2026 follow-up (Director-directed): one explicit line per
+    # run for the Director's own named evidence tickers, so the real
+    # support levels can be read straight from the Railway log without
+    # needing DB/admin-panel access - same "named tickers, explicit
+    # log line" precedent as top100_engine's own "[top100] quality
+    # exception: ..." line. Reads back from support_levels_store (just
+    # written above, this same run) rather than recomputing - a
+    # missing entry (not currently a pool/extension member, or it
+    # failed above) logs plainly as "no entry", never fabricated.
+    for _named in ("OCL.AX", "CSL.AX", "VAP.AX", "IVV.AX"):
+        _entry = support_levels_store.get(_named)
+        if not _entry:
+            log(f"[support_levels] {_named}: no entry (not a current pool/extension "
+                f"member, or tonight's computation failed/skipped for it)")
+        elif _entry.get("has_support"):
+            log(f"[support_levels] {_named}: support={_entry.get('support_price')} "
+                f"({_entry.get('support_date')}) next_support={_entry.get('next_support_price')} "
+                f"({_entry.get('next_support_date')}) drop_from_12m_high="
+                f"{_entry.get('drop_from_12m_high')}")
+        else:
+            log(f"[support_levels] {_named}: no support below - lowest_since="
+                f"{_entry.get('lowest_since_price')} ({_entry.get('lowest_since_date')}) "
+                f"drop_from_12m_high={_entry.get('drop_from_12m_high')}")
+
     return {
         "tickers": len(tickers), "chunks": n_chunks, "computed": computed,
         "failed": failed, "elapsed_seconds": elapsed,

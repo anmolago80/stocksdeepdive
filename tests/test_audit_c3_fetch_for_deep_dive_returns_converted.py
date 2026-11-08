@@ -76,7 +76,12 @@ _BUNDLE_NO_CCY = {"info": {}}
 # ======================================================================
 with mock.patch("yfinance.Ticker") as _mock_yf_ticker, \
      mock.patch.object(fundamentals_data, "peek_cached_bundle", return_value=_BUNDLE_WITH_CCY), \
-     mock.patch.object(fundamentals_data, "_convert_statement_currency", return_value=CONVERTED_INCOME) as _mock_convert:
+     mock.patch.object(fundamentals_data, "_convert_statement_currency",
+                        # TASK 40 item 5 (8 Nov 2026): _convert_statement_
+                        # currency() now returns (df, ok) - see that
+                        # function's own docstring - so this mock must
+                        # match that two-tuple shape, not a bare DataFrame.
+                        return_value=(CONVERTED_INCOME, True)) as _mock_convert:
     _mock_yf_ticker.return_value.income_stmt = RAW_INCOME
     _result = fis.fetch_for_deep_dive("CONVTEST")
 

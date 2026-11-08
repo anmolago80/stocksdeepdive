@@ -210,5 +210,24 @@ check(f"support_chip_month_es (chip={_chip_es!r})", "nov 2025" in _chip_es)
 check("support_chip_month_es_not_capitalized", "Nov 2025" not in _chip_es)
 
 
+# ======================================================================
+# CHECK 13 (7 Nov 2026 follow-up, Director-directed): a ticker with too
+# few weekly bars is now named in its own log line - the Director's
+# own real production gap ("1 failed/skipped" with no ticker named).
+# ======================================================================
+_too_short_df = _daily_df([10.0, 10.1, 10.2, 10.3, 10.4])  # far fewer than 7 weekly bars
+_logged = []
+slj._weekly_bars_from_daily(_too_short_df, "SHORT.AX", 10.0, log=lambda *a: None)
+# Exercise the real skip path inside compute_and_store_support_levels_for_pool()
+# via a monkeypatched download so this ticker is the only candidate.
+import unittest.mock as _mock
+with _mock.patch.object(slj, "_pool_and_extension_tickers_with_currency",
+                         return_value={"SHORT.AX": {"currency": "AUD", "price": 10.0}}):
+    with _mock.patch.object(slj, "_download_chunk", return_value={"SHORT.AX": _too_short_df}):
+        slj.compute_and_store_support_levels_for_pool(log=lambda m: _logged.append(m))
+check(f"skip path now names the failing ticker and bar count (logged={_logged})",
+      any("SHORT.AX: skipped - only" in m and "weekly bar(s) available" in m for m in _logged))
+
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

@@ -373,6 +373,10 @@ _TASK32_SHADOW_KEYS = (
     # EXCEPTION_LIVE on, which this test never sets). 007d669
     # predates this task too.
     "quality_exception_admitted",
+    # TASK 40 (Director-directed, 8 Nov 2026, review finding) - same
+    # purely-additive status: "quality_v2_missing" (set alongside
+    # "quality_v2" on every row). 007d669 predates this task too.
+    "quality_v2_missing",
 )
 
 

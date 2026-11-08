@@ -842,17 +842,33 @@ def _recompute_value_score_v2(row):
     discovery_measured=False) is identical to the live recompute - only
     the Quality input differs.
 
-    None when this row has no "Quality V2" at all - an older scan file
-    saved before this task, or a ticker this run's shadow computation
-    hasn't reached yet. Never read by select_top100_pool()'s own sort/
-    slice (which only ever reads "value_score") - shadow/display only,
-    consumed by simulate_pool_v2() below for the owner's "Quality v2
-    preview" admin panel."""
+    TASK 40 (Director-directed, 8 Nov 2026, review finding): FALLS
+    BACK to the row's live "Quality" (v1) when "Quality V2" is missing
+    - an older scan file saved before TASK 32, or a ticker this run's
+    shadow computation hasn't reached yet - rather than returning
+    None. This previously made a row with no v2 look like it had
+    dropped out of the v2 preview entirely (None sorts fine via
+    _value_score_v2_sort_key()'s own separate fallback to "value_
+    score", but every DISPLAY table that reads "value_score_v2"
+    directly - the diff tables, the quality-exception admitted-rows
+    list - showed a blank). The fallback here produces the EXACT SAME
+    NUMBER _value_score_v2_sort_key() already substitutes (mode=
+    "current" on the live Quality), so there is no second, diverging
+    source of truth - this just stops hiding it. best_by_ticker's own
+    "quality_v2_missing" flag (set alongside this field, see that call
+    site's own comment) is what a caller checks to tell "this IS v2"
+    apart from "this fell back to v1" - never silently assumed. Still
+    None when this row has no "Quality" at all either (should not
+    happen for a real scanned row - defensive only). Never read by
+    select_top100_pool()'s own sort/slice (which only ever reads
+    "value_score") - shadow/display only, consumed by simulate_pool_v2()
+    below for the owner's "Quality v2 preview" admin panel."""
     quality_v2 = row.get("Quality V2")
-    if quality_v2 is None:
+    quality = quality_v2 if quality_v2 is not None else row.get("Quality")
+    if quality is None:
         return None
     return ranking_engine.calculate_long_score(
-        quality_v2, row.get("MOS %") or 0.0, row.get("Psychology"),
+        quality, row.get("MOS %") or 0.0, row.get("Psychology"),
         row.get("Discovery (lite)") or 0, discovery_measured=False,
     )
 
@@ -877,17 +893,25 @@ def _recompute_value_score_v2_moat(row):
     """TASK 35 item A3 (6 Nov 2026, Director-directed) - SHADOW MODE /
     TEST ONLY: the COMBINED scenario - "Quality V2" (quality_v2_
     engine.py's through-the-cycle score) blended with this row's stored
-    "Moat" score, both at once. None when this row has no "Quality V2"
-    yet (same guard as _recompute_value_score_v2() above) - a missing
-    Moat score alone does not withhold this (it falls through to
-    calculate_long_score()'s own missing-moat reweighting instead, same
-    as _recompute_value_score_moat() above)."""
+    "Moat" score, both at once.
+
+    TASK 40 (Director-directed, 8 Nov 2026, review finding): FALLS
+    BACK to the live "Quality" when "Quality V2" is missing - same
+    fallback, same "stops hiding a value the sort key already
+    substitutes" reasoning as _recompute_value_score_v2() above (this
+    fallback produces the exact same number _recompute_value_score_
+    moat() already computes). A missing Moat score alone never
+    withholds this either way (falls through to calculate_long_
+    score()'s own missing-moat reweighting, same as _recompute_value_
+    score_moat() above). None only when this row has no "Quality" at
+    all (defensive only)."""
     quality_v2 = row.get("Quality V2")
-    if quality_v2 is None:
+    quality = quality_v2 if quality_v2 is not None else row.get("Quality")
+    if quality is None:
         return None
-    row_with_quality_v2 = dict(row)
-    row_with_quality_v2["Quality"] = quality_v2
-    return ranking_engine.recompute_value_score(row_with_quality_v2, moat_blend=True)
+    row_with_quality = dict(row)
+    row_with_quality["Quality"] = quality
+    return ranking_engine.recompute_value_score(row_with_quality, moat_blend=True)
 
 
 def _build_best_by_ticker(log=print, quality_exception_override=None):
@@ -1213,6 +1237,14 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                     "quality": row.get("Quality"),
                     "quality_v2": row.get("Quality V2"),
                     "quality_v2_meta": row.get("Quality V2 Meta"),
+                    # TASK 40 (Director-directed, 8 Nov 2026, review
+                    # finding): True whenever this row has no "Quality
+                    # V2" at all - the flag a caller checks to tell
+                    # "value_score_v2 is a REAL v2 figure" apart from
+                    # "value_score_v2 fell back to live Quality" (see
+                    # _recompute_value_score_v2()'s own docstring for
+                    # why that fallback exists now rather than None).
+                    "quality_v2_missing": row.get("Quality V2") is None,
                     "value_score_v2": _recompute_value_score_v2(row),
                     # TASK 35 item A3 (6 Nov 2026, Director-directed) -
                     # SHADOW MODE / TEST ONLY: same "always compute the

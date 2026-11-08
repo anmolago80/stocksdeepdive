@@ -68,6 +68,21 @@ assert rate == 1.0 and source == "identity"
 print("[historical_fx_rate_identity] same currency both sides -> 1.0, never even looks at "
       "cached history OK")
 
+# TASK 40 item 5 (Director-directed, 8 Nov 2026, ELS.AX live case): a
+# genuine exception inside the live-fallback call used to come back as
+# a FAKE identity rate of 1.0 ("live_fallback"), indistinguishable from
+# a real 1:1 pair - fundamentals_data._convert_statement_currency()
+# then silently applied that fake 1.0 as if it were a real rate,
+# leaving a statement effectively unconverted while still reporting
+# success. Must now return None (the same "no basis for a rate" signal
+# the no-rate-found branch already uses), never a fabricated 1.0.
+with mock.patch.object(cre, "get_fx_history", return_value=None):
+    with mock.patch("fcf_valuation_engine.fx_rate", side_effect=RuntimeError("boom")):
+        rate, source = cre.historical_fx_rate("USD", "AUD", "2023-06-28")
+assert rate is None and source == "unavailable"
+print("[historical_fx_rate_exception_not_fake_identity] an exception in the live-fallback call "
+      "returns None, never a fabricated 1.0 rate OK")
+
 
 # ---- fundamentals_data._convert_statement_currency(): per-column, not flat ----
 YEARS = [pd.Timestamp("2022-06-30"), pd.Timestamp("2023-06-30"), pd.Timestamp("2024-06-30")]
@@ -85,7 +100,10 @@ def _fake_historical_rate(base, quote, target_date):
 
 
 with mock.patch.object(fd.currency_risk_engine, "historical_fx_rate", side_effect=_fake_historical_rate):
-    converted = fd._convert_statement_currency(df, "USD", "AUD")
+    converted, converted_ok = fd._convert_statement_currency(df, "USD", "AUD")
+assert converted_ok is True
+print("[converted_ok_true] every column resolved a real rate -> converted_ok is True "
+      "(TASK 40 item 5's new honesty flag) OK")
 
 # Reproduces the bug first: a flat "today's rate" (say, YEARS[2]'s 1.40)
 # applied to EVERY column would have given Net Income[YEARS[0]] = 140.0,
@@ -110,9 +128,32 @@ print("[non_monetary_rows_unconverted] a share-count row is left untouched in ev
       "same protection Audit fix 1.7 already established OK")
 
 # Empty / None input still degrades gracefully.
-assert fd._convert_statement_currency(pd.DataFrame(), "USD", "AUD").empty
-assert fd._convert_statement_currency(None, "USD", "AUD") is None
-print("[empty_input_safe] an empty or missing DataFrame is returned unchanged, not a crash OK")
+_empty_df, _empty_ok = fd._convert_statement_currency(pd.DataFrame(), "USD", "AUD")
+assert _empty_df.empty and _empty_ok is True
+_none_df, _none_ok = fd._convert_statement_currency(None, "USD", "AUD")
+assert _none_df is None and _none_ok is True
+print("[empty_input_safe] an empty or missing DataFrame is returned unchanged, not a crash, "
+      "and reported as trivially 'ok' (nothing to get wrong) OK")
+
+# TASK 40 item 5 (ELS.AX live case): a per-column rate that can't be
+# resolved (None) must mark the WHOLE conversion not-ok, even though
+# the function itself doesn't raise - this is exactly the gap that let
+# get_bundle() claim "currency_converted" for a statement that still
+# had a raw, unconverted column in it.
+with mock.patch.object(fd.currency_risk_engine, "historical_fx_rate", return_value=(None, "unavailable")):
+    _unresolved_df, _unresolved_ok = fd._convert_statement_currency(df, "USD", "AUD")
+assert _unresolved_ok is False
+print("[unresolved_rate_marks_not_ok] a column whose rate can't be resolved marks the "
+      "conversion not-ok, not a silent partial success OK")
+
+# And a genuine exception during conversion (e.g. historical_fx_rate()
+# itself raising) must ALSO report not-ok, same as the unresolved-rate
+# case - the df comes back unconverted either way.
+with mock.patch.object(fd.currency_risk_engine, "historical_fx_rate", side_effect=RuntimeError("boom")):
+    _exc_df, _exc_ok = fd._convert_statement_currency(df, "USD", "AUD")
+assert _exc_ok is False and _exc_df.loc["Net Income", YEARS[0]] == 100.0
+print("[exception_marks_not_ok] an exception mid-conversion returns the ORIGINAL unconverted "
+      "df and reports not-ok, never a false success OK")
 
 
 print("\nALL B2.1 FX-HISTORY FIXTURES PASSED")

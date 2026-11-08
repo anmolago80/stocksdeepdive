@@ -338,5 +338,77 @@ print("[task38_check7_exception_and_pool_membership] the 3x-rule check and "
       "would_be_in_pool degrades to None (never guessed) with no today_cutoff OK")
 
 
+# ======================================================================
+# CHECK 8 (TASK 40 follow-up, Director-verified root cause, 8 Nov
+# 2026): the real app._render_replay_at_date_panel() end-to-end, under
+# AppTest - clicking "Run replay" must never raise. This is the exact
+# regression class the Director's own review caught: `_date = st.
+# date_input(...)` inside the function shadowed the module-level
+# `date as _date` import, making `_date.fromisoformat()`/`_date.
+# today()` (evaluated earlier in the same function) raise
+# UnboundLocalError the moment the function is actually RUN (never
+# caught by import-only/syntax checks, since Python only resolves a
+# name's scope - local vs. global - at compile time per function, not
+# per line). Fixed by renaming the widget's own local to `_replay_date`;
+# this test renders the panel and clicks the button so this exact
+# class of bug can never silently reappear.
+# ======================================================================
+from streamlit.testing.v1 import AppTest
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _run_replay_panel():
+    script = f"""
+import os, sys, datetime
+sys.path.insert(0, {_REPO_ROOT!r})
+os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = {TESTVOL!r}
+import pandas as pd
+import streamlit as st
+import app
+import fundamentals_data
+import top100_engine
+
+app._replay_find_holding_default = lambda ticker: (
+    {{"price": 120.0, "intrinsic_value": 196.61, "quality_score": 51.0}}, "2026-07-16",
+)
+fundamentals_data.get_bundle = lambda ticker, force_refresh=False: {{
+    "income": pd.DataFrame(), "balance": pd.DataFrame(), "cashflow": pd.DataFrame(), "info": {{}},
+}}
+top100_engine.pool_value_score_cutoff = lambda: 47.4
+
+
+class _FakeYfTicker:
+    def __init__(self, ticker):
+        pass
+
+    def history(self, period="2y"):
+        idx = pd.bdate_range(end=datetime.date(2026, 7, 16), periods=120)
+        return pd.DataFrame({{"Close": [120.0 + i * 0.1 for i in range(120)]}}, index=idx)
+
+
+app.yf.Ticker = _FakeYfTicker
+
+app._render_replay_at_date_panel()
+"""
+    at = AppTest.from_string(script, default_timeout=60)
+    at.run()
+    assert not at.exception, f"initial render raised: {at.exception}"
+    at.button(key="admin_replay_button").click().run()
+    return at
+
+
+_at = _run_replay_panel()
+check(f"_render_replay_at_date_panel(): clicking 'Run replay' never raises "
+      f"(exception={_at.exception})", not _at.exception)
+check("_render_replay_at_date_panel(): the result actually rendered (ticker "
+      "heading present somewhere in the page)",
+      any("CSL.AX" in str(getattr(el, 'value', '')) or "CSL.AX" in str(getattr(el, 'body', ''))
+          for el in _at.markdown) or any("CSL.AX" in str(h) for h in _at.markdown))
+print("[task38_check8_panel_appTest] _render_replay_at_date_panel() renders and "
+      "a button click runs the real replay without raising - the exact "
+      "UnboundLocalError class of bug is now caught by a real test OK")
+
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

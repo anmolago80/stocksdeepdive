@@ -216,12 +216,37 @@ def _fallback_only_score(info):
     }
 
 
+def _is_mortgage_reit(info):
+    """TASK 40 (Director-directed, 8 Nov 2026, review finding): True
+    for Yahoo's "REIT - Mortgage" industry (ORC/NLY/AGNC/DX/NREF/REFI
+    and similar) - a balance-sheet LENDER (borrows short, holds a
+    leveraged book of mortgage-backed securities/loans), economically
+    a bank, not an operating real-estate owner. financials_classifier.
+    is_financials()'s own REIT/real-estate exclusion (2 Oct 2026,
+    owner-directed) is unconditional on "reit"/"real estate" appearing
+    anywhere in the industry string - correct for an equity/property
+    REIT (its FCF/ROIC are still meaningful), wrong for a mortgage
+    REIT (net income/ROE is the only meaningful read, exactly like a
+    bank - see financials_classifier.py's own module docstring on
+    Fable's principle). Scoped to Quality v2 ONLY, per the Director's
+    own explicit instruction - financials_classifier.is_financials()
+    itself (moat_engine.py's ROIC/ROE pillar choice, fcf_valuation_
+    engine.py's DCF path) is deliberately NOT touched here; widening
+    this to those callers is a separate decision this task doesn't
+    make. Matches on "reit" AND "mortgage" both present (case-
+    insensitive substring), robust to Yahoo's own minor punctuation
+    variance ("REIT - Mortgage", "REIT—Mortgage") rather than an exact
+    string match."""
+    industry = (info.get("industry") or "").lower()
+    return "reit" in industry and "mortgage" in industry
+
+
 def _get_quality_score_v2(ticker, bundle, info):
     bundle = bundle or {}
     info = info if info is not None else (bundle.get("info") or {})
     income, balance, cashflow = bundle.get("income"), bundle.get("balance"), bundle.get("cashflow")
 
-    financials_mode = financials_classifier.is_financials(info, ticker=ticker)
+    financials_mode = financials_classifier.is_financials(info, ticker=ticker) or _is_mortgage_reit(info)
     fy_dates = [] if financials_mode else _fy_dates(income)
 
     fallback_fields = []

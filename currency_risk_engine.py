@@ -250,7 +250,18 @@ def historical_fx_rate(base, quote, target_date):
             return None, "unavailable"
         return rate, "live_fallback"
     except Exception:
-        return 1.0, "live_fallback"
+        # TASK 40 item 5 (Director-directed, 8 Nov 2026, ELS.AX live
+        # case): this used to return a FAKE identity rate of 1.0 on any
+        # exception here (e.g. fx_valuation_engine.fx_rate() itself
+        # raising), indistinguishable downstream from a genuine 1:1
+        # currency pair - fundamentals_data._convert_statement_currency()
+        # applied it as if it were a real rate, silently leaving a
+        # statement effectively UNCONVERTED (multiplying by 1.0) while
+        # still reporting success. None (the same "no basis for a rate"
+        # signal the sibling branch just above already uses) lets that
+        # caller tell a genuine failure apart from an identity pair and
+        # stop trusting a conversion that didn't actually happen.
+        return None, "unavailable"
 
 
 def slice_range(dates, closes, range_key):

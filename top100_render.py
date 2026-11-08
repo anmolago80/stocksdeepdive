@@ -1231,9 +1231,6 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     quality_exception_chip = _quality_exception_chip_html(row, lang)
     if quality_exception_chip:
         header_bits.append(quality_exception_chip)
-    support_chip = _support_chip_html(row, lang)
-    if support_chip:
-        header_bits.append(support_chip)
 
     spread_pct = _tradability_spread_pct(ticker)
     tradable_chip = ""
@@ -1241,12 +1238,27 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
         tradable_chip = _tradability_chip_html(spread_pct, lang)
     sentiment_chip = _sentiment_chip_html(row.get("psychology"), lang)
 
+    # TASK 40 (Director-directed, 8 Nov 2026, card-layout review): the
+    # support chip (TASK 36) is its OWN row, in its OWN div, never
+    # folded into header_bits/tradable_chip/sentiment_chip's shared
+    # wrapping flex container above - that container's own content/
+    # order is otherwise byte-identical to before TASK 36 ever
+    # touched this function, so rows 1-2 can never move or re-wrap
+    # because of this chip's presence or width. The TASK 39 drop-from-
+    # 3y-peak chip lands in this SAME new row when it's built.
+    support_chip = _support_chip_html(row, lang)
+    support_row_html = (
+        "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:6px;'>"
+        + support_chip + "</div>"
+    ) if support_chip else ""
+
     st.markdown(
         f"<div style='background:#0b1526;border:1px solid #1a2b4a;{_row_edge_accent_style(score_row)}"
         "border-radius:10px;padding:10px 14px;margin-bottom:8px;'>"
         "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:12px;'>"
         + "".join(header_bits) + tradable_chip + sentiment_chip +
         "</div>"
+        + support_row_html
         + (home_country_html or "") +
         "<div style='margin-top:8px;'>"
         + "".join(

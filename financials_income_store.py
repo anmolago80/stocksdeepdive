@@ -289,14 +289,28 @@ def _save_direct_fetch(ticker, income_df, bundle, source):
     (`converted`, or the original `income_df` on the unconverted
     branch) - see fetch_for_deep_dive()'s own comment for the caller
     that needs this instead of its own raw `income_df`. run_nightly_
-    prepass()'s own call site ignores the return value, unaffected."""
+    prepass()'s own call site ignores the return value, unaffected.
+
+    TASK 40 item 5 (Director-directed, 8 Nov 2026, ELS.AX live case):
+    fundamentals_data._convert_statement_currency() now returns
+    (df, ok) - see that function's own docstring for why "ok" matters
+    (the same silently-swallowed-exception/unresolved-rate class of
+    bug this task fixed in fundamentals_data.get_bundle()'s own call
+    site). currency_converted is now only ever recorded True when the
+    conversion actually succeeded, same honesty fix applied there -
+    a store entry this function itself marked "converted" must never
+    disagree with what its own income table actually holds."""
     info = (bundle or {}).get("info") or {}
     fin_ccy = (info.get("financialCurrency") or info.get("currency") or "").upper()
     listing_ccy = (info.get("currency") or "").upper()
     if fin_ccy and listing_ccy:
-        converted = (fundamentals_data._convert_statement_currency(income_df, fin_ccy, listing_ccy)
-                     if fin_ccy != listing_ccy else income_df)
-        save(ticker, converted, currency=listing_ccy, source=source, currency_converted=True)
+        if fin_ccy != listing_ccy:
+            converted, converted_ok = fundamentals_data._convert_statement_currency(
+                income_df, fin_ccy, listing_ccy
+            )
+        else:
+            converted, converted_ok = income_df, True
+        save(ticker, converted, currency=listing_ccy, source=source, currency_converted=converted_ok)
         return converted
     save(ticker, income_df, currency=None, source=f"{source}_unconverted",
          currency_converted=False)

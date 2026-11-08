@@ -324,10 +324,15 @@ if os.path.exists(ts.DB_PATH):
 scan_store.save_scan("S&P 500", [_scan_row("BBB35", quality=55.0, quality_v2=None)],
                       source_label="test fixture")
 _best35b, _ = te._build_best_by_ticker(log=lambda *a, **k: None)
-check("no Quality V2 on this row -> 'value_score_v2_moat' is None (same None-guard "
-      "as 'value_score_v2' itself)", _best35b["BBB35"]["value_score_v2_moat"] is None)
-print("[task35_a6b_v2_moat_none_guard] value_score_v2_moat is None whenever Quality V2 "
-      "itself is missing, never a crash OK")
+# TASK 40 (Director-directed, 8 Nov 2026, review finding): no Quality
+# V2 -> 'value_score_v2_moat' now falls back to the live Quality
+# blended with Moat (matching 'value_score_moat' exactly) instead of
+# None - see _recompute_value_score_v2_moat()'s own docstring.
+check("no Quality V2 on this row -> 'value_score_v2_moat' falls back to "
+      "'value_score_moat' (same fallback as 'value_score_v2' itself)",
+      _best35b["BBB35"]["value_score_v2_moat"] == _best35b["BBB35"]["value_score_moat"])
+print("[task35_a6b_v2_moat_falls_back] value_score_v2_moat falls back to value_score_moat "
+      "whenever Quality V2 itself is missing, never a crash, never hidden as None OK")
 
 
 # ======================================================================
