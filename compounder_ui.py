@@ -356,6 +356,28 @@ def _cp_band(value, thresholds):
     return None
 
 
+def _cp_numeric_or_none(value):
+    """TASK 41 item 1 (Director-directed, 8 Nov 2026, live NU Deep Dive
+    crash): `value` is normally a float/None, but at least two auto_
+    compounder_engine._build_fundamentals() fallbacks (TASK 34, "not
+    meaningful - EBIT is near zero" for a financials-mode, near-zero-
+    EBIT ticker) pass a literal STRING through instead, for a metric
+    label ("Operating Income Ratio"/"EBIT to FCF Conversion") that
+    still carries the hand-built workbook's own real thresholds - the
+    colored/plain split below only checked "thresholds set and value
+    is not None", so a string slipped through as "colored" and crashed
+    band_gauge() at `value < axis_min` (str vs float comparison) the
+    moment a financials-mode, near-zero-EBIT ticker like NU was
+    actually viewed. Returns `float(value)` when it genuinely
+    converts, else None - never raises."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _cp_note(text, size="14px"):
     """Render workbook/engine free text as escaped plain HTML - markdown is
     never parsed, so a stray $, ~, lone-dash line (setext heading!), #, or
@@ -908,12 +930,45 @@ def _cp_render_valuation_inputs(ticker, used, valuation_inputs, valuation_method
 # wherever it's called from.
 # -----------------------------------
 
-def band_gauge(label, value, fmt, thresholds, flagged=False, comment=None, ticker=None):
+def band_gauge(label, value, fmt, thresholds, flagged=False, comment=None, ticker=None, section=None):
     """One metric: name (red * when flagged), a thin colour-banded strip
     with a white marker at the value's position (clamped 2-98% so it's
     always visible even at an extreme reading), the formatted value below
     (red when flagged), the band's verdict word, and a "What this
-    measures" expander with the cleaned comment/definition."""
+    measures" expander with the cleaned comment/definition.
+
+    TASK 41 item 1 (Director-directed, 8 Nov 2026, live NU Deep Dive
+    crash): `value` is supposed to always be a float/None here -
+    render_section()'s own colored/plain split (below) is the primary
+    guard that keeps a non-numeric value from ever reaching this
+    function at all - but this function defends itself too, in case
+    of any other/future caller: a non-numeric, non-None value (e.g.
+    auto_compounder_engine._build_fundamentals()'s own "not meaningful
+    - EBIT is near zero" string fallback, TASK 34) renders as a plain
+    label/value line with no band or marker instead of crashing on
+    `value < axis_min` below, and is logged once so it's visible this
+    happened at all. `section` is optional, purely for that log line -
+    every pre-existing call site that omits it keeps working exactly
+    as before."""
+    _numeric_value = _cp_numeric_or_none(value)
+    if value is not None and _numeric_value is None:
+        print(f"[gauge_non_numeric] ticker={ticker} section={section} "
+              f"label={label!r} value={value!r} type={type(value).__name__}")
+        star = " <span style='color:#fb7185;'>*</span>" if flagged else ""
+        value_color = "#fb7185" if flagged else "#e6edf5"
+        st.markdown(
+            "<div style='margin-bottom:2px;'>"
+            f"<div style='font-size:13px;font-weight:600;color:#aebfd4;'>{html.escape(str(label))}{star}</div>"
+            "<div style='display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;'>"
+            "<span style='font-family:ui-monospace,Menlo,SFMono-Regular,monospace;"
+            f"font-size:14px;font-weight:700;color:{value_color};'>{html.escape(_cp_format(value, fmt, ticker=ticker))}</span>"
+            "<span></span></div></div>",
+            unsafe_allow_html=True,
+        )
+        with st.expander("What this measures", expanded=False):
+            _cp_note(_cp_clean_comment(comment or ""), size="12.5px")
+        return
+    value = _numeric_value
     thresholds = thresholds or []
     breakpoints = sorted({b for t in thresholds for b in (t[0], t[1]) if b is not None})
     lo_bound = breakpoints[0] if breakpoints else 0.0
@@ -1171,8 +1226,20 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
         # no metrics grid underneath.
         return
 
-    colored = [m for m in metrics if m.get("thresholds") and m["values"].get(ticker) is not None]
-    plain = [m for m in metrics if not (m.get("thresholds") and m["values"].get(ticker) is not None)]
+    # TASK 41 item 1 (Director-directed, 8 Nov 2026, live NU Deep Dive
+    # crash): "colored" used to mean only "has thresholds and value is
+    # not None" - a non-numeric value (e.g. the "not meaningful - EBIT
+    # is near zero" string fallback, TASK 34) for a label that still
+    # carries the hand-built workbook's own real thresholds slipped
+    # through as "colored" and crashed band_gauge() at `value <
+    # axis_min`. Now also requires the value to actually be numeric -
+    # a non-numeric value with thresholds set renders as a plain
+    # label/value line instead (band_gauge()'s own defensive guard
+    # would also catch it if it somehow still reached there).
+    colored = [m for m in metrics
+               if m.get("thresholds") and _cp_numeric_or_none(m["values"].get(ticker)) is not None]
+    plain = [m for m in metrics
+             if not (m.get("thresholds") and _cp_numeric_or_none(m["values"].get(ticker)) is not None)]
 
     if colored:
         st.markdown("##### Colour-coded (against your own thresholds)")
@@ -1194,7 +1261,7 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
                 band_gauge(
                     m["label"], value, m["format"], m["thresholds"],
                     flagged=bool(m.get("flagged")), comment=m.get("comment"),
-                    ticker=ticker,
+                    ticker=ticker, section=section_label,
                 )
 
     if plain:

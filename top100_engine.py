@@ -258,6 +258,17 @@ def top200_quality_exception_live():
 # Director's own explicit instruction ("Constants named").
 QUALITY_EXCEPTION_MIN_MOAT = 80.0
 QUALITY_EXCEPTION_MIN_QUALITY = 70.0
+# TASK 41 item 4 (Director-approved design change, 8 Nov 2026, GQG.AX
+# live case): an UPPER cap on the exception itself - GQG.AX (iv/price
+# 7.41-7.88x across different runs) passed every other condition
+# (Quality 100, Moat 90.9) and was being admitted, but a multiple this
+# extreme is past the point where "high-quality company, model looks
+# unreliable because of a big price fall" (the ADBE case this
+# exception exists for, 3.05x) is still the most likely explanation -
+# it starts to look more like the model (or an input feeding it) being
+# wrong outright. Gated the same way as the exception itself
+# (TOP200_QUALITY_EXCEPTION_LIVE) - never a second, separate switch.
+QUALITY_EXCEPTION_MAX_MULTIPLE = 4.0
 # fcf_valuation_engine.py's own three non-statement-derived fcf_source
 # values (see normalized_base_and_series()/_ocf_based_base_and_series()'s
 # own docstrings) - every OTHER value ("ocf-normcapex", "fcf-median",
@@ -293,6 +304,13 @@ def _quality_exception_admits(row):
         never a real DCF to begin with - the 3x sanity check doesn't
         meaningfully apply there, and admitting it would be reasoning
         from a number this exception isn't built to evaluate)
+      - Intrinsic Value / Price <= QUALITY_EXCEPTION_MAX_MULTIPLE (4.0)
+        (TASK 41 item 4, Director-approved design change, 8 Nov 2026,
+        GQG.AX live case: a multiple past this point is no longer the
+        "good company, big price fall" shape this exception is built
+        for - a missing/zero Price or Intrinsic Value fails this
+        condition too, same "never defaults to admit" rule as every
+        other check here)
     Never raises - a missing/None field on ANY of these simply fails
     that one condition (never defaults to "admit")."""
     moat = row.get("Moat")
@@ -308,6 +326,9 @@ def _quality_exception_admits(row):
     if _is_flagged_stale(row):
         return False
     if row.get("Intrinsic Source") != "dcf":
+        return False
+    iv, price = row.get("Intrinsic Value"), row.get("Price")
+    if not iv or not price or price <= 0 or (iv / price) > QUALITY_EXCEPTION_MAX_MULTIPLE:
         return False
     return True
 
@@ -1034,8 +1055,36 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                 stored_unreliable = _is_dcf_unreliable(row)
                 current_unreliable = resolver_engine.dcf_looks_unreliable(
                     row.get("Intrinsic Value"), row.get("Price"))
+                # TASK 41 item 2 (Director-directed, 8 Nov 2026, STJ.L
+                # live case): `stored_unreliable or current_unreliable`
+                # was a one-directional staleness guard - it caught a row
+                # that looked fine at scan time but has since become
+                # unreliable as price moved (current_unreliable turning
+                # True), but never the OPPOSITE direction: a row flagged
+                # unreliable at SCAN time (stored_unreliable=True, an
+                # older price/IV pair) whose CURRENT repriced ratio has
+                # since fallen back under the sanity multiple. STJ.L's
+                # live case: current iv/price=2.80 (genuinely under 3x,
+                # so dcf_looks_unreliable() on today's own Intrinsic
+                # Value/Price returns False) still routed through this
+                # branch - and needed the TASK 37 quality exception to be
+                # admitted at all - purely because its stale scan-time
+                # flag was still True. dcf_looks_unreliable() itself
+                # returns False both when the ratio is genuinely fine AND
+                # when IV/Price are missing/invalid (it has no separate
+                # "not computable" signal - see its own docstring), so
+                # "computable" is checked explicitly here: when today's
+                # Intrinsic Value/Price are both present and Price > 0,
+                # current_unreliable is the one true signal (it already
+                # reflects today's own numbers, in both directions);
+                # stored_unreliable is used only as a fallback when
+                # today's ratio genuinely can't be computed at all (a
+                # missing/zero price or IV on this row).
+                _current_ratio_computable = bool(row.get("Intrinsic Value")) and bool(row.get("Price")) \
+                    and (row.get("Price") or 0) > 0
+                effective_unreliable = current_unreliable if _current_ratio_computable else stored_unreliable
                 exception_admitted_row = False
-                if stored_unreliable or current_unreliable:
+                if effective_unreliable:
                     # TASK 37 (6 Nov 2026, Director-directed): the
                     # high-quality exception - checked BEFORE this row
                     # is excluded, never after (there's no "after" for
@@ -1059,10 +1108,16 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                             f"quality={row.get('Quality')} moat={row.get('Moat')}")
                     else:
                         dcf_unreliable_excluded_count += 1
-                        if stored_unreliable:
-                            dcf_unreliable_by_stored_flag += 1
-                        else:
+                        # TASK 41 item 2: this split now follows which
+                        # signal `effective_unreliable` actually came
+                        # from (today's own ratio when computable, the
+                        # scan-time flag only as a fallback) rather than
+                        # `stored_unreliable` directly - see that
+                        # variable's own comment above.
+                        if _current_ratio_computable:
                             dcf_unreliable_by_current_price += 1
+                        else:
+                            dcf_unreliable_by_stored_flag += 1
                         if ticker not in dcf_unreliable_excluded_tickers:
                             dcf_unreliable_excluded_tickers.append(ticker)
                         continue
