@@ -849,7 +849,25 @@ def _recompute_value_score(row):
     function's return value is byte-identical to before this task -
     every one of this function's 3 existing call sites (selection,
     preview_candidates_by_country(), _prescore_candidates()) is
-    unaffected until the Director flips the switch."""
+    unaffected until the Director flips the switch.
+
+    TASK 43 (11 Nov 2026, Director-directed): ALSO swaps the Quality
+    INPUT to Quality V2 - falling back to the live Quality (v1) when
+    this row has no Quality V2 at all, the SAME fallback _recompute_
+    value_score_v2()/_recompute_value_score_v2_moat() already use for
+    their own shadow fields - when ranking_engine.top200_quality_v2_
+    live() is on. With BOTH that switch and TOP200_MOAT_BLEND_LIVE on
+    (and moat_engine.MOAT_IN_VALUE_SCORE), this function's return
+    value is then byte-identical to _recompute_value_score_v2_moat(row)
+    - no second, diverging formula for the Director's own "must match
+    the preview's 'Quality v2 + Moat blend' option exactly" requirement.
+    With TOP200_QUALITY_V2_LIVE unset (the default), the Quality input
+    is completely untouched - byte-identical to before this task."""
+    if ranking_engine.top200_quality_v2_live():
+        quality_v2 = row.get("Quality V2")
+        quality = quality_v2 if quality_v2 is not None else row.get("Quality")
+        row = dict(row)
+        row["Quality"] = quality
     return ranking_engine.recompute_value_score(
         row, moat_blend=ranking_engine.top200_moat_blend_live() and moat_engine.MOAT_IN_VALUE_SCORE,
     )

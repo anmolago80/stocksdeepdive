@@ -230,6 +230,32 @@ def top200_moat_blend_live():
     return raw in ("1", "on")
 
 
+def top200_quality_v2_live():
+    """TASK 43 (Director-directed, 11 Nov 2026): the switch that puts
+    the Top 200's own selection/cut-off/ranking - and the Deep Dive
+    "Scanner & Top 200 score" line, which must always show the exact
+    same number - onto quality_v2_engine.py's "through-the-cycle"
+    Quality score (falling back to the live Quality/v1 - FLAGGED via
+    the row's own pre-existing "quality_v2_missing" field - whenever a
+    row has no stored Quality V2 at all, the SAME fallback top100_
+    engine._recompute_value_score_v2()/_recompute_value_score_v2_
+    moat() already use for their own shadow fields), instead of
+    today's plain live Quality. Lives here, not in top100_engine.py,
+    for the same reason top200_moat_blend_live() does - deep_dive_
+    engine.py calls this directly and must never import top100_
+    engine.py (that module already imports deep_dive_engine.py, so the
+    reverse import would be circular).
+
+    Re-read on every call, same unset/""/0/off=OFF, 1/on=ON pattern as
+    top200_moat_blend_live() just above - a changed Railway variable
+    takes effect on the very next selection run without a redeploy.
+    Claude Code never sets this - the Director does, on Railway, only
+    after reviewing the 12 Nov shadow preview (simulate_pool_v2()/
+    simulate_pool_v2_moat())."""
+    raw = (os.environ.get("TOP200_QUALITY_V2_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
 def recompute_value_score(row, moat_blend=False):
     """TASK 35 item A1/A2 (6 Nov 2026, Director-directed, BKNG live
     case): the ONE "Top 200 selection formula" - every caller that

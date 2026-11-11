@@ -51,6 +51,7 @@ import fcf_valuation_engine
 import financials_classifier
 import financials_income_store
 import moat_engine
+import quality_v2_engine
 import social_engine
 import indicators_engine
 import trade_filter_engine
@@ -551,8 +552,35 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # value_score() calls - on a row shaped from this view's own live
     # Quality/MOS/Psychology/Moat, so this line always shows EXACTLY
     # what the Top 200 ranks on, never a parallel formula.
+    # TASK 43 (11 Nov 2026, Director-directed): swap the Quality INPUT
+    # to Quality V2 - falling back to the live Quality (v1) when this
+    # ticker has no stored Quality V2 at all - whenever ranking_engine.
+    # top200_quality_v2_live() is on, so this line ALWAYS shows exactly
+    # what the Top 200 selection itself ranks on (top100_engine._
+    # recompute_value_score() makes the SAME swap - see that
+    # function's own TASK 43 comment; never a second, diverging
+    # formula). A dedicated fundamentals_data.get_bundle(ticker) call
+    # here (not the _bundle/_oneoff_bundle variables above, which only
+    # exist on the non-financials-store-live branch) - that function's
+    # own 24h cache makes this a cache HIT in the overwhelming majority
+    # of views (this ticker's bundle was almost always already fetched
+    # moments earlier in this same function), and it only runs at all
+    # once the Director flips the switch on - zero cost today. Fails
+    # open to the live Quality on any lookup error, same philosophy as
+    # every other opportunistic-only data source on this page.
+    _quality_for_dd_line = quality_score
+    if ranking_engine.top200_quality_v2_live():
+        try:
+            _dd_v2_bundle = fundamentals_data.get_bundle(ticker)
+            _quality_v2_for_dd, _ = quality_v2_engine.get_quality_score_v2(ticker, _dd_v2_bundle, info=info)
+            if _quality_v2_for_dd is not None:
+                _quality_for_dd_line = _quality_v2_for_dd
+        except Exception as e:
+            print(f"[quality_v2_diag] {ticker}: Deep Dive Quality V2 lookup for the "
+                  f"Scanner & Top 200 score line failed, falling back to live Quality: {e}")
+
     _dd_value_score_row = {
-        "Quality": quality_score, "MOS %": margin_of_safety,
+        "Quality": _quality_for_dd_line, "MOS %": margin_of_safety,
         "Psychology": psychology_score, "Discovery (lite)": 0,
         "Moat": _moat["score"],
     }
