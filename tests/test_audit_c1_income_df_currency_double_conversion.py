@@ -249,9 +249,13 @@ _dd_src = inspect.getsource(deep_dive_engine.analyze)
 _dd_else_branch = _dd_src[_dd_src.index("else:\n        _bundle = fundamentals_data.peek_cached_bundle"):]
 _dd_else_branch = _dd_else_branch[:_dd_else_branch.index("intrinsic_value, intrinsic_src")]
 check("deep_dive_engine.py: both the peek_cached_bundle() and "
-      "get_bundle() branches now set _income_df_currency_converted = "
-      "True after a successful fetch",
-      _dd_else_branch.count("_income_df_currency_converted = True") == 2)
+      "get_bundle() branches read _income_df_currency_converted from "
+      "the bundle's own 'currency_converted' flag after a successful "
+      "fetch - TASK 42 item 1 (8 Nov 2026): this used to set True "
+      "unconditionally, the same dishonesty TASK 40 fixed on the "
+      "fairvalue-path override; now it's only True when get_bundle() "
+      "itself confirms the conversion genuinely happened",
+      _dd_else_branch.count('"currency_converted" in (') == 2)
 
 
 print()

@@ -16,6 +16,7 @@ import os
 import streamlit as st
 
 import compounder_ui
+import drop_chip_store
 import fcf_valuation_engine
 import i18n
 import peer_context
@@ -546,6 +547,181 @@ def _support_chip_html(row, lang):
         f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
         f"{html.escape(text)}</span>"
     )
+
+
+def _drop_chip_live():
+    """TOP200_DROP_CHART_LIVE gate (TASK 39, Director-directed, 8 Nov
+    2026, test stage - owner approval before go-live): same shape as
+    _support_chip_live() above - unset/"0" = owner-only (the admin
+    preview still sees it), "1" = live for everyone. This task never
+    sets it; the owner flips it on Railway by hand after reviewing the
+    test report."""
+    return os.environ.get("TOP200_DROP_CHART_LIVE", "0").strip() == "1"
+
+
+# TASK 39 drop-chip colour - a distinct red/rose pill (orange is
+# already the "no support" chip's colour, purple the "has support"
+# chip's) so the drop chip reads as its own, third signal at a glance.
+_SHELF_CHIP_DROP = ("#331a1a", "#8f3f3f", "#f5a7a7")
+
+
+def _drop_chip_html(row, lang):
+    """TASK 39's own card chip - "{drop}% from {month_year} peak (3y
+    high)" - shown ONLY when drop_chip_engine.compute_peak_and_drop()'s
+    own "chip_shown" is True (the Director's own exact rule: "show the
+    drop chip only if drop <= -20%. Otherwise show nothing for the
+    drop."). A SEPARATE pill from _support_chip_html()'s own string
+    (not textually concatenated with it) - the two land as sibling
+    pills in the SAME support_row_html row in _render_row(), which
+    reads the same "X · Y" at a glance the Director's own example text
+    shows without merging two independently-gated strings into one.
+    "" in every other case (gated off for this viewer, no stored entry,
+    or chip_shown is False) - never a placeholder."""
+    if not (_drop_chip_live() or _is_owner_for_refresh()):
+        return ""
+    entry = drop_chip_store.get(row["ticker"])
+    if not entry or not entry.get("chip_shown"):
+        return ""
+
+    symbol = compounder_ui._currency_symbol_for_ticker(row["ticker"])
+    drop = entry.get("drop_pct") or 0.0
+    peak_price_str = compounder_ui._fmt_money(entry.get("peak_price"), symbol)
+    price_str = compounder_ui._fmt_money(entry.get("current_price"), symbol)
+    text = _t(
+        "drop_chip", lang,
+        drop=f"{drop:.0f}",
+        month_year=_month_year_str(entry.get("peak_date"), lang),
+    )
+    tooltip = _t(
+        "drop_tooltip", lang,
+        peak_price=peak_price_str,
+        peak_date=_full_date_str(entry.get("peak_date"), lang),
+        price=price_str,
+        drop=f"{drop:.0f}",
+    )
+    bg, border, color = _SHELF_CHIP_DROP
+    return (
+        "<span title='" + html.escape(tooltip) + "' style='display:inline-flex;align-items:center;"
+        f"border-radius:999px;padding:1px 9px;font-size:10.5px;font-weight:700;"
+        f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
+        f"{html.escape(text)}</span>"
+    )
+
+
+# TASK 39 mini chart geometry - small enough to sit inline on a card
+# without pushing other content around; padding leaves headroom for
+# the peak/support labels drawn just above/below their dashed lines.
+_DROP_CHART_WIDTH = 280
+_DROP_CHART_HEIGHT = 64
+_DROP_CHART_PAD_X = 4
+_DROP_CHART_PAD_TOP = 14
+_DROP_CHART_PAD_BOTTOM = 14
+
+
+def _drop_chart_svg_html(row, lang):
+    """TASK 39's own mini inline SVG chart: a small 3-year weekly-close
+    line, a dashed green peak line + label, a dashed purple support
+    line + label (support_levels_store's own entry - omitted entirely
+    when there's no support below, per the spec), and a dot + label at
+    today's price. Pure presentation over ALREADY-STORED values
+    (drop_chip_store.get()'s own "series", computed once a night in
+    support_levels_job.py) - no network call and no recompute at
+    render time, per the Director's own "Lightweight: NO network calls
+    at page render... Render from stored values only" rule.
+
+    "" when gated off for this viewer, there's no stored entry, or the
+    series has fewer than 2 points to draw a line from - never a
+    broken/empty chart. Shown whenever there's a stored entry with a
+    real series, independent of chip_shown - the Director's spec gates
+    the CHART by TOP200_DROP_CHART_LIVE alone, not by the same -20%
+    threshold that gates the text chip."""
+    if not (_drop_chip_live() or _is_owner_for_refresh()):
+        return ""
+    entry = drop_chip_store.get(row["ticker"])
+    if not entry:
+        return ""
+    series = entry.get("series") or []
+    if len(series) < 2:
+        return ""
+
+    symbol = compounder_ui._currency_symbol_for_ticker(row["ticker"])
+    peak_price = entry.get("peak_price")
+    current_price = entry.get("current_price")
+
+    support_entry = support_levels_store.get(row["ticker"])
+    support_price = None
+    support_date = None
+    if support_entry and support_entry.get("has_support"):
+        support_price = support_entry.get("support_price")
+        support_date = support_entry.get("support_date")
+
+    y_values = [c for _, c in series]
+    if peak_price is not None:
+        y_values.append(peak_price)
+    if support_price is not None:
+        y_values.append(support_price)
+    y_min, y_max = min(y_values), max(y_values)
+    if y_max == y_min:
+        y_max = y_min + 1.0  # avoid a divide-by-zero flatline on a dead-flat series
+
+    w, h = _DROP_CHART_WIDTH, _DROP_CHART_HEIGHT
+    pad_x = _DROP_CHART_PAD_X
+    top, bottom = _DROP_CHART_PAD_TOP, h - _DROP_CHART_PAD_BOTTOM
+    n = len(series)
+
+    def _x(i):
+        return pad_x + (i / (n - 1)) * (w - 2 * pad_x) if n > 1 else pad_x
+
+    def _y(price):
+        return bottom - ((price - y_min) / (y_max - y_min)) * (bottom - top)
+
+    points = " ".join(f"{_x(i):.1f},{_y(c):.1f}" for i, (_, c) in enumerate(series))
+    parts = [
+        f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' style='display:block;margin-top:4px;'>",
+        f"<polyline points='{points}' fill='none' stroke='#5a7fb8' stroke-width='1.6'/>",
+    ]
+
+    if peak_price is not None:
+        py = _y(peak_price)
+        label = (
+            f"{compounder_ui._fmt_money(peak_price, symbol)} "
+            f"({_month_year_str(entry.get('peak_date'), lang)})"
+        )
+        parts.append(
+            f"<line x1='{pad_x}' y1='{py:.1f}' x2='{w - pad_x}' y2='{py:.1f}' "
+            "stroke='#4ade80' stroke-width='1' stroke-dasharray='3,3'/>"
+        )
+        parts.append(
+            f"<text x='{pad_x}' y='{max(py - 3, 9):.1f}' font-size='8' fill='#4ade80'>"
+            f"{html.escape(label)}</text>"
+        )
+
+    if support_price is not None:
+        sy = _y(support_price)
+        label = (
+            f"{compounder_ui._fmt_money(support_price, symbol)} "
+            f"({_month_year_str(support_date, lang)})"
+        )
+        parts.append(
+            f"<line x1='{pad_x}' y1='{sy:.1f}' x2='{w - pad_x}' y2='{sy:.1f}' "
+            "stroke='#c9a7f5' stroke-width='1' stroke-dasharray='3,3'/>"
+        )
+        parts.append(
+            f"<text x='{pad_x}' y='{min(sy + 10, h - 2):.1f}' font-size='8' fill='#c9a7f5'>"
+            f"{html.escape(label)}</text>"
+        )
+
+    if current_price is not None:
+        cx, cy = _x(n - 1), _y(current_price)
+        cur_label = compounder_ui._fmt_money(current_price, symbol)
+        parts.append(f"<circle cx='{cx:.1f}' cy='{cy:.1f}' r='2.6' fill='#e7ecf5'/>")
+        parts.append(
+            f"<text x='{max(cx - 40, pad_x):.1f}' y='{max(cy - 6, 9):.1f}' font-size='8' "
+            f"fill='#e7ecf5' text-anchor='end'>{html.escape(cur_label)}</text>"
+        )
+
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def _finer_industry_by_ticker():
@@ -1244,13 +1420,20 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     # wrapping flex container above - that container's own content/
     # order is otherwise byte-identical to before TASK 36 ever
     # touched this function, so rows 1-2 can never move or re-wrap
-    # because of this chip's presence or width. The TASK 39 drop-from-
-    # 3y-peak chip lands in this SAME new row when it's built.
+    # because of this chip's presence or width. TASK 39's drop-from-
+    # 3y-peak chip lands in this SAME row, as its own sibling pill
+    # (never textually merged with the support chip's own string).
     support_chip = _support_chip_html(row, lang)
+    drop_chip = _drop_chip_html(row, lang)
     support_row_html = (
         "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:6px;'>"
-        + support_chip + "</div>"
-    ) if support_chip else ""
+        + support_chip + drop_chip + "</div>"
+    ) if (support_chip or drop_chip) else ""
+    # TASK 39's own mini chart - a separate row below the chip row (not
+    # inside the chip row's flex container, which is sized for pills,
+    # not an SVG), gated the same way, "" (no row at all) when there's
+    # nothing to draw.
+    drop_chart_html = _drop_chart_svg_html(row, lang)
 
     st.markdown(
         f"<div style='background:#0b1526;border:1px solid #1a2b4a;{_row_edge_accent_style(score_row)}"
@@ -1259,6 +1442,7 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
         + "".join(header_bits) + tradable_chip + sentiment_chip +
         "</div>"
         + support_row_html
+        + drop_chart_html
         + (home_country_html or "") +
         "<div style='margin-top:8px;'>"
         + "".join(
@@ -1574,6 +1758,56 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None,
                 key=_key_value_score,
             )
             _render_bottom_shelf(shelf_rows, lang, recent_badge_map=recent_badge_map)
+
+
+def _quality_on_sale_live():
+    """TOP200_QUALITY_ON_SALE_LIVE gate (TASK 42 item 6b, Director-
+    directed, 8 Nov 2026, test stage - owner approval before go-live):
+    same shape as _drop_chip_live()/_support_chip_live() above -
+    unset/"0" = owner-only (the admin preview still sees the tab),
+    "1" = live for everyone. This task never sets it; the owner flips
+    it on Railway by hand after reviewing the test report."""
+    return os.environ.get("TOP200_QUALITY_ON_SALE_LIVE", "0").strip() == "1"
+
+
+def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=None):
+    """TASK 42 item 6b's own tab: top100_engine.quality_on_sale_
+    candidates()'s own list (Quality/drop/clean-data already filtered,
+    already ranked by drop depth, already capped at 20) rendered with
+    the SAME _render_row() every other tab uses - full dimension
+    chips, the TASK 36/39 support + drop chips included for free via
+    that function's own existing wiring, no separate card template for
+    this tab.
+
+    This tab's OWN rank numbering follows drop depth (top100_engine's
+    own sort), never `sort_mode` - `sort_mode` is passed through only
+    so _render_row()'s leading-metric display matches the rest of the
+    page (the same page-level sort control every other tab shows its
+    leading number under), per the existing convention every tab
+    function already follows.
+
+    A candidate ticker whose enriched row has no RATED score_row (e.g.
+    a pool/extension member Claude hasn't yet scored with the 10-
+    dimension rubric) is skipped with a log line, never rendered half-
+    built - _render_row()'s own precondition is a rated row only, and
+    this tab has no shelf of its own to put an unrated candidate in."""
+    recent_badge_map = recent_badge_map or {}
+    result = top100_engine.quality_on_sale_candidates()
+    candidates = result.get("candidates") or []
+    if not candidates:
+        st.caption(_t("empty_tab", lang))
+        return
+
+    by_ticker = {r["ticker"]: r for r in (_enriched_pool() + _enriched_asx_extension())}
+    rank = 0
+    for cand in candidates:
+        row = by_ticker.get(cand["ticker"])
+        if not row or not row.get("score_row") or (row["score_row"] or {}).get("not_rated"):
+            print(f"[quality_on_sale] {cand['ticker']}: skipped - no rated score_row to render")
+            continue
+        rank += 1
+        _render_row(rank, row, lang, finer_industry.get(row["ticker"]), sort_mode,
+                    recent_badge_html=recent_badge_map.get(row["ticker"]))
 
 
 def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None):
@@ -2327,6 +2561,12 @@ def render_top100_page(lang="en"):
     )
     _recent_badges = recent_badge_map(_recent_badge_tickers, lang)
 
+    # TASK 42 item 6b (Director-directed, 8 Nov 2026) - "Quality on
+    # sale" tab: same TOP200_QUALITY_ON_SALE_LIVE/owner-override gate
+    # shape as _show_foreign_tab above. A gated-off viewer gets the
+    # exact same tab_labels list (and tab count) as before this task.
+    _show_quality_on_sale_tab = _quality_on_sale_live() or _is_owner_for_refresh()
+
     # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
     # Mixed/Australia/USA/Full 200 exactly as they were (same four
     # render calls, same positions relative to each other); rule 2
@@ -2343,6 +2583,7 @@ def render_top100_page(lang="en"):
         + ([_t("tab_us_foreign", lang)] if _show_foreign_tab else [])
         + [_market_tab_label(group_key, lang) for group_key, _rows in market_plan]
         + [_t("tab_full", lang)]
+        + ([_t("tab_quality_on_sale", lang)] if _show_quality_on_sale_tab else [])
     )
     tabs = st.tabs(tab_labels)
     with tabs[0]:
@@ -2368,3 +2609,6 @@ def render_top100_page(lang="en"):
     with tabs[_next_tab + len(market_plan)]:
         _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
                              recent_badge_map=_recent_badges)
+    if _show_quality_on_sale_tab:
+        with tabs[_next_tab + len(market_plan) + 1]:
+            _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=_recent_badges)

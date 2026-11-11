@@ -242,6 +242,12 @@ _pool_with_moat = te.select_top100_pool(log=lambda *a, **k: None)
 _NON_LIVE_FIELDS = (
     "generated_at", "source_universe_generated_at",
     "moat", "value_score_moat", "value_score_v2_moat",
+    # TASK 42 item 6a (8 Nov 2026, Director-directed): same additive-
+    # shadow-field status as value_score_v2_moat just above - it falls
+    # back to that exact field whenever Fear/Greed/Fomo or a drop_chip_
+    # store peak entry is missing (both true in this fixture), so it
+    # inherits the SAME "depends on Moat, supposed to differ" reason.
+    "value_score_v2_moat_peak_fear",
 )
 
 

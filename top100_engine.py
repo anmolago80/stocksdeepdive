@@ -80,6 +80,8 @@ from datetime import datetime, timedelta, timezone
 import yfinance as yf
 
 import deep_dive_engine
+import drop_chip_engine
+import drop_chip_store
 import fcf_valuation_engine
 import financials_classifier
 import fundamentals_data
@@ -910,6 +912,59 @@ def _recompute_value_score_moat(row):
     return ranking_engine.recompute_value_score(row, moat_blend=True)
 
 
+def _recompute_value_score_v2_moat_peak_fear(ticker, row):
+    """TASK 42 item 6a (Director-directed, 8 Nov 2026, CSL.AX case) -
+    SHADOW MODE / TEST ONLY: the COMBINED v2_moat scenario
+    (_recompute_value_score_v2_moat() above) with ONE more swap - the
+    Psychology input's fear term replaced by drop_chip_engine.fear_
+    from_peak() (the SAME 3-year-peak math the live drop chip/replay
+    tool use), greed/fomo left exactly as nightly_scan.py computed
+    them tonight - matching the Director's own root-cause finding
+    ("fear uses a 63-day window... while greed/FOMO penalise the
+    bounce above MA50"), never a wholesale re-derivation of all three.
+
+    FALLS BACK to _recompute_value_score_v2_moat(row) (the real,
+    unmodified v2_moat score - a documented no-op, never a crash or a
+    guessed number) whenever any input this swap needs is missing:
+      - row["Fear"]/row["Greed"]/row["Fomo"] (TASK 42 item 6a's own
+        new additive nightly_scan.py fields) - None for EVERY row
+        scanned before tonight's first run with this task's own change
+        deployed, so this function is a documented no-op until the
+        next nightly scan populates them for real.
+      - drop_chip_store.get(ticker) (TASK 39's own nightly job) - None
+        for a ticker that isn't currently a pool/extension member (the
+        only scope drop_chip_store covers at all) or whose tonight's
+        drop-chip computation failed/was skipped.
+      - fear_from_peak() returning None (no peak price on record).
+
+    This fallback-not-crash design means simulate_pool_v2_moat_peak_
+    fear() below is always callable, even on today's already-cached
+    scan data - it just reports "identical to the real v2_moat preview
+    for every row" until BOTH this task's nightly_scan.py change and a
+    fresh scan have actually run, which this sandbox cannot do itself
+    (no network access) - see the TASK 42 report for this disclosure."""
+    fallback = _recompute_value_score_v2_moat(row)
+    fear_old, greed, fomo = row.get("Fear"), row.get("Greed"), row.get("Fomo")
+    if fear_old is None or greed is None or fomo is None:
+        return fallback
+
+    drop_entry = drop_chip_store.get(ticker)
+    if not drop_entry:
+        return fallback
+    peak_fear = drop_chip_engine.fear_from_peak(drop_entry.get("current_price"), drop_entry.get("peak_price"))
+    if peak_fear is None:
+        return fallback
+
+    quality_v2 = row.get("Quality V2")
+    quality = quality_v2 if quality_v2 is not None else row.get("Quality")
+    if quality is None:
+        return None
+    row_with_peak_fear = dict(row)
+    row_with_peak_fear["Quality"] = quality
+    row_with_peak_fear["Psychology"] = peak_fear - greed - fomo
+    return ranking_engine.recompute_value_score(row_with_peak_fear, moat_blend=True)
+
+
 def _recompute_value_score_v2_moat(row):
     """TASK 35 item A3 (6 Nov 2026, Director-directed) - SHADOW MODE /
     TEST ONLY: the COMBINED scenario - "Quality V2" (quality_v2_
@@ -1317,6 +1372,17 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                     "moat": row.get("Moat"),
                     "value_score_moat": _recompute_value_score_moat(row),
                     "value_score_v2_moat": _recompute_value_score_v2_moat(row),
+                    # TASK 42 item 6a (8 Nov 2026, Director-directed) -
+                    # SHADOW MODE / TEST ONLY: same "always compute the
+                    # shadow field" pattern as every sibling above, but
+                    # see _recompute_value_score_v2_moat_peak_fear()'s
+                    # own docstring for the documented no-op-until-next-
+                    # scan caveat (today's cached rows have no stored
+                    # "Fear"/"Greed"/"Fomo" yet). Never read by select_
+                    # top100_pool()'s own sort/slice - consumed solely
+                    # by simulate_pool_v2_moat_peak_fear() below for the
+                    # owner's shadow preview panel.
+                    "value_score_v2_moat_peak_fear": _recompute_value_score_v2_moat_peak_fear(ticker, row),
                     # TASK 37 (6 Nov 2026, Director-directed, ADBE
                     # case): True only when THIS winning row was
                     # DCF-unreliable AND the quality exception's gate
@@ -1363,6 +1429,14 @@ def _value_score_v2_moat_sort_key(row):
     _value_score_moat_sort_key() above."""
     v2m = row.get("value_score_v2_moat")
     return v2m if v2m is not None else row["value_score"]
+
+
+def _value_score_v2_moat_peak_fear_sort_key(row):
+    """TASK 42 item 6a (8 Nov 2026, Director-directed) - the peak-fear
+    shadow variant's own sort key, same fallback pattern as every
+    sibling sort key above."""
+    v2mpf = row.get("value_score_v2_moat_peak_fear")
+    return v2mpf if v2mpf is not None else row["value_score"]
 
 
 def simulate_pool_v2(log=print):
@@ -1570,6 +1644,25 @@ def simulate_pool_v2_moat(log=print):
     return _simulate_pool_generic(_value_score_v2_moat_sort_key, log=log)
 
 
+def simulate_pool_v2_moat_peak_fear(log=print):
+    """TASK 42 item 6a (8 Nov 2026, Director-directed, CSL.AX case) -
+    SHADOW MODE / TEST ONLY: the combined Quality V2 + Moat scenario
+    with the peak-fear swap on top (_recompute_value_score_v2_moat_
+    peak_fear() above). Same scope limits/safety profile as every
+    other simulate_pool_* function - read-only, never writes, never
+    read by select_top100_pool() itself.
+
+    DOCUMENTED NO-OP ON TODAY'S CACHED DATA: until a scan has run with
+    this task's own nightly_scan.py "Fear"/"Greed"/"Fomo" fields
+    present, every row's own value_score_v2_moat_peak_fear falls back
+    to the real value_score_v2_moat (see that function's own
+    docstring) - so pool_tickers/cutoff here will be IDENTICAL to
+    simulate_pool_v2_moat()'s own result until the next nightly scan
+    actually runs with this change deployed. The caller (admin preview
+    panel) is expected to disclose this, not hide it."""
+    return _simulate_pool_generic(_value_score_v2_moat_peak_fear_sort_key, log=log)
+
+
 def simulate_pool_quality_exception(log=print):
     """TASK 37 (Director-directed, 6 Nov 2026, ADBE case) - SHADOW MODE
     / TEST ONLY: a SIMULATED Top 200 with the high-quality DCF-
@@ -1592,6 +1685,103 @@ def simulate_pool_v2_moat_and_exception(log=print):
     top of _value_score_v2_moat_sort_key). Same scope limits/safety
     profile as every other simulate_pool_* function above."""
     return _simulate_pool_generic(_value_score_v2_moat_sort_key, log=log, quality_exception_override=True)
+
+
+# TASK 42 item 6b (Director-directed, 8 Nov 2026, "build together" with
+# TASK 39): the "Quality on sale" tab's own Quality floor - Quality v2
+# when a row has one, v1 FLAGGED as a fallback otherwise (never silently
+# treated as if it were v2 - see quality_on_sale_candidates()'s own
+# "quality_used_source" field). Deliberately stricter than the plain
+# Top 200 cut (that's a relative rank; this is an absolute floor).
+QUALITY_ON_SALE_MIN_QUALITY = 65.0
+
+
+def quality_on_sale_candidates(log=print):
+    """TASK 42 item 6b (Director-directed, 8 Nov 2026, CSL/OCL "good
+    company, fallen a long way" case) - SHADOW MODE / TEST ONLY until
+    TOP200_QUALITY_ON_SALE_LIVE is flipped on: the new "Quality on
+    sale" tab's own candidate list, over the CURRENT Top 200 pool +
+    ASX extension ONLY (never a wider candidate universe - drop_chip_
+    store only has a 3-year-peak entry for pool/extension members in
+    the first place; support_levels_job.py's own per-ticker loop is
+    scoped to exactly this set - see that module's own docstring).
+
+    Three rules, the Director's own exact wording:
+      1. Quality v2 >= QUALITY_ON_SALE_MIN_QUALITY (65), v1 used as a
+         FLAGGED fallback when this row has no v2 score at all - never
+         silently substituted as if it were v2.
+      2. >= 40% below the 3-year weekly-close peak - drop_chip_engine.
+         passes_quality_on_sale_drop_rule() against drop_chip_store's
+         OWN already-computed "drop_pct" (the SAME stored value the
+         card's drop chip itself reads - no second peak/drop
+         computation here, per the Director's own "reuse TASK 39's
+         3y-peak data" instruction).
+      3. "clean data (not DCF-unreliable unless the exception
+         applies)" - built in for free by calling _build_best_by_
+         ticker() with quality_exception_override=True: that function
+         already EXCLUDES every DCF-unreliable row from its own
+         returned dict UNLESS the TASK 37 exception's Moat/Quality
+         thresholds admit it (see that function's own "effective_
+         unreliable"/"exception_admitted_row" logic) - so every row
+         this function even sees already satisfies rule 3 structurally;
+         no separate re-check is needed (or performed) here. Same
+         "override=True" shape every simulate_pool_quality_exception()/
+         simulate_pool_v2_moat_and_exception() shadow preview already
+         uses - not a new pattern.
+
+    Ranked by drop depth (deepest first), capped at 20. Read-only, same
+    safety profile as every simulate_pool_* function above - never
+    writes anything, never read by select_top100_pool()/the real pool
+    selection itself.
+
+    Returns {
+      "eligible_count": int,  # same meaning as simulate_pool_v2()'s own
+      "candidates": [
+        {"ticker", "quality_used", "quality_used_source" ("v2"|"v1"),
+         "drop_pct", "peak_date", "peak_price", "current_price",
+         "quality_exception_admitted"},
+        ...
+      ],  # already sorted deepest-drop-first, already capped at 20
+    }"""
+    best_by_ticker, eligible_count = _build_best_by_ticker(log=log, quality_exception_override=True)
+    pool_extension_tickers = (
+        {r["ticker"] for r in top100_store.current_pool()}
+        | {r["ticker"] for r in top100_store.current_asx_extension()}
+    )
+
+    candidates = []
+    for ticker in pool_extension_tickers:
+        row = best_by_ticker.get(ticker)
+        if not row:
+            continue
+        quality_v2 = row.get("quality_v2")
+        quality_v1 = row.get("quality")
+        if quality_v2 is not None:
+            quality_used, quality_used_source = quality_v2, "v2"
+        elif quality_v1 is not None:
+            quality_used, quality_used_source = quality_v1, "v1"
+        else:
+            continue
+        if quality_used < QUALITY_ON_SALE_MIN_QUALITY:
+            continue
+
+        drop_entry = drop_chip_store.get(ticker)
+        drop_pct = drop_entry.get("drop_pct") if drop_entry else None
+        if not drop_chip_engine.passes_quality_on_sale_drop_rule(drop_pct):
+            continue
+
+        candidates.append({
+            "ticker": ticker,
+            "quality_used": quality_used, "quality_used_source": quality_used_source,
+            "drop_pct": drop_pct,
+            "peak_date": drop_entry.get("peak_date") if drop_entry else None,
+            "peak_price": drop_entry.get("peak_price") if drop_entry else None,
+            "current_price": drop_entry.get("current_price") if drop_entry else None,
+            "quality_exception_admitted": bool(row.get("quality_exception_admitted")),
+        })
+
+    candidates.sort(key=lambda c: c["drop_pct"] if c["drop_pct"] is not None else 0.0)
+    return {"eligible_count": eligible_count, "candidates": candidates[:20]}
 
 
 def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):

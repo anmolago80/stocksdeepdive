@@ -365,8 +365,24 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
             # False, so dcf_intrinsic_value() converted it a SECOND time
             # for every Deep Dive view that happened to hit a warm
             # compounder-page cache.
+            #
+            # TASK 42 item 1 (Director-directed, 8 Nov 2026, "same honest-
+            # flag pattern as TASK 40"): this used to set True
+            # UNCONDITIONALLY whenever income_df was non-empty, never
+            # actually checking whether get_bundle() itself confirmed the
+            # conversion succeeded - the exact dishonesty TASK 40 fixed on
+            # auto_compounder_engine._dcf_info_with_verified_currency_
+            # override()'s own (fairvalue-path) side, left unfixed here.
+            # It never bit live (ELS.AX/GQG.AX's own currency mismatches
+            # happened to not go through this specific code path), but is
+            # unverified and could silently double-convert (if the bundle
+            # actually wasn't converted) or skip a needed conversion -
+            # now reads the SAME "currency_converted" flag get_bundle()
+            # itself sets, honestly, instead of assuming.
             if income_df is not None and not income_df.empty:
-                _income_df_currency_converted = True
+                _income_df_currency_converted = "currency_converted" in (
+                    (_bundle.get("meta") or {}).get("flags") or []
+                )
         elif fcf_valuation_engine.needs_oneoff_check(cashflow_df):
             # Step 4 one-off detection, Deep Dive path (Commit 2 of
             # instruction_dcf_unreliable_pool_step4_nightly.md, owner-
@@ -377,12 +393,19 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
             # check actually flags something is a cost of one extra call,
             # not a per-scan multiplier the way it would be in nightly_scan.
             # Any fetch failure -> income_df stays None, identical to today.
-            income_df = fundamentals_data.get_bundle(ticker).get("income")
+            _oneoff_bundle = fundamentals_data.get_bundle(ticker)
+            income_df = _oneoff_bundle.get("income")
             # Audit fix C1 / Fable finding V2: same reasoning as the
             # peek_cached_bundle() branch just above - get_bundle()'s own
             # income table is already converted.
+            #
+            # TASK 42 item 1: same honest-flag fix as the branch above,
+            # reading this freshly-fetched bundle's own flags instead of
+            # assuming every non-empty income table was converted.
             if income_df is not None and not income_df.empty:
-                _income_df_currency_converted = True
+                _income_df_currency_converted = "currency_converted" in (
+                    (_oneoff_bundle.get("meta") or {}).get("flags") or []
+                )
         else:
             income_df = None
     # Stage 1a (3 Oct 2026, Director-directed): trading_currency_for()

@@ -341,6 +341,10 @@ _NON_LIVE_FIELDS = (
     # these two scenarios too, same reasoning as "value_score_v2"
     # itself just above.
     "moat", "value_score_moat", "value_score_v2_moat",
+    # TASK 42 item 6a (8 Nov 2026, Director-directed): same additive-
+    # shadow-field status - depends on "Quality V2" via the SAME
+    # fallback chain as "value_score_v2_moat" just above.
+    "value_score_v2_moat_peak_fear",
 )
 
 

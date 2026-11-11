@@ -1730,6 +1730,57 @@ def get_bundle(ticker, force_refresh=False):
     )
     source = "yfinance"
 
+    # TASK 42 item 2 (Director-directed, 8 Nov 2026, ELS.AX live case):
+    # this ticker genuinely reports in a different financialCurrency
+    # than its listing currency (confirmed: deep_dive_engine.py's own
+    # SEPARATE, independent tk.info fetch - app.get_ticker_info(), a
+    # different yf.Ticker() instance/HTTP call - reliably returns
+    # financialCurrency="USD" for ELS.AX), but THIS bundle's own `info`
+    # (fetched just above) came back with financialCurrency missing on
+    # a fresh, live, post-TASK-40 production fetch (confirmed via a
+    # [dcf_diag] line pulled minutes after that deploy: fcf_base was
+    # still the RAW, unconverted 11,079,942 figure on a bundle whose own
+    # cache_age was 0.19s - genuinely freshly built, not a stale cache
+    # artifact). Two independent live yfinance .info calls for the SAME
+    # ticker, seconds apart, disagreeing on field completeness is a
+    # known Yahoo-backend quirk (a degraded/partial quoteSummary
+    # response on one specific request) - not something TASK 40's own
+    # fix (which only addresses a conversion that silently FAILED, not
+    # a conversion that correctly saw "nothing to convert" because the
+    # one field it needs was simply missing from this fetch) could ever
+    # catch, since get_bundle()'s own currency-conversion gate
+    # (`if fin_ccy and list_ccy and fin_ccy != list_ccy:` a few lines
+    # below) never even runs when fin_ccy is empty - there's genuinely
+    # nothing to convert from THIS fetch's point of view.
+    #
+    # Retry ONCE, narrowly: only when this ticker clearly HAS real
+    # statement history (statement_years > 0 - an ETF/fund with no
+    # financials genuinely has no financialCurrency to report, and
+    # retrying for every such ticker on every scan would double a live
+    # call for no benefit) and `info` otherwise looks like a real,
+    # populated quote (`currency` present - a `financialCurrency` gap
+    # alongside an EMPTY info dict entirely is the pre-existing
+    # "info_unavailable" case above, not this one) but is specifically
+    # missing financialCurrency. A fresh yf.Ticker(ticker) instance (not
+    # the SAME `tk` object, in case any client-side caching lives on the
+    # instance itself) - logged once either way so a still-missing
+    # field after the retry is visible rather than silently accepted.
+    if (statement_years > 0 and info.get("currency") and not info.get("financialCurrency")):
+        try:
+            _retry_info = yf.Ticker(ticker).info or {}
+        except Exception:
+            _retry_info = {}
+        _retry_fin_ccy = _retry_info.get("financialCurrency") if isinstance(_retry_info, dict) else None
+        if _retry_fin_ccy:
+            info["financialCurrency"] = _retry_fin_ccy
+            flags.append("financial_currency_retry_recovered")
+            print(f"[fin_ccy_retry] {ticker}: financialCurrency missing on first .info fetch, "
+                  f"recovered '{_retry_fin_ccy}' on retry")
+        else:
+            flags.append("financial_currency_missing")
+            print(f"[fin_ccy_retry] {ticker}: financialCurrency still missing after retry "
+                  f"(currency={info.get('currency')!r}) - treated as genuinely unavailable")
+
     api_key = os.environ.get("EODHD_API_KEY")
     if api_key:
         e_income, e_balance, e_cashflow, e_years = _fetch_eodhd_statements(ticker, api_key)
@@ -1785,13 +1836,35 @@ def get_bundle(ticker, force_refresh=False):
     # comment just above - the F2 fix).
     info = _overlay_fresh_price(info, tk, income=income)
 
-    price_unit_suspect, price_unit_suspect_reason = (False, None)
-    if price_quote_unit == "GBp":
-        price_unit_suspect, price_unit_suspect_reason = _check_price_unit_guard(
-            ticker, info, raw_price_for_guard
-        )
-        if price_unit_suspect:
-            flags.append("price_unit_suspect")
+    # TASK 42 item 1 (Director-directed, 8 Nov 2026, GQG.AX live case,
+    # approved): this guard used to run only for a GBp-detected ticker -
+    # a price*shares-vs-marketCap mismatch for ANY OTHER currency went
+    # completely unchecked. GQG.AX's own live price (0.94) is close to
+    # its real AUD price (~1.42) divided by a plausible AUD/USD rate -
+    # exhaustively searched (get_bundle()'s own price/overlay/fresh-
+    # price code, app.py's SEPARATE get_price_history()/get_ticker_
+    # info() fetches, nightly_scan.py's own price derivation, top100_
+    # engine's cross-listing traded-value calc) and found NO fx_rate()/
+    # static-fallback call anywhere in a PRICE computation - every one
+    # of those sites converts a STATEMENT or DCF cash-flow figure, never
+    # a quote price. The leading remaining explanation is a genuine
+    # Yahoo-side data inconsistency for this specific ticker (its own
+    # quoteSummary price module serving a USD-looking figure while
+    # marketCap/other modules may still reflect the real AUD one) - not
+    # a conversion bug in this codebase to "undo". This guard already
+    # catches exactly that SHAPE of problem (an independent price vs.
+    # marketCap disagreement) regardless of currency or root cause, so
+    # it now runs for every ticker - flag-only, same as before: it can
+    # only ever ADD "price_unit_suspect" (withholding IV/MOS, per
+    # build_sections()'s own existing contract), never silently clear
+    # one. The log line's own "GBp->GBP" wording is unchanged (its
+    # content, not its gating, is GBp-specific) - see that function's
+    # own docstring.
+    price_unit_suspect, price_unit_suspect_reason = _check_price_unit_guard(
+        ticker, info, raw_price_for_guard
+    )
+    if price_unit_suspect:
+        flags.append("price_unit_suspect")
 
     # income_q: quarterly income statement, yfinance-only regardless of
     # which annual source won above (EODHD has no quarterly endpoint this

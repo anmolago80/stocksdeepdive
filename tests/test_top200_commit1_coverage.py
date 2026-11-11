@@ -367,6 +367,11 @@ _TASK32_SHADOW_KEYS = (
     # above, for the moat-blend scenarios - "moat"/"value_score_moat"/
     # "value_score_v2_moat". 007d669 predates this task too.
     "moat", "value_score_moat", "value_score_v2_moat",
+    # TASK 42 item 6a (Director-directed, 8 Nov 2026) - same purely-
+    # additive, shadow-only status - depends on "Quality V2" via the
+    # same fallback chain as "value_score_v2_moat" just above. 007d669
+    # predates this task too.
+    "value_score_v2_moat_peak_fear",
     # TASK 37 (Director-directed, 6 Nov 2026, ADBE case) - same
     # purely-additive, never-read-by-sort/slice status: "quality_
     # exception_admitted" (only ever True with TOP200_QUALITY_

@@ -91,6 +91,7 @@ import re
 
 import pandas as pd
 
+import drop_chip_engine
 import moat_engine
 import quality_v2_engine
 import ranking_engine
@@ -205,6 +206,117 @@ def psychology_as_of(daily_closes_with_dates, date):
     }
 
 
+def _weekly_closes_as_of(daily_closes_with_dates, date):
+    """[(date, close), ...] (any order) -> (dates, closes) weekly
+    closes (pandas "W", week-ending-Sunday - the SAME resample
+    convention support_levels_job.py's own _weekly_bars_from_daily()
+    uses), truncated to bars on/before `date`. Local to this module
+    (point_in_time_replay.py has no yfinance/download dependency of
+    its own and acquires none here either - this only resamples
+    whatever daily series the caller already supplied). ([], []) for
+    no usable input, never raises."""
+    date = _as_date(date)
+    pairs = sorted(
+        ((_as_date(d), float(c)) for d, c in (daily_closes_with_dates or [])
+         if c is not None and c == c and _as_date(d) <= date),
+        key=lambda p: p[0],
+    )
+    if not pairs:
+        return [], []
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d, _ in pairs])
+    series = pd.Series([c for _, c in pairs], index=idx)
+    weekly = series.resample("W").last().dropna()
+    if weekly.empty:
+        return [], []
+    dates = [d.date() if hasattr(d, "date") else d for d in weekly.index.to_pydatetime()]
+    return dates, weekly.tolist()
+
+
+def fear_from_peak_as_of(daily_closes_with_dates, date, window_years=drop_chip_engine.PEAK_WINDOW_YEARS):
+    """TASK 42 item 6a (Director-directed, 8 Nov 2026, CSL.AX replay
+    case): drop_chip_engine's own "% below the 3-year weekly peak" fear
+    variant, replayed as of a past `date` - resamples `daily_closes_
+    with_dates` to weekly closes truncated to on/before `date`, then
+    runs drop_chip_engine.compute_peak_and_drop()/fear_from_peak()
+    UNMODIFIED - the SAME 3-year-peak math the live card chip uses,
+    just windowed to a past date instead of today, never a second,
+    independently-derived formula.
+
+    Returns {"peak_date","peak_price","fear"} - every value None when
+    there are too few weekly bars on/before `date` to compute a peak
+    at all (never raises)."""
+    weekly_dates, weekly_closes = _weekly_closes_as_of(daily_closes_with_dates, date)
+    if not weekly_closes:
+        return {"peak_date": None, "peak_price": None, "fear": None}
+    result = drop_chip_engine.compute_peak_and_drop(weekly_dates, weekly_closes, window_years=window_years)
+    fear = drop_chip_engine.fear_from_peak(result["current_price"], result["peak_price"])
+    return {"peak_date": result["peak_date"], "peak_price": result["peak_price"], "fear": fear}
+
+
+def quality_on_sale_as_of(date, daily_closes_with_dates, quality_v1, quality_v2, dcf_unreliable,
+                           quality_exception_thresholds_met,
+                           min_quality=None):
+    """TASK 42 item 6c (Director-directed, 8 Nov 2026): would this
+    ticker have passed EVERY "Quality on sale" tab rule (top100_
+    engine.quality_on_sale_candidates()'s own three rules) as of
+    `date`? Report PASS/FAIL PER RULE (never one collapsed bool), so a
+    near-miss is visible rather than hidden behind a single "no".
+
+    `min_quality` defaults to top100_engine.QUALITY_ON_SALE_MIN_QUALITY
+    - the SAME constant the live tab uses, never a second copy of the
+    number - passed as a parameter only so this module never needs a
+    hard top100_engine import-time dependency cycle (top100_engine
+    itself does not import point_in_time_replay).
+
+    The drop/peak side reuses drop_chip_engine.compute_peak_and_drop()
+    over weekly closes truncated to `date` (via _weekly_closes_as_of()
+    above) - the SAME peak math the live drop chip and fear_from_peak_
+    as_of() both already use. The "clean data" rule reuses the SAME
+    `dcf_unreliable`/`quality_exception_thresholds_met` replay_at_
+    date() already computes for this date - no second DCF-unreliable
+    check here.
+
+    Returns {
+      "quality_used": float|None, "quality_used_source": "v2"|"v1"|None,
+      "quality_rule_pass": bool,
+      "drop_pct": float|None, "peak_date": date|None, "peak_price": float|None,
+      "drop_rule_pass": bool,
+      "clean_data_rule_pass": bool,
+      "all_rules_pass": bool,
+    } - never raises; missing inputs simply fail that rule rather than
+    aborting the check."""
+    if min_quality is None:
+        min_quality = top100_engine.QUALITY_ON_SALE_MIN_QUALITY
+
+    if quality_v2 is not None:
+        quality_used, quality_used_source = quality_v2, "v2"
+    elif quality_v1 is not None:
+        quality_used, quality_used_source = quality_v1, "v1"
+    else:
+        quality_used, quality_used_source = None, None
+    quality_rule_pass = quality_used is not None and quality_used >= min_quality
+
+    weekly_dates, weekly_closes = _weekly_closes_as_of(daily_closes_with_dates, date)
+    peak_drop = (
+        drop_chip_engine.compute_peak_and_drop(weekly_dates, weekly_closes) if weekly_closes else None
+    )
+    drop_pct = peak_drop.get("drop_pct") if peak_drop else None
+    drop_rule_pass = drop_chip_engine.passes_quality_on_sale_drop_rule(drop_pct)
+
+    clean_data_rule_pass = (not bool(dcf_unreliable)) or bool(quality_exception_thresholds_met)
+
+    return {
+        "quality_used": quality_used, "quality_used_source": quality_used_source,
+        "quality_rule_pass": quality_rule_pass,
+        "drop_pct": drop_pct,
+        "peak_date": peak_drop.get("peak_date") if peak_drop else None,
+        "peak_price": peak_drop.get("peak_price") if peak_drop else None,
+        "drop_rule_pass": drop_rule_pass,
+        "clean_data_rule_pass": clean_data_rule_pass,
+        "all_rules_pass": bool(quality_rule_pass and drop_rule_pass and clean_data_rule_pass),
+    }
+
+
 def quality_v2_as_of(ticker, bundle, date, info=None, reporting_lag_days=STATEMENT_REPORTING_LAG_DAYS):
     """quality_v2_engine.get_quality_score_v2(), run UNMODIFIED against
     bundle_as_of(bundle, date, reporting_lag_days) - no fiscal year
@@ -231,28 +343,44 @@ def moat_as_of(ticker, bundle, date, info=None, reporting_lag_days=STATEMENT_REP
     return moat_engine._compute_moat_from_bundle(ticker, truncated, info)
 
 
-def _value_score_variants(quality_v1, quality_v2, mos_pct, psychology, moat_score):
+def _value_score_variants(quality_v1, quality_v2, mos_pct, psychology, moat_score,
+                           peak_fear_psychology=None):
     """The Director's own 4 requested variants - each a thin call into
     ranking_engine.recompute_value_score(), the ONE shared Top 200
     formula (never a parallel/independently-derived one). Discovery is
     always 0 with discovery_measured=False forced inside recompute_
     value_score() itself - see this module's own docstring on why
     Discovery can't be replayed. None for a variant whose own Quality
-    input is None (nothing to score)."""
-    def _score(quality, moat_blend):
-        if quality is None:
+    input is None (nothing to score).
+
+    `peak_fear_psychology` (TASK 42 item 6a, Director-directed, 8 Nov
+    2026, CSL.AX case): when supplied, the SAME 4 setups are scored a
+    SECOND time with this psychology figure in place of the real one -
+    "Report CSL's replay score with it under all four setups", the
+    Director's own exact wording. None (the default) adds no extra
+    keys at all - every pre-item-6a caller is byte-for-byte unaffected."""
+    def _score(quality, moat_blend, psych):
+        if quality is None or psych is None:
             return None
         row = {"Quality": quality, "MOS %": mos_pct or 0.0,
-               "Psychology": psychology or 0.0, "Discovery (lite)": 0,
+               "Psychology": psych, "Discovery (lite)": 0,
                "Moat": moat_score}
         return ranking_engine.recompute_value_score(row, moat_blend=moat_blend)
 
-    return {
-        "current_formula": _score(quality_v1, moat_blend=False),
-        "moat_blend": _score(quality_v1, moat_blend=True),
-        "quality_v2": _score(quality_v2, moat_blend=False),
-        "quality_v2_moat_blend": _score(quality_v2, moat_blend=True),
+    variants = {
+        "current_formula": _score(quality_v1, False, psychology),
+        "moat_blend": _score(quality_v1, True, psychology),
+        "quality_v2": _score(quality_v2, False, psychology),
+        "quality_v2_moat_blend": _score(quality_v2, True, psychology),
     }
+    if peak_fear_psychology is not None:
+        variants.update({
+            "peak_fear_current_formula": _score(quality_v1, False, peak_fear_psychology),
+            "peak_fear_moat_blend": _score(quality_v1, True, peak_fear_psychology),
+            "peak_fear_quality_v2": _score(quality_v2, False, peak_fear_psychology),
+            "peak_fear_quality_v2_moat_blend": _score(quality_v2, True, peak_fear_psychology),
+        })
+    return variants
 
 
 def replay_at_date(ticker, date, baseline=None, baseline_date=None, bundle=None,
@@ -384,7 +512,29 @@ def replay_at_date(ticker, date, baseline=None, baseline_date=None, bundle=None,
         "path already uses."
     )
 
-    value_score = _value_score_variants(quality_v1, quality_v2, mos_pct, psych.get("psychology"), moat_score)
+    # TASK 42 item 6a (Director-directed, 8 Nov 2026, CSL.AX case):
+    # SHADOW ONLY - swaps the fear term alone (3-year-peak fear instead
+    # of the real 63-day-window fear) and leaves greed/fomo exactly as
+    # psychology_as_of() already computed them, matching the Director's
+    # own root-cause finding ("fear uses a 63-day window... while
+    # greed/FOMO penalise the bounce above MA50") - this never re-
+    # derives greed/fomo, only substitutes the one term under review.
+    peak_fear_result = fear_from_peak_as_of(daily_closes_with_dates or [], date)
+    peak_fear_psychology = None
+    if (peak_fear_result.get("fear") is not None
+            and psych.get("greed") is not None and psych.get("fomo") is not None):
+        peak_fear_psychology = peak_fear_result["fear"] - psych["greed"] - psych["fomo"]
+    else:
+        limitations.append(
+            "Peak-fear shadow variant (TASK 42 item 6a): not enough weekly history "
+            "on/before this date to compute a 3-year peak, or the real fear/greed/fomo "
+            "decomposition is unavailable - no peak_fear_* Value Score variants below."
+        )
+
+    value_score = _value_score_variants(
+        quality_v1, quality_v2, mos_pct, psych.get("psychology"), moat_score,
+        peak_fear_psychology=peak_fear_psychology,
+    )
 
     dcf_unreliable = resolver_engine.dcf_looks_unreliable(iv, price) if (iv and price) else None
     if dcf_unreliable is None:
@@ -417,12 +567,23 @@ def replay_at_date(ticker, date, baseline=None, baseline_date=None, bundle=None,
         for k, v in value_score.items()
     }
 
+    # TASK 42 item 6c (Director-directed, 8 Nov 2026): would this
+    # ticker have passed the "Quality on sale" tab's rules as of this
+    # date - reuses the SAME dcf_unreliable/quality_exception_
+    # thresholds_met this function already computed above, never a
+    # second derivation.
+    quality_on_sale = quality_on_sale_as_of(
+        date, daily_closes_with_dates or [], quality_v1, quality_v2,
+        dcf_unreliable, quality_exception_thresholds_met,
+    )
+
     return {
         "ticker": ticker, "date": date.isoformat(),
         "price": price, "price_source": price_source,
         "intrinsic_value": iv, "intrinsic_value_source": iv_source,
         "mos_pct": mos_pct,
         "psychology": psych,
+        "peak_fear": peak_fear_result, "peak_fear_psychology": peak_fear_psychology,
         "quality_v1": quality_v1, "quality_v1_source": quality_v1_source,
         "quality_v2": quality_v2, "quality_v2_meta": quality_v2_meta,
         "moat": moat_score, "moat_detail": moat_detail,
@@ -431,5 +592,6 @@ def replay_at_date(ticker, date, baseline=None, baseline_date=None, bundle=None,
         "quality_exception_thresholds_met": quality_exception_thresholds_met,
         "today_cutoff": today_cutoff,
         "would_be_in_pool": would_be_in_pool,
+        "quality_on_sale": quality_on_sale,
         "limitations": limitations,
     }

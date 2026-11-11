@@ -4128,6 +4128,9 @@ EN = {
     # render_top100_page() itself - see that function's own comment.
     "top100.tab_us_foreign": "Top 20 · Foreign US-listed",
     "top100.tab_full": "Full 200",
+    # TASK 42 item 6b (Director-directed): the "good company, fallen a
+    # long way" tab.
+    "top100.tab_quality_on_sale": "Quality on sale",
     # Director's TASK 7, final version (14 Oct 2026): one "Top 20" tab
     # per new market in the pool, after "Top 20 · USA" - see top100_
     # render._new_market_tab_plan()'s own docstring for which markets
@@ -4274,6 +4277,12 @@ EN = {
     "top100.support_chip": "Support {month_year} · {price} · +{pct_above}% above",
     "top100.no_support_chip": "No support below - lowest since {month_year}",
     "top100.support_drop_suffix": " · {drop}% from 12-month high",
+    # TASK 39 (Director-directed): "−52% from Aug 2023 peak (3y high)".
+    "top100.drop_chip": "{drop}% from {month_year} peak (3y high)",
+    "top100.drop_tooltip": (
+        "Highest weekly close in the last 3 years.\n"
+        "Peak {peak_price} ({peak_date}) · current {price} · {drop}% off that peak"
+    ),
     "top100.support_tooltip": (
         "Weekly pivot low (3,3), unbroken (2-close rule) - same logic "
         "as your TradingView levels.\n"
@@ -8010,6 +8019,7 @@ ES = {
     "top100.tab_us": "Top 20 · EE. UU.",
     "top100.tab_us_foreign": "Top 20 · Extranjeras en EE. UU.",
     "top100.tab_full": "Las 200",
+    "top100.tab_quality_on_sale": "Calidad en oferta",
     "top100.tab_market": "Top 20 · {country}",
     "top100.country_canada": "Canadá",
     "top100.country_united_kingdom": "Reino Unido",
@@ -8096,6 +8106,12 @@ ES = {
     "top100.support_chip": "Soporte {month_year} · {price} · +{pct_above}% por encima",
     "top100.no_support_chip": "Sin soporte por debajo - mínimo desde {month_year}",
     "top100.support_drop_suffix": " · {drop}% desde el máximo de 12 meses",
+    # TASK 39 (Director-directed): "−52% desde el máximo de ago 2023 (máximo de 3 años)".
+    "top100.drop_chip": "{drop}% desde el máximo de {month_year} (máximo de 3 años)",
+    "top100.drop_tooltip": (
+        "Cierre semanal más alto en los últimos 3 años.\n"
+        "Máximo {peak_price} ({peak_date}) · actual {price} · {drop}% por debajo de ese máximo"
+    ),
     "top100.support_tooltip": (
         "Mínimo pivote semanal (3,3), no roto (regla de 2 cierres) - la "
         "misma lógica que tus niveles de TradingView.\n"

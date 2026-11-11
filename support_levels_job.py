@@ -27,6 +27,13 @@ every .L ticker regardless of price_quote_unit" rule - applied here to
 EVERY ".L" ticker unconditionally, no Yahoo info["currency"] check
 needed at all, since repair_mixed_unit_price_dataframe() itself needs
 only a DataFrame and a reference price, never a Yahoo info dict).
+
+TASK 39/TASK 42 item 6b (Director-directed, 8 Nov 2026, "build
+together", "reuse TASK 39's 3y-peak data"): the drop-from-3y-peak chip
+(drop_chip_engine.py/drop_chip_store.py) is computed from the SAME
+weekly bars this job already resamples (5y of history, comfortably
+more than the 3-year window the drop chip needs) - no second download,
+no second resample, same per-ticker try/except this job already has.
 """
 
 import datetime
@@ -35,6 +42,8 @@ import time
 import pandas as pd
 import yfinance as yf
 
+import drop_chip_engine
+import drop_chip_store
 import fundamentals_data
 import support_levels_engine
 import support_levels_store
@@ -177,6 +186,14 @@ def compute_and_store_support_levels_for_pool(log=print):
                     continue
                 result = support_levels_engine.compute_support_levels(dates, highs, lows, closes)
                 support_levels_store.save(t, result, currency=by_ticker[t]["currency"])
+                # TASK 39/TASK 42 item 6b (Director-directed, built
+                # together per the "reuse TASK 39's 3y-peak data"
+                # instruction): the SAME weekly bars already resampled
+                # above (5y of history, comfortably more than the
+                # 3-year window this needs) feed the drop-from-peak
+                # chip too - no second download, no second resample.
+                drop_result = drop_chip_engine.compute_peak_and_drop(dates, closes)
+                drop_chip_store.save(t, drop_result, currency=by_ticker[t]["currency"])
                 computed += 1
             except Exception as e:
                 log(f"[support_levels] {t}: {e}")
@@ -212,6 +229,25 @@ def compute_and_store_support_levels_for_pool(log=print):
             log(f"[support_levels] {_named}: no support below - lowest_since="
                 f"{_entry.get('lowest_since_price')} ({_entry.get('lowest_since_date')}) "
                 f"drop_from_12m_high={_entry.get('drop_from_12m_high')}")
+
+    # TASK 39's own test-first named tickers (CSL.AX/OCL.AX/NU/ADBE) -
+    # same "named tickers, explicit log line" precedent as the support-
+    # levels block just above, reading back from drop_chip_store (just
+    # written above, this same run) rather than recomputing.
+    for _named in ("CSL.AX", "OCL.AX", "NU", "ADBE"):
+        _drop_entry = drop_chip_store.get(_named)
+        if not _drop_entry:
+            log(f"[drop_chip] {_named}: no entry (not a current pool/extension "
+                f"member, or tonight's computation failed/skipped for it)")
+        elif _drop_entry.get("chip_shown"):
+            log(f"[drop_chip] {_named}: -{abs(_drop_entry.get('drop_pct') or 0):.1f}% "
+                f"from {_drop_entry.get('peak_date')} peak "
+                f"{_drop_entry.get('peak_price')} (current {_drop_entry.get('current_price')})")
+        else:
+            log(f"[drop_chip] {_named}: no chip (drop "
+                f"{_drop_entry.get('drop_pct')}% is above the -20% threshold) - "
+                f"peak {_drop_entry.get('peak_price')} on {_drop_entry.get('peak_date')}, "
+                f"current {_drop_entry.get('current_price')}")
 
     return {
         "tickers": len(tickers), "chunks": n_chunks, "computed": computed,

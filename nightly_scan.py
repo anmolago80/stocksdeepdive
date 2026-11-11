@@ -1308,6 +1308,17 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         "Share Count Flagged": bool(iv_meta.get("share_count_flagged", False)),
         "FX Converted": iv_meta.get("fx_converted"),
         "MOS %": round(mos, 1) if intrinsic > 0 else None,
+        # TASK 42 item 6a (Director-directed, 8 Nov 2026, CSL.AX case):
+        # the three terms "Psychology" is already built from, stored
+        # SEPARATELY so a shadow fear variant (top100_engine._recompute_
+        # value_score_v2_moat_peak_fear()) can swap fear alone and keep
+        # greed/fomo exactly as computed here, without re-deriving any
+        # of the three from scratch. Purely additive - never read by
+        # calculate_long_score()/composite_score()/select_top100_pool()
+        # itself, same status as every other provenance-only field.
+        "Fear": round(fear, 1),
+        "Greed": round(greed, 1),
+        "Fomo": round(fomo, 1),
         "Psychology": round(psychology, 1),
         "Discovery (lite)": round(discovery, 1),
         "Long Score": round(long_score, 1),
@@ -2603,6 +2614,12 @@ def _reprice_row(row, hist_df, universe_attention_lite=True, log=print):
     new_row = dict(row)
     new_row["Price"] = round(current_price, 2)
     new_row["MOS %"] = round(mos, 1) if mos is not None else None
+    # TASK 42 item 6a - same additive Fear/Greed/Fomo passthrough as
+    # the full-scan row above (analyze_ticker()'s own "Psychology"
+    # block) - see that call site's own comment for why.
+    new_row["Fear"] = round(fear, 1)
+    new_row["Greed"] = round(greed, 1)
+    new_row["Fomo"] = round(fomo, 1)
     new_row["Psychology"] = round(psychology, 1)
     new_row["Discovery (lite)"] = round(discovery, 1)
     new_row["Long Score"] = round(long_score, 1)
