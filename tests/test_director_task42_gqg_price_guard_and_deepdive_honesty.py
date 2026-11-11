@@ -245,5 +245,110 @@ print("[task42_check3_deepdive_honest_flag_source] deep_dive_engine.py's "
       "conversion-success flag instead of assuming it OK")
 
 
+# ======================================================================
+# CHECK 4 (11 Nov 2026 follow-up, Director-directed, pre-push
+# condition): the Director's own review found that the widened guard's
+# flag is read by several downstream consumers that WITHHOLD a real,
+# visible number (not merely log/flag) - this confirms the fix: a
+# TOP200_PRICE_GUARD_LIVE-gated "price_unit_suspect_effective" field on
+# fundamentals_data.get_bundle()'s own meta, and auto_compounder_
+# engine.build_sections() (the Fair Value / Compounder View tab, the
+# ONE real downstream consumer of get_bundle()'s own widened meta -
+# nightly_scan.py/deep_dive_engine.py/top100_engine.py's own IV-
+# zeroing/pre-scoring checks all read a COMPLETELY SEPARATE, already-
+# GBp-only meta from fundamentals_data.normalize_pence_quote(), never
+# touched by TASK 42 item 1's widening at all - confirmed by direct
+# source inspection, not assumed) now reads that gated field instead
+# of the raw one.
+# ======================================================================
+import auto_compounder_engine
+
+os.environ.pop("TOP200_PRICE_GUARD_LIVE", None)
+_gqg_info_bs = {
+    "currency": "AUD", "financialCurrency": "AUD",
+    "currentPrice": 0.94, "regularMarketPrice": 0.94,
+    "marketCap": 1.42 * 2_994_332_236, "sharesOutstanding": 2_994_332_236,
+    "longName": "GQG Partners",
+}
+
+
+class _FakeFastInfoBS:
+    @property
+    def last_price(self):
+        raise AttributeError("no fast_info in this fixture")
+
+
+class _FakeTickerBS:
+    def __init__(self, *a, **k):
+        self.info = dict(_gqg_info_bs)
+        self.fast_info = _FakeFastInfoBS()
+
+    def history(self, *a, **k):
+        return pd.DataFrame()
+
+
+_bundle_gqg_shaped, _ = (None, None)
+with mock.patch("yfinance.Ticker", _FakeTickerBS):
+    _bundle_gqg_shaped = fd.get_bundle("GQGGATETEST.AX", force_refresh=True)
+
+check("fixture reproduces price_unit_suspect=True (same GQG.AX-shaped "
+      "mismatch as CHECK 1 above)",
+      (_bundle_gqg_shaped.get("meta") or {}).get("price_unit_suspect") is True)
+check("TOP200_PRICE_GUARD_LIVE unset (tonight's default): "
+      "price_unit_suspect_effective is False for this non-GBp ticker",
+      (_bundle_gqg_shaped.get("meta") or {}).get("price_unit_suspect_effective") is False)
+
+os.environ["TOP200_PRICE_GUARD_LIVE"] = "1"
+with mock.patch("yfinance.Ticker", _FakeTickerBS):
+    _bundle_gqg_shaped_live = fd.get_bundle("GQGGATETEST2.AX", force_refresh=True)
+check("TOP200_PRICE_GUARD_LIVE=1: price_unit_suspect_effective is True "
+      "for the same shape of non-GBp ticker",
+      (_bundle_gqg_shaped_live.get("meta") or {}).get("price_unit_suspect_effective") is True)
+os.environ.pop("TOP200_PRICE_GUARD_LIVE", None)
+
+with mock.patch.object(fd, "get_bundle", return_value=_bundle_gqg_shaped):
+    _sections_gate_off = auto_compounder_engine.build_sections("GQGGATETEST.AX", force_refresh=True)
+check("build_sections(): gate OFF -> a non-GBp suspect ticker's Fair "
+      "Value tab is NOT withheld (byte-identical to pre-TASK-42 "
+      "behaviour - the Director's own explicit requirement)",
+      _sections_gate_off is not None)
+
+os.environ["TOP200_PRICE_GUARD_LIVE"] = "1"
+with mock.patch.object(fd, "get_bundle", return_value=_bundle_gqg_shaped_live):
+    _sections_gate_on = auto_compounder_engine.build_sections("GQGGATETEST2.AX", force_refresh=True)
+check("build_sections(): gate ON -> the same shape of ticker IS "
+      "withheld (None) - the switch has a real effect once flipped",
+      _sections_gate_on is None)
+os.environ.pop("TOP200_PRICE_GUARD_LIVE", None)
+
+import nightly_scan
+_src_ns = inspect.getsource(nightly_scan)
+check("nightly_scan.py's own IV-zeroing check is UNCHANGED (still "
+      "reads the plain, already-GBp-only 'price_unit_suspect' from "
+      "normalize_pence_quote()'s meta - never touched by the widened "
+      "guard, confirmed by source, not assumed)",
+      'if _price_unit_meta.get("price_unit_suspect"):' in _src_ns
+      and 'price_unit_suspect_effective' not in _src_ns)
+
+_src_dd_full = inspect.getsource(deep_dive_engine)
+check("deep_dive_engine.py's own headline IV-zeroing check is "
+      "UNCHANGED for the same reason",
+      'if price_unit_meta.get("price_unit_suspect"):' in _src_dd_full)
+
+_src_te = inspect.getsource(__import__("top100_engine"))
+check("top100_engine.py's pre-scoring eligibility checks are UNCHANGED "
+      "(the saved scan row's own 'price_unit_suspect' field is ALSO "
+      "sourced from normalize_pence_quote(), never from get_bundle()'s "
+      "widened meta - confirmed by source)",
+      _src_te.count('if row.get("price_unit_suspect"):') == 2)
+print("[task42_check4_price_guard_live_gate] TOP200_PRICE_GUARD_LIVE "
+      "(default off) gates the ONE real downstream consumer of the "
+      "widened guard's flag that withholds a visible number (auto_"
+      "compounder_engine.build_sections(), the Fair Value tab) - every "
+      "other consumer (nightly_scan.py/deep_dive_engine.py/top100_"
+      "engine.py) was already, and remains, GBp-only by construction, "
+      "confirmed by direct source inspection OK")
+
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

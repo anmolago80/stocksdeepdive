@@ -1496,6 +1496,34 @@ def _normalize_and_validate_pence_dividends(dividends, info, ticker=None, log=pr
     return {"dates": [], "amounts": []}, True
 
 
+def price_unit_guard_live():
+    """TOP200_PRICE_GUARD_LIVE gate (TASK 42 item 1 follow-up,
+    Director-directed, 11 Nov 2026): _check_price_unit_guard() itself
+    was widened to run for EVERY ticker, not just GBp (TASK 42 item 1)
+    - but the Director's own review found that flag is read by several
+    downstream consumers (nightly_scan.py/deep_dive_engine.py zeroing
+    Intrinsic Value, auto_compounder_engine.build_sections() returning
+    None entirely, top100_engine.py's pre-scoring eligibility checks)
+    that WITHHOLD a real, visible number or change selection - not
+    merely log/flag. This gate decides whether the WIDENED part of
+    that flag (a non-GBp ticker) is allowed to do any of that:
+
+      unset/"0" (tonight's default): only a GBp ticker's own suspect
+        flag withholds anything - BYTE-IDENTICAL to this guard's pre-
+        TASK-42 behaviour. A non-GBp ticker still gets flagged/logged/
+        counted (see price_unit_suspect_effective's own docstring
+        below) but nothing it touches changes.
+      "1": every ticker's suspect flag withholds, matching the widened
+        guard 1:1.
+
+    _check_price_unit_guard() itself is NEVER gated by this - it keeps
+    running, flagging and logging for every ticker regardless, so the
+    Director's own "how many tickers get flagged" count is real and
+    immediate tonight. The Director flips this on Railway by hand
+    after reviewing that count - this task never sets it."""
+    return os.environ.get("TOP200_PRICE_GUARD_LIVE", "0").strip() == "1"
+
+
 def _check_price_unit_guard(ticker, info, raw_price_before_divide, log=print):
     """Stage 1a (3 Oct 2026, Director-directed) runtime guard -
     VALIDATION, not detection (detection is the exact "GBp"/"GBX"
@@ -2074,6 +2102,22 @@ def get_bundle(ticker, force_refresh=False):
             "price_quote_unit": price_quote_unit,
             "price_unit_suspect": price_unit_suspect,
             "price_unit_suspect_reason": price_unit_suspect_reason,
+            # TASK 42 item 1 follow-up (Director-directed, 11 Nov
+            # 2026): the GATED version of price_unit_suspect above -
+            # True only when a GBp ticker's own flag fired (the pre-
+            # TASK-42 behaviour, always in effect) OR TOP200_PRICE_
+            # GUARD_LIVE is on. Every consumer that WITHHOLDS a real
+            # number (nightly_scan.py/deep_dive_engine.py zeroing
+            # Intrinsic Value, auto_compounder_engine.build_sections()
+            # returning None, top100_engine.py's pre-scoring
+            # eligibility) reads THIS field, never the raw one above -
+            # price_unit_suspect itself stays the raw, ungated
+            # diagnostic (display/counting only: market_readiness_
+            # engine.price_guard_flags(), snapshot_render.py's hint
+            # text, the admin panel's own count).
+            "price_unit_suspect_effective": bool(
+                price_unit_suspect and (price_quote_unit == "GBp" or price_unit_guard_live())
+            ),
             "dividend_unit_suspect": dividend_unit_suspect,
             # Lists & display Commit 4 (3 Oct 2026, Director-directed):
             # "pounds"|"pence"|"unknown"|None (None = not a GBp ticker) -

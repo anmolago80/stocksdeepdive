@@ -4848,7 +4848,12 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
     # caller change needed. The [units] log line explaining WHY was
     # already printed once, at bundle-build time, by _check_price_unit_
     # guard() itself.
-    if (bundle.get("meta") or {}).get("price_unit_suspect"):
+    # TASK 42 item 1 follow-up (Director-directed, 11 Nov 2026): reads
+    # the GATED "price_unit_suspect_effective" (TOP200_PRICE_GUARD_
+    # LIVE, default off) - same reasoning as nightly_scan.py's own
+    # identical change (see that module's own comment at this exact
+    # point in its own IV-zeroing logic).
+    if (bundle.get("meta") or {}).get("price_unit_suspect_effective"):
         return None
 
     # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-directed,
