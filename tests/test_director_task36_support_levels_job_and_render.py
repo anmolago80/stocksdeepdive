@@ -32,6 +32,7 @@ os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = TESTVOL
 import pandas as pd
 
 import support_levels_job as slj
+import top100_store
 import support_levels_store as sls
 import top100_render as tr
 
@@ -227,6 +228,50 @@ with _mock.patch.object(slj, "_pool_and_extension_tickers_with_currency",
         slj.compute_and_store_support_levels_for_pool(log=lambda m: _logged.append(m))
 check(f"skip path now names the failing ticker and bar count (logged={_logged})",
       any("SHORT.AX: skipped - only" in m and "weekly bar(s) available" in m for m in _logged))
+
+
+# ======================================================================
+# CHECK 14 (TASK 44 item 1, Director-directed, 11 Nov 2026): _pool_and_
+# extension_tickers_with_currency() now covers the FULL eligible
+# nightly-scan candidate universe (top100_engine._build_best_by_
+# ticker()'s own output), not only the current Top 200 pool + ASX
+# extension - the "Quality on sale" tab's own coverage finding (a
+# company that fell OUT of the 200 could never appear otherwise).
+# Pool/extension membership is still included via a union (belt-and-
+# braces), never REPLACED.
+# ======================================================================
+import top100_engine as _te_for_slj
+
+_fake_best_by_ticker = {
+    "OUTOFPOOL.AX": {"ticker": "OUTOFPOOL.AX", "currency": "AUD", "price": 3.0},
+    "INPOOL.AX": {"ticker": "INPOOL.AX", "currency": "AUD", "price": 50.0},
+}
+with _mock.patch.object(_te_for_slj, "_build_best_by_ticker",
+                         return_value=(_fake_best_by_ticker, 2)), \
+     _mock.patch.object(top100_store, "current_pool",
+                         return_value=[{"ticker": "INPOOL.AX", "currency": "AUD", "price": 50.0}]), \
+     _mock.patch.object(top100_store, "current_asx_extension", return_value=[]):
+    _widened = slj._pool_and_extension_tickers_with_currency(log=lambda *a: None)
+check("TASK_44_item1_widened_ticker_set_includes_a_ticker_outside_the_pool_entirely "
+      "(the exact CSL/OCL coverage case)",
+      "OUTOFPOOL.AX" in _widened and _widened["OUTOFPOOL.AX"]["price"] == 3.0)
+check("TASK_44_item1_widened_ticker_set_still_includes_the_real_pool_member_too",
+      "INPOOL.AX" in _widened and _widened["INPOOL.AX"]["price"] == 50.0)
+
+# _build_best_by_ticker() itself failing must never break this job -
+# falls back to pool/extension alone, never raises.
+with _mock.patch.object(_te_for_slj, "_build_best_by_ticker", side_effect=RuntimeError("boom")), \
+     _mock.patch.object(top100_store, "current_pool",
+                         return_value=[{"ticker": "INPOOL.AX", "currency": "AUD", "price": 50.0}]), \
+     _mock.patch.object(top100_store, "current_asx_extension", return_value=[]):
+    _fallback_only = slj._pool_and_extension_tickers_with_currency(log=lambda *a: None)
+check("TASK_44_item1_a_build_best_by_ticker_failure_falls_back_to_pool_extension_only_"
+      "never_raises",
+      _fallback_only == {"INPOOL.AX": {"currency": "AUD", "price": 50.0}})
+print("[task44_check14_widened_ticker_scope] support_levels_job.py's own ticker scope "
+      "now covers the full eligible nightly-scan universe (union'd with pool/extension, "
+      "never replacing it), and fails open to pool/extension alone if the wider lookup "
+      "itself errors OK")
 
 
 print(f"\n{passed} passed, {failed} failed")

@@ -4131,6 +4131,9 @@ EN = {
     # TASK 42 item 6b (Director-directed): the "good company, fallen a
     # long way" tab.
     "top100.tab_quality_on_sale": "Quality on sale",
+    # TASK 44 item 9 (Director-approved): reveals every candidate past
+    # the first 20 shown by default.
+    "top100.quality_on_sale_show_all_button": "Show all ({count})",
     # Director's TASK 7, final version (14 Oct 2026): one "Top 20" tab
     # per new market in the pool, after "Top 20 · USA" - see top100_
     # render._new_market_tab_plan()'s own docstring for which markets
@@ -8020,6 +8023,7 @@ ES = {
     "top100.tab_us_foreign": "Top 20 · Extranjeras en EE. UU.",
     "top100.tab_full": "Las 200",
     "top100.tab_quality_on_sale": "Calidad en oferta",
+    "top100.quality_on_sale_show_all_button": "Mostrar todo ({count})",
     "top100.tab_market": "Top 20 · {country}",
     "top100.country_canada": "Canadá",
     "top100.country_united_kingdom": "Reino Unido",

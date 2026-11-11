@@ -343,6 +343,120 @@ def moat_as_of(ticker, bundle, date, info=None, reporting_lag_days=STATEMENT_REP
     return moat_engine._compute_moat_from_bundle(ticker, truncated, info)
 
 
+def _fridays_between(start_date, end_date):
+    """Every Friday (inclusive) from `start_date` to `end_date` -
+    `start_date`/`end_date` may fall on any weekday; the first/last
+    Friday returned is always >= start_date and <= end_date."""
+    start_date, end_date = _as_date(start_date), _as_date(end_date)
+    first_friday = start_date + datetime.timedelta(days=(4 - start_date.weekday()) % 7)
+    out = []
+    d = first_friday
+    while d <= end_date:
+        out.append(d)
+        d += datetime.timedelta(weeks=1)
+    return out
+
+
+def quality_on_sale_backtest(ticker, daily_closes_with_dates, start_date, end_date,
+                              bundle=None, info=None, reporting_lag_days=STATEMENT_REPORTING_LAG_DAYS,
+                              log=print):
+    """TASK 44 item 6 (Director-directed, 11 Nov 2026): runs the
+    "Quality on sale" tab's own three rules (quality_on_sale_as_of())
+    for `ticker` on every FRIDAY from `start_date` to `end_date`
+    (inclusive), using ONLY data that would have been available as of
+    that Friday - the SAME point-in-time discipline every other
+    function in this module already follows, never a second,
+    independently-derived rule set.
+
+    HONEST LIMITATION (same as every other point-in-time function in
+    this module - see its own docstring): Quality v1 and the DCF-
+    unreliable flag have NO historical replay mode at all (both are
+    only ever known for a date that matches a holding's own locked
+    baseline capture date). A backtest spanning many weeks essentially
+    never lands on that one date, so this function reports Quality v1
+    as unavailable and dcf_unreliable as "unknown, not assumed
+    unreliable" for every week - it does NOT silently fall back to
+    v1, and does NOT silently assume clean data. Quality v2 IS fully
+    replayable (quality_v2_as_of(), bundle truncated to each Friday's
+    own reporting-lag cutoff) and is what every week's own quality
+    rule actually runs on; a week with no Quality V2 at all (bundle
+    too thin, or the ticker not yet reporting) reports quality_used=
+    None and fails the quality rule honestly, rather than guessing.
+
+    Returns {
+      "ticker": str,
+      "weeks": [
+        {"date", "price", "peak_date", "peak_price", "drop_pct",
+         "quality_v2", "quality_v2_meta", "result" (quality_on_sale_
+         as_of()'s own per-rule dict)},
+        ...
+      ],  # oldest Friday first, one entry per Friday in range
+      "first_qualified": date|None, "last_qualified": date|None,
+      "total_weeks_qualified": int,
+      "gaps": [(date_before_gap, date_after_gap), ...],  # consecutive
+          # QUALIFYING weeks with >=1 non-qualifying week between them
+      "limitations": [str, ...],
+    }
+    Never raises - one week's own lookup/compute failure is logged and
+    that week's "result" reads None, never aborting the rest of the
+    backtest."""
+    fridays = _fridays_between(start_date, end_date)
+    weeks = []
+    for friday in fridays:
+        try:
+            quality_v2, quality_v2_meta = (None, None)
+            if bundle:
+                quality_v2, quality_v2_meta = quality_v2_as_of(
+                    ticker, bundle, friday, info=info, reporting_lag_days=reporting_lag_days)
+            result = quality_on_sale_as_of(
+                friday, daily_closes_with_dates, quality_v1=None, quality_v2=quality_v2,
+                dcf_unreliable=None, quality_exception_thresholds_met=None,
+            )
+            price = None
+            for d, c in (daily_closes_with_dates or []):
+                if c is not None and c == c and _as_date(d) <= friday:
+                    price = float(c)
+            weeks.append({
+                "date": friday, "price": price,
+                "peak_date": result.get("peak_date"), "peak_price": result.get("peak_price"),
+                "drop_pct": result.get("drop_pct"),
+                "quality_v2": quality_v2, "quality_v2_meta": quality_v2_meta,
+                "result": result,
+            })
+        except Exception as e:
+            log(f"[quality_on_sale_backtest] {ticker} {friday}: failed, skipping this week: {e}")
+            weeks.append({
+                "date": friday, "price": None, "peak_date": None, "peak_price": None,
+                "drop_pct": None, "quality_v2": None, "quality_v2_meta": None, "result": None,
+            })
+
+    qualifying_dates = [w["date"] for w in weeks if w["result"] and w["result"]["all_rules_pass"]]
+    gaps = []
+    for i in range(1, len(qualifying_dates)):
+        if (qualifying_dates[i] - qualifying_dates[i - 1]).days > 7:
+            gaps.append((qualifying_dates[i - 1], qualifying_dates[i]))
+
+    return {
+        "ticker": ticker,
+        "weeks": weeks,
+        "first_qualified": qualifying_dates[0] if qualifying_dates else None,
+        "last_qualified": qualifying_dates[-1] if qualifying_dates else None,
+        "total_weeks_qualified": len(qualifying_dates),
+        "gaps": gaps,
+        "limitations": [
+            "Quality v1 has no historical replay mode - every week's quality rule runs "
+            "on Quality v2 alone (None, never a v1 fallback, when v2 is unavailable for "
+            "that week).",
+            "DCF-unreliable has no historical replay mode either - every week's "
+            "clean-data rule treats it as 'unknown, not assumed unreliable' (passes "
+            "unless proven otherwise), never as a real per-week check.",
+            "Full-universe ranking among that week's other qualifiers cannot be "
+            "reconstructed point-in-time (no historical scan-universe snapshot is "
+            "stored) - this function reports pass/fail only, never a rank.",
+        ],
+    }
+
+
 def _value_score_variants(quality_v1, quality_v2, mos_pct, psychology, moat_score,
                            peak_fear_psychology=None):
     """The Director's own 4 requested variants - each a thin call into

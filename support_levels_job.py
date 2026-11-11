@@ -47,6 +47,7 @@ import drop_chip_store
 import fundamentals_data
 import support_levels_engine
 import support_levels_store
+import top100_engine
 import top100_store
 
 SUPPORT_LEVELS_CHUNK_SIZE = 175  # tickers per yf.download() batch call - same as nightly_scan.REPRICE_CHUNK_SIZE
@@ -56,18 +57,47 @@ SUPPORT_LEVELS_MIN_WEEKLY_BARS = support_levels_engine.PIVOT_LEFT_BARS + support
 
 def _pool_and_extension_tickers_with_currency(log=print):
     """{ticker: {"currency": str|None, "price": float|None}} for every
-    Top 200 pool member PLUS ASX extension member - top100_store.
-    current_pool()/current_asx_extension(), the exact same two
-    functions TASK 35's own moat-blend shadow preview reads, never a
-    third independently-resolved ticker list. Deduped by ticker (a
-    ticker could in principle appear in both, though current_asx_
-    extension() is documented as disjoint from the pool itself)."""
+    ticker in the FULL eligible nightly-scan candidate universe - EVERY
+    universe the Top 200 itself draws from, not only the 200 (+ ASX
+    extension) members actually selected tonight.
+
+    TASK 44 item 1 (Director-directed, 11 Nov 2026, "Quality on sale"
+    coverage finding): this function used to read ONLY top100_store.
+    current_pool()/current_asx_extension() - meaning the drop-from-3y-
+    peak chip (TASK 39) and the "Quality on sale" tab (TASK 42 item 6b)
+    could only ever see a Top 200 member, so a good company that fell
+    OUT of the 200 on price alone (the exact CSL/OCL case this feature
+    exists to catch) could never appear. Widened to top100_engine.
+    _build_best_by_ticker()'s own FULL eligible candidate dict (the
+    SAME eligibility filtering/dedupe select_top100_pool() itself uses
+    - see that function's own docstring) union'd with the pool/
+    extension read above (belt-and-braces only - every pool/extension
+    member is already a subset of _build_best_by_ticker()'s own
+    output, since the pool is selected FROM it).
+
+    Real cost note: this now downloads/resamples weekly price history
+    for every eligible candidate across every scanned universe, not
+    just the ~220 Top 200 pool/extension members - a meaningfully
+    larger nightly job than before this task. No NEW network fetch per
+    candidate beyond the bulk price-history download this job already
+    did for the pool alone (fundamentals bundles/quality_v2/moat are
+    all read from _build_best_by_ticker()'s own already-cached data,
+    no re-fetch) - the cost increase is in the bulk yf.download() chunk
+    count/duration this job's own log line already reports, which the
+    Director should review after the first run under this change."""
     out = {}
+    try:
+        best_by_ticker, _eligible_count = top100_engine._build_best_by_ticker(log=log)
+        for t, row in best_by_ticker.items():
+            out[t] = {"currency": row.get("currency"), "price": row.get("price")}
+    except Exception as e:
+        log(f"[support_levels] _build_best_by_ticker() failed, falling back to pool+extension "
+            f"only for tonight: {e}")
     for row in top100_store.current_pool() + top100_store.current_asx_extension():
         t = row.get("ticker")
         if not t:
             continue
-        out[t] = {"currency": row.get("currency"), "price": row.get("price")}
+        out.setdefault(t, {"currency": row.get("currency"), "price": row.get("price")})
     return out
 
 

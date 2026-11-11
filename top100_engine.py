@@ -1714,64 +1714,77 @@ def simulate_pool_v2_moat_and_exception(log=print):
 QUALITY_ON_SALE_MIN_QUALITY = 65.0
 
 
-def quality_on_sale_candidates(log=print):
-    """TASK 42 item 6b (Director-directed, 8 Nov 2026, CSL/OCL "good
-    company, fallen a long way" case) - SHADOW MODE / TEST ONLY until
-    TOP200_QUALITY_ON_SALE_LIVE is flipped on: the new "Quality on
-    sale" tab's own candidate list, over the CURRENT Top 200 pool +
-    ASX extension ONLY (never a wider candidate universe - drop_chip_
-    store only has a 3-year-peak entry for pool/extension members in
-    the first place; support_levels_job.py's own per-ticker loop is
-    scoped to exactly this set - see that module's own docstring).
+QUALITY_ON_SALE_MAX_CANDIDATES = 100
 
-    Three rules, the Director's own exact wording:
+
+def quality_on_sale_candidates(log=print, max_candidates=QUALITY_ON_SALE_MAX_CANDIDATES):
+    """TASK 42 item 6b + TASK 44 (Director-directed, 8/11 Nov 2026,
+    CSL/OCL "good company, fallen a long way" case) - SHADOW MODE /
+    TEST ONLY until TOP200_QUALITY_ON_SALE_LIVE is flipped on: the new
+    "Quality on sale" tab's own candidate list.
+
+    TASK 44 item 1 (Director-directed, 11 Nov 2026, coverage finding):
+    the candidate universe is now EVERY ticker in _build_best_by_
+    ticker()'s own full eligible set - every universe the Top 200
+    itself draws from, not only the 200 (+ ASX extension) members
+    actually selected tonight. This was the original design's own
+    documented limitation (a company that fell OUT of the 200 on price
+    alone - the exact CSL/OCL case this feature exists to catch -
+    could never appear) - fixed here together with support_levels_
+    job.py's own matching widening of its ticker scope (see that
+    module's own TASK 44 item 1 comment - drop_chip_store now has a
+    3-year-peak entry for this SAME full universe, not just pool/
+    extension, so no second data source is needed here).
+
+    Three rules, the Director's own exact wording (unchanged from TASK
+    42 item 6b):
       1. Quality v2 >= QUALITY_ON_SALE_MIN_QUALITY (65), v1 used as a
-         FLAGGED fallback when this row has no v2 score at all - never
-         silently substituted as if it were v2.
+         FLAGGED fallback when this row has no v2 score at all.
       2. >= 40% below the 3-year weekly-close peak - drop_chip_engine.
          passes_quality_on_sale_drop_rule() against drop_chip_store's
-         OWN already-computed "drop_pct" (the SAME stored value the
-         card's drop chip itself reads - no second peak/drop
-         computation here, per the Director's own "reuse TASK 39's
-         3y-peak data" instruction).
+         OWN already-computed "drop_pct".
       3. "clean data (not DCF-unreliable unless the exception
-         applies)" - built in for free by calling _build_best_by_
-         ticker() with quality_exception_override=True: that function
-         already EXCLUDES every DCF-unreliable row from its own
-         returned dict UNLESS the TASK 37 exception's Moat/Quality
-         thresholds admit it (see that function's own "effective_
-         unreliable"/"exception_admitted_row" logic) - so every row
-         this function even sees already satisfies rule 3 structurally;
-         no separate re-check is needed (or performed) here. Same
-         "override=True" shape every simulate_pool_quality_exception()/
-         simulate_pool_v2_moat_and_exception() shadow preview already
-         uses - not a new pattern.
+         applies)" - still free via quality_exception_override=True on
+         _build_best_by_ticker() - see that call's own unchanged
+         reasoning below.
 
-    Ranked by drop depth (deepest first), capped at 20. Read-only, same
-    safety profile as every simulate_pool_* function above - never
-    writes anything, never read by select_top100_pool()/the real pool
-    selection itself.
+    TASK 44 item 9 (Director-approved, 11 Nov 2026): ranked by Research
+    Score (top100_store.latest_score_for_ticker()'s own composite_
+    score() - the SAME number every other tab ranks its own Top 20
+    sub-tabs on), highest first - NEVER by drop depth (drop % stays on
+    the card as its own chip, computed and rendered exactly as before).
+    A qualifier with NO stored research score yet ranks AFTER every
+    scored one (its own group, sorted by drop depth as a stable tie-
+    break - the Director named no ordering within the unscored group).
+    Capped at `max_candidates` (100, up from TASK 42's own 20) - "if
+    more than 100 qualify, report the count" is satisfied by this
+    function's own "total_qualifying" return key, read before the cap.
+
+    Read-only, same safety profile as every simulate_pool_* function
+    above - never writes anything, never read by select_top100_pool()/
+    the real pool selection itself.
 
     Returns {
-      "eligible_count": int,  # same meaning as simulate_pool_v2()'s own
+      "eligible_count": int,       # same meaning as simulate_pool_v2()'s own
+      "total_qualifying": int,     # how many passed all 3 rules, BEFORE the cap
       "candidates": [
         {"ticker", "quality_used", "quality_used_source" ("v2"|"v1"),
          "drop_pct", "peak_date", "peak_price", "current_price",
-         "quality_exception_admitted"},
+         "quality_exception_admitted", "in_top_200" (bool - a current
+         top100_store.current_pool() member; an ASX-extension-only
+         member reads False, matching "in Top 200 too?"'s own literal
+         wording - the extension exists precisely BECAUSE those rows
+         are NOT in the 200), "research_score" (float|None - composite_
+         score(), None = not yet scored)},
         ...
-      ],  # already sorted deepest-drop-first, already capped at 20
+      ],  # scored candidates first (Research Score descending), then
+          # unscored (drop-depth order) - already capped
     }"""
     best_by_ticker, eligible_count = _build_best_by_ticker(log=log, quality_exception_override=True)
-    pool_extension_tickers = (
-        {r["ticker"] for r in top100_store.current_pool()}
-        | {r["ticker"] for r in top100_store.current_asx_extension()}
-    )
+    pool_tickers = {r["ticker"] for r in top100_store.current_pool()}
 
     candidates = []
-    for ticker in pool_extension_tickers:
-        row = best_by_ticker.get(ticker)
-        if not row:
-            continue
+    for ticker, row in best_by_ticker.items():
         quality_v2 = row.get("quality_v2")
         quality_v1 = row.get("quality")
         if quality_v2 is not None:
@@ -1788,18 +1801,155 @@ def quality_on_sale_candidates(log=print):
         if not drop_chip_engine.passes_quality_on_sale_drop_rule(drop_pct):
             continue
 
+        try:
+            _score_row = top100_store.latest_score_for_ticker(ticker, MODEL_TOP100)
+        except Exception as e:
+            log(f"[quality_on_sale] {ticker}: research score lookup failed: {e}")
+            _score_row = None
+        research_score = composite_score(_score_row) if _score_row else None
+
         candidates.append({
             "ticker": ticker,
+            "company_name": row.get("company_name"), "sector": row.get("sector"),
+            "most_recent_quarter": row.get("most_recent_quarter"),
             "quality_used": quality_used, "quality_used_source": quality_used_source,
             "drop_pct": drop_pct,
             "peak_date": drop_entry.get("peak_date") if drop_entry else None,
             "peak_price": drop_entry.get("peak_price") if drop_entry else None,
             "current_price": drop_entry.get("current_price") if drop_entry else None,
             "quality_exception_admitted": bool(row.get("quality_exception_admitted")),
+            "in_top_200": ticker in pool_tickers,
+            "research_score": research_score,
+            # TASK 44 item 7 (Director-directed, 11 Nov 2026, "report
+            # only, no change to the live rule" moat-floor test): the
+            # row's own already-computed Moat score (None if this
+            # universe's own nightly scan has no stored Moat for it -
+            # see _attach_moat()'s own coverage docstring) - never a
+            # rule input here, display/reporting only.
+            "moat": row.get("moat"),
         })
 
-    candidates.sort(key=lambda c: c["drop_pct"] if c["drop_pct"] is not None else 0.0)
-    return {"eligible_count": eligible_count, "candidates": candidates[:20]}
+    total_qualifying = len(candidates)
+    scored = sorted(
+        (c for c in candidates if c["research_score"] is not None),
+        key=lambda c: c["research_score"], reverse=True,
+    )
+    unscored = sorted(
+        (c for c in candidates if c["research_score"] is None),
+        key=lambda c: c["drop_pct"] if c["drop_pct"] is not None else 0.0,
+    )
+    ordered = scored + unscored
+    return {
+        "eligible_count": eligible_count,
+        "total_qualifying": total_qualifying,
+        "candidates": ordered[:max_candidates],
+    }
+
+
+def _select_quality_on_sale_entrants(daily_entrants_so_far, today, log=print,
+                                      max_new_scores=QUALITY_ON_SALE_MAX_CANDIDATES):
+    """TASK 44 item 2/9 (Director-directed, 11 Nov 2026): candidate
+    selection ONLY - any "Quality on sale" qualifier with no stored
+    research score, in the SAME [(row, reason), ...] shape _select_
+    prescore_entrants() returns, ready to be packed and submitted the
+    SAME way (reusing submit_nightly_batch()'s own packing/custom_id_
+    map/ingest-cost-attribution code, never a second scoring pipeline -
+    "same rubric, ~$0.017 each" is exactly this reuse). Capped at
+    `max_new_scores` (100/night) AND at whatever entrant-count room is
+    left under TOP100_MAX_ENTRANTS_PER_UTC_DAY tonight, same capacity
+    discipline _select_prescore_entrants() already applies.
+
+    NOT YET CALLED from submit_nightly_batch() - deliberately. Every
+    existing branch point in that function's own ingest path (poll_
+    and_ingest_batch()) keys its cost/log/storage logic off a single
+    "is_prescore" boolean per pack, re-used (not duplicated) by every
+    one of its ~11 call sites; wiring this new candidate list into
+    that pipeline needs the SAME choice the Director should make
+    explicitly before anything spends real money - either (a) tag
+    these packs "is_prescore": True too (zero new ingest code, but
+    commingles tonight's spend with the OWNER's own separate prescore
+    $-budget tracker, which runs independently of this feature and may
+    be configured at the same time), or (b) a third, fully independent
+    pack category (clean separation, but ~11 new untested branches in
+    a live, real-money-spending ingest function this sandbox cannot
+    exercise against a real Batch API response). Built and tested in
+    isolation so either choice is a small, mechanical follow-up once
+    made - see the TASK 44 report for this exact decision point.
+
+    Returns [(row_dict, "quality_on_sale"), ...] - row_dict shaped
+    exactly like _select_prescore_entrants()'s own entrant rows
+    ("ticker"/"company_name"/"sector"/"most_recent_quarter")."""
+    try:
+        result = quality_on_sale_candidates(log=log)
+        unscored = [c for c in result["candidates"] if c["research_score"] is None]
+        daily_room = TOP100_MAX_ENTRANTS_PER_UTC_DAY - daily_entrants_so_far
+        room = max(0, min(max_new_scores, daily_room))
+        if room <= 0:
+            log("[quality_on_sale] 0 new scores queued - no room left under tonight's daily cap")
+            return []
+        unscored = unscored[:room]
+        if not unscored:
+            log("[quality_on_sale] 0 new scores queued - every qualifier is already scored")
+            return []
+        entrants = [
+            (
+                {"ticker": c["ticker"], "company_name": c.get("company_name"),
+                 "sector": c.get("sector"), "most_recent_quarter": c.get("most_recent_quarter")},
+                "quality_on_sale",
+            )
+            for c in unscored
+        ]
+        est_cost = estimate_degenerate_resend_cost_usd([e[0] for e in entrants])
+        log(f"[quality_on_sale] {len(entrants)} candidates would be queued for scoring "
+            f"tonight (of {len(result['candidates'])} qualifying, {result['total_qualifying']} "
+            f"total before the cap), est ${est_cost:.4f} - NOT YET SUBMITTED, see this "
+            f"function's own docstring for why")
+        return entrants
+    except Exception as e:
+        log(f"[quality_on_sale] entrant selection failed (non-fatal): {e}")
+        return []
+
+
+def quality_on_sale_moat_floor_report(min_moat=40.0, log=print):
+    """TASK 44 item 7 (Director-directed, 11 Nov 2026) - REPORT ONLY,
+    NO CHANGE to the live "Quality on sale" rule: calls quality_on_
+    sale_candidates() ONCE (never a second, independently-filtered
+    candidate build) and reports which of today's candidates a Moat
+    >= `min_moat` floor WOULD remove, alongside their own moat scores
+    - exactly the two-way "(a) current rules, (b) current rules +
+    Moat >= 40" comparison the Director asked for, without touching
+    quality_on_sale_candidates()'s own three rules at all.
+
+    A candidate with no stored Moat score at all (row.get("moat") is
+    None - this universe's own nightly scan may not cover Moat yet,
+    see _attach_moat()'s own coverage docstring) is treated as FAILING
+    the floor (removed) - "moat not known" is never silently treated
+    as "moat is fine".
+
+    Returns {
+      "current_rules_count": int,       # len(candidates) under (a)
+      "with_moat_floor_count": int,     # len(candidates) under (b)
+      "removed": [{"ticker", "moat", "drop_pct", "research_score"}, ...],
+      # every candidate (b) would drop, in the SAME order they
+      # appeared under (a) - never re-sorted
+    }"""
+    result = quality_on_sale_candidates(log=log)
+    candidates = result.get("candidates") or []
+    removed = [
+        {"ticker": c["ticker"], "moat": c.get("moat"), "drop_pct": c.get("drop_pct"),
+         "research_score": c.get("research_score")}
+        for c in candidates
+        if c.get("moat") is None or c["moat"] < min_moat
+    ]
+    with_floor_count = len(candidates) - len(removed)
+    log(f"[quality_on_sale] moat-floor report (Moat >= {min_moat}, report only): "
+        f"{len(candidates)} under current rules, {with_floor_count} would remain, "
+        f"{len(removed)} removed: {', '.join(r['ticker'] for r in removed) or '(none)'}")
+    return {
+        "current_rules_count": len(candidates),
+        "with_moat_floor_count": with_floor_count,
+        "removed": removed,
+    }
 
 
 def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):

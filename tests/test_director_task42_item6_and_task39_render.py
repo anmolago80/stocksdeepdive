@@ -184,32 +184,37 @@ print("[item6_check9_i18n_keys] top100.drop_chip/top100.drop_tooltip render "
 
 # ======================================================================
 # CHECK 10: top100_engine.quality_on_sale_candidates() - the three
-# rules, restricted to pool+extension members, sorted by drop depth,
-# capped at 20. _build_best_by_ticker() itself is mocked (its own
-# behaviour is covered by other test files) so this checks ONLY this
-# function's own filtering/sorting/capping logic.
+# rules, TASK 44 item 1's widened full-universe source (NOT restricted
+# to pool+extension), TASK 44 item 9's ranking (Research Score first,
+# unscored after) and 100-cap. _build_best_by_ticker() itself is
+# mocked (its own behaviour is covered by other test files) so this
+# checks ONLY this function's own filtering/sorting/capping logic.
 # ======================================================================
 _fake_best = {
-    # Passes everything - Quality v2 >= 65, drop <= -40%.
+    # Passes everything - Quality v2 >= 65, drop <= -40%. Has a
+    # research score.
     "GOOD.AX": {"ticker": "GOOD.AX", "quality": 60.0, "quality_v2": 80.0,
-                "quality_exception_admitted": False},
+                "quality_exception_admitted": False, "company_name": "Good Co",
+                "sector": "Industrials", "most_recent_quarter": "2026-06-30"},
     # Quality v2 missing -> falls back to v1 (60.0), which is BELOW the
     # 65 floor -> excluded.
     "LOWQ.AX": {"ticker": "LOWQ.AX", "quality": 60.0, "quality_v2": None,
                 "quality_exception_admitted": False},
     # Quality v2 missing -> v1 fallback (70.0) clears the floor -> only
-    # included if its drop also clears -40%.
+    # included if its drop also clears -40%. No research score yet.
     "V1FALLBACK.AX": {"ticker": "V1FALLBACK.AX", "quality": 70.0, "quality_v2": None,
                        "quality_exception_admitted": False},
     # High quality, but drop is only -25% (passes the card chip's -20%
     # but NOT the Quality-on-sale tab's stricter -40%) -> excluded.
     "SHALLOWDROP.AX": {"ticker": "SHALLOWDROP.AX", "quality": 60.0, "quality_v2": 90.0,
                         "quality_exception_admitted": False},
-    # Not currently a pool/extension member at all -> excluded
-    # regardless of its own numbers (drop_chip_store has no 3y-peak
-    # entry for it anyway, by construction of the real nightly job).
-    "NOTINPOOL.AX": {"ticker": "NOTINPOOL.AX", "quality": 60.0, "quality_v2": 95.0,
-                      "quality_exception_admitted": False},
+    # TASK 44 item 1: NOT a pool/extension member at all - this is
+    # EXACTLY the CSL/OCL case the widened source exists to catch, and
+    # must now be INCLUDED (the opposite of pre-TASK-44 behaviour). Has
+    # a research score, the HIGHEST of all three scored candidates.
+    "OUTOFPOOL.AX": {"ticker": "OUTOFPOOL.AX", "quality": 60.0, "quality_v2": 95.0,
+                      "quality_exception_admitted": False, "company_name": "Out Of Pool Co",
+                      "sector": "Healthcare", "most_recent_quarter": "2026-03-31"},
 }
 _fake_drops = {
     "GOOD.AX": {"drop_pct": -45.0, "peak_date": datetime.date(2023, 5, 1),
@@ -220,15 +225,26 @@ _fake_drops = {
                        "peak_price": 40.0, "current_price": 23.6},
     "SHALLOWDROP.AX": {"drop_pct": -25.0, "peak_date": datetime.date(2024, 6, 1),
                         "peak_price": 80.0, "current_price": 60.0},
-    "NOTINPOOL.AX": {"drop_pct": -70.0, "peak_date": datetime.date(2023, 1, 1),
+    "OUTOFPOOL.AX": {"drop_pct": -70.0, "peak_date": datetime.date(2023, 1, 1),
                       "peak_price": 10.0, "current_price": 3.0},
 }
-_pool_rows = [{"ticker": t} for t in
-              ("GOOD.AX", "LOWQ.AX", "V1FALLBACK.AX", "SHALLOWDROP.AX")]
+# GOOD.AX is in the real Top 200 pool; OUTOFPOOL.AX/V1FALLBACK.AX are not.
+_pool_rows = [{"ticker": "GOOD.AX"}]
+_fake_scores = {"GOOD.AX": 55.0, "OUTOFPOOL.AX": 80.0}  # V1FALLBACK.AX: no score yet
+
+
+def _fake_score_row(ticker, model):
+    return {"_score": _fake_scores[ticker]} if ticker in _fake_scores else None
+
+
+def _fake_composite(score_row):
+    return score_row["_score"] if score_row else None
+
 
 with mock.patch.object(te, "_build_best_by_ticker", return_value=(_fake_best, 500)), \
      mock.patch.object(te.top100_store, "current_pool", return_value=_pool_rows), \
-     mock.patch.object(te.top100_store, "current_asx_extension", return_value=[]), \
+     mock.patch.object(te.top100_store, "latest_score_for_ticker", side_effect=_fake_score_row), \
+     mock.patch.object(te, "composite_score", side_effect=_fake_composite), \
      mock.patch.object(te.drop_chip_store, "get", side_effect=lambda t: _fake_drops.get(t)):
     _result = te.quality_on_sale_candidates()
 
@@ -239,8 +255,9 @@ check("quality_on_sale_excludes_v2_missing_falling_back_below_the_v1_floor",
       "LOWQ.AX" not in _tickers_out)
 check("quality_on_sale_excludes_shallow_drop_above_the_-40pct_floor",
       "SHALLOWDROP.AX" not in _tickers_out)
-check("quality_on_sale_excludes_non_pool_extension_member_regardless_of_its_own_numbers",
-      "NOTINPOOL.AX" not in _tickers_out)
+check("TASK_44_item1_includes_a_ticker_that_is_NOT_a_pool_extension_member_at_all "
+      "(the exact CSL/OCL widened-source case)",
+      "OUTOFPOOL.AX" in _tickers_out)
 check("quality_on_sale_includes_v1_fallback_when_it_clears_both_rules",
       "V1FALLBACK.AX" in _tickers_out)
 _v1fb = next(c for c in _result["candidates"] if c["ticker"] == "V1FALLBACK.AX")
@@ -249,21 +266,86 @@ check("quality_on_sale_flags_the_v1_fallback_source_honestly",
 _good = next(c for c in _result["candidates"] if c["ticker"] == "GOOD.AX")
 check("quality_on_sale_uses_v2_source_when_present",
       _good["quality_used_source"] == "v2" and _good["quality_used"] == 80.0)
-check("quality_on_sale_sorted_deepest_drop_first",
-      [c["drop_pct"] for c in _result["candidates"]] ==
-      sorted([c["drop_pct"] for c in _result["candidates"]]))
+check("TASK_44_item9_in_top_200_flag_true_for_an_actual_pool_member",
+      _good["in_top_200"] is True)
+_outofpool = next(c for c in _result["candidates"] if c["ticker"] == "OUTOFPOOL.AX")
+check("TASK_44_item9_in_top_200_flag_false_for_a_non_pool_member",
+      _outofpool["in_top_200"] is False)
+check("TASK_44_item9_ranked_by_research_score_descending_among_scored_candidates "
+      "(OUTOFPOOL.AX=80 before GOOD.AX=55)",
+      _tickers_out.index("OUTOFPOOL.AX") < _tickers_out.index("GOOD.AX"))
+check("TASK_44_item9_unscored_candidates_rank_after_every_scored_one "
+      "(V1FALLBACK.AX has no score yet)",
+      _tickers_out.index("V1FALLBACK.AX") > _tickers_out.index("GOOD.AX")
+      and _tickers_out.index("V1FALLBACK.AX") > _tickers_out.index("OUTOFPOOL.AX"))
 check("quality_on_sale_eligible_count_passthrough", _result["eligible_count"] == 500)
+check("TASK_44_total_qualifying_counts_every_passing_row_before_the_cap",
+      _result["total_qualifying"] == 3)
 print("[item6_check10_quality_on_sale_candidates] the three rules (Quality floor "
-      "with honest v1-fallback flagging, the -40% drop floor, pool/extension-only "
-      "scope) and deepest-drop-first sorting all behave as specified OK")
+      "with honest v1-fallback flagging, the -40% drop floor), the TASK 44 item 1 "
+      "widened full-universe source (a non-pool/extension CSL/OCL-shaped ticker is "
+      "now included), and TASK 44 item 9's Research-Score-first/unscored-after "
+      "ranking + in_top_200 flag all behave as specified OK")
 
-# CHECK 11: an empty candidate pool never raises, returns [].
+# CHECK 11: an empty candidate pool never raises, returns []; the
+# 100-cap (TASK 44 item 9) actually caps.
 with mock.patch.object(te, "_build_best_by_ticker", return_value=({}, 0)), \
-     mock.patch.object(te.top100_store, "current_pool", return_value=[]), \
-     mock.patch.object(te.top100_store, "current_asx_extension", return_value=[]):
+     mock.patch.object(te.top100_store, "current_pool", return_value=[]):
     _empty_result = te.quality_on_sale_candidates()
 check("quality_on_sale_empty_pool_returns_empty_list_never_raises",
       _empty_result["candidates"] == [])
+
+_many_best = {
+    f"MANY{i}.AX": {"ticker": f"MANY{i}.AX", "quality": 60.0, "quality_v2": 90.0,
+                     "quality_exception_admitted": False}
+    for i in range(150)
+}
+_many_drops = {t: {"drop_pct": -50.0, "peak_date": None, "peak_price": 10.0, "current_price": 5.0}
+               for t in _many_best}
+with mock.patch.object(te, "_build_best_by_ticker", return_value=(_many_best, 150)), \
+     mock.patch.object(te.top100_store, "current_pool", return_value=[]), \
+     mock.patch.object(te.top100_store, "latest_score_for_ticker", return_value=None), \
+     mock.patch.object(te.drop_chip_store, "get", side_effect=lambda t: _many_drops.get(t)):
+    _capped_result = te.quality_on_sale_candidates()
+check("TASK_44_item9_150_qualifiers_capped_at_100_candidates",
+      len(_capped_result["candidates"]) == 100)
+check("TASK_44_item9_total_qualifying_reports_the_real_uncapped_count_(150)",
+      _capped_result["total_qualifying"] == 150)
+print("[item6_check11_cap_and_empty] an empty universe never raises; a 150-qualifier "
+      "universe is capped at 100 candidates while total_qualifying still reports 150 OK")
+
+
+# ======================================================================
+# CHECK 11b (TASK 44 item 2/9): _select_quality_on_sale_entrants() -
+# candidate selection for the existing scoring ingest path, NOT YET
+# wired into submit_nightly_batch() (see that function's own docstring
+# for why).
+# ======================================================================
+with mock.patch.object(te, "_build_best_by_ticker", return_value=(_fake_best, 500)), \
+     mock.patch.object(te.top100_store, "current_pool", return_value=_pool_rows), \
+     mock.patch.object(te.top100_store, "latest_score_for_ticker", side_effect=_fake_score_row), \
+     mock.patch.object(te, "composite_score", side_effect=_fake_composite), \
+     mock.patch.object(te.drop_chip_store, "get", side_effect=lambda t: _fake_drops.get(t)):
+    _entrants = te._select_quality_on_sale_entrants(daily_entrants_so_far=0, today=datetime.date(2026, 11, 11))
+check("entrant_selection_only_includes_unscored_qualifiers",
+      {e[0]["ticker"] for e in _entrants} == {"V1FALLBACK.AX"})
+check("entrant_selection_tags_every_row_with_the_quality_on_sale_reason",
+      all(reason == "quality_on_sale" for _row, reason in _entrants))
+check("entrant_row_shape_matches_prescore_entrants_own_shape",
+      set(_entrants[0][0].keys()) == {"ticker", "company_name", "sector", "most_recent_quarter"})
+
+with mock.patch.object(te, "_build_best_by_ticker", return_value=(_fake_best, 500)), \
+     mock.patch.object(te.top100_store, "current_pool", return_value=_pool_rows), \
+     mock.patch.object(te.top100_store, "latest_score_for_ticker", side_effect=_fake_score_row), \
+     mock.patch.object(te, "composite_score", side_effect=_fake_composite), \
+     mock.patch.object(te.drop_chip_store, "get", side_effect=lambda t: _fake_drops.get(t)):
+    _entrants_no_room = te._select_quality_on_sale_entrants(
+        daily_entrants_so_far=te.TOP100_MAX_ENTRANTS_PER_UTC_DAY, today=datetime.date(2026, 11, 11))
+check("entrant_selection_respects_the_daily_entrant_cap_(no_room_left_-\\>_empty)",
+      _entrants_no_room == [])
+print("[item6_check11b_select_quality_on_sale_entrants] candidate selection for the "
+      "scoring ingest path only picks unscored qualifiers, in the exact entrant shape "
+      "_select_prescore_entrants() already uses, respecting the daily entrant cap OK")
 
 
 # ======================================================================

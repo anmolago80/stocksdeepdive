@@ -1770,27 +1770,86 @@ def _quality_on_sale_live():
     return os.environ.get("TOP200_QUALITY_ON_SALE_LIVE", "0").strip() == "1"
 
 
-def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=None):
-    """TASK 42 item 6b's own tab: top100_engine.quality_on_sale_
-    candidates()'s own list (Quality/drop/clean-data already filtered,
-    already ranked by drop depth, already capped at 20) rendered with
-    the SAME _render_row() every other tab uses - full dimension
-    chips, the TASK 36/39 support + drop chips included for free via
-    that function's own existing wiring, no separate card template for
-    this tab.
+_QUALITY_ON_SALE_PAGE_SIZE = 20
 
-    This tab's OWN rank numbering follows drop depth (top100_engine's
-    own sort), never `sort_mode` - `sort_mode` is passed through only
-    so _render_row()'s leading-metric display matches the rest of the
-    page (the same page-level sort control every other tab shows its
-    leading number under), per the existing convention every tab
-    function already follows.
+
+def _quality_on_sale_candidate_rows(candidates):
+    """TASK 44 item 1 (Director-directed, 11 Nov 2026): {ticker: row}
+    for every "Quality on sale" candidate, enriched exactly like
+    _enriched_pool()/_enriched_asx_extension() (score_row/composite/
+    is_fallback_score/score_failure) - whether or not the candidate is
+    a current Top 200 pool/extension member. Pool/extension candidates
+    come straight from those two existing functions (no second lookup);
+    a candidate OUTSIDE both (the widened-source case this task exists
+    to fix) is enriched here via its own top100_engine._build_best_by_
+    ticker() row, fed through the SAME _enrich_rows() helper - no
+    second, parallel enrichment logic. Any lookup/enrichment failure
+    for the non-pool group is logged and simply leaves those tickers
+    out of the returned dict (the caller already treats a missing
+    ticker as "skip, not rated" - never a crash)."""
+    by_ticker = {r["ticker"]: r for r in (_enriched_pool() + _enriched_asx_extension())}
+    missing_tickers = [c["ticker"] for c in candidates if c["ticker"] not in by_ticker]
+    if missing_tickers:
+        try:
+            best_by_ticker, _ = top100_engine._build_best_by_ticker()
+            extra_rows = [best_by_ticker[t] for t in missing_tickers if t in best_by_ticker]
+            if extra_rows:
+                scores = top100_store.latest_scores_for_model(
+                    top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+                failures = top100_store.score_failures_for_model(
+                    top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+                for r in _enrich_rows(extra_rows, scores, failures):
+                    by_ticker[r["ticker"]] = r
+        except Exception as e:
+            print(f"[quality_on_sale] render: failed to enrich non-pool/extension "
+                  f"candidates ({missing_tickers}): {e}")
+    return by_ticker
+
+
+def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=None):
+    """TASK 42 item 6b + TASK 44 (Director-directed): top100_engine.
+    quality_on_sale_candidates()'s own list (Quality/drop/clean-data
+    already filtered, already ranked by Research Score - TASK 44 item
+    9, scored candidates first, unscored after - already capped at
+    QUALITY_ON_SALE_MAX_CANDIDATES) rendered with the SAME _render_row()
+    every other tab uses - full dimension chips, the TASK 36/39 support
+    + drop chips included for free via that function's own existing
+    wiring, no separate card template for this tab.
+
+    TASK 44 item 1: candidates can now be OUTSIDE the current Top 200
+    pool + ASX extension entirely (the widened, full-universe source -
+    see quality_on_sale_candidates()'s own docstring). For any
+    candidate NOT already covered by _enriched_pool()/_enriched_asx_
+    extension(), this function enriches it itself - a SEPARATE
+    top100_engine._build_best_by_ticker() call (same cost class as the
+    one quality_on_sale_candidates() already made; this tab is owner/
+    test-stage traffic only, never a page every visitor hits) feeding
+    the SAME _enrich_rows() helper _enriched_pool() itself uses, so a
+    non-pool candidate's card is built from the exact same score_row/
+    composite/is_fallback_score logic, never a second, parallel one.
+
+    TASK 44 item 9: only the first _QUALITY_ON_SALE_PAGE_SIZE (20)
+    candidates render initially; a "Show all (N)" button (session-
+    state toggle, same pattern as every other show-more control on
+    this site) reveals the rest on click - never re-fetches or re-
+    ranks, purely a display-layer slice of the SAME already-computed,
+    already-ordered list.
+
+    This tab's OWN rank numbering follows the already-decided Research-
+    Score/unscored order (top100_engine's own sort), never `sort_mode`
+    - `sort_mode` is passed through only so _render_row()'s leading-
+    metric display matches the rest of the page (the same page-level
+    sort control every other tab shows its leading number under), per
+    the existing convention every tab function already follows.
 
     A candidate ticker whose enriched row has no RATED score_row (e.g.
-    a pool/extension member Claude hasn't yet scored with the 10-
-    dimension rubric) is skipped with a log line, never rendered half-
-    built - _render_row()'s own precondition is a rated row only, and
-    this tab has no shelf of its own to put an unrated candidate in."""
+    a qualifier Claude hasn't yet scored with the 10-dimension rubric)
+    is skipped with a log line, never rendered half-built - _render_
+    row()'s own precondition is a rated row only, and this tab has no
+    shelf of its own to put an unrated candidate in (TASK 44 item 2's
+    own scoring-ingest integration - see top100_engine._select_
+    quality_on_sale_entrants()'s own docstring - is what's meant to
+    shrink this skip list over time, not this render function)."""
     recent_badge_map = recent_badge_map or {}
     result = top100_engine.quality_on_sale_candidates()
     candidates = result.get("candidates") or []
@@ -1798,9 +1857,14 @@ def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_ma
         st.caption(_t("empty_tab", lang))
         return
 
-    by_ticker = {r["ticker"]: r for r in (_enriched_pool() + _enriched_asx_extension())}
+    by_ticker = _quality_on_sale_candidate_rows(candidates)
+
+    _show_all_key = "quality_on_sale_show_all"
+    _show_all = bool(st.session_state.get(_show_all_key, False))
+    _visible_candidates = candidates if _show_all else candidates[:_QUALITY_ON_SALE_PAGE_SIZE]
+
     rank = 0
-    for cand in candidates:
+    for cand in _visible_candidates:
         row = by_ticker.get(cand["ticker"])
         if not row or not row.get("score_row") or (row["score_row"] or {}).get("not_rated"):
             print(f"[quality_on_sale] {cand['ticker']}: skipped - no rated score_row to render")
@@ -1808,6 +1872,12 @@ def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_ma
         rank += 1
         _render_row(rank, row, lang, finer_industry.get(row["ticker"]), sort_mode,
                     recent_badge_html=recent_badge_map.get(row["ticker"]))
+
+    if not _show_all and len(candidates) > _QUALITY_ON_SALE_PAGE_SIZE:
+        if st.button(_t("quality_on_sale_show_all_button", lang, count=len(candidates)),
+                     key=f"{_show_all_key}_btn"):
+            st.session_state[_show_all_key] = True
+            st.rerun()
 
 
 def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None):
