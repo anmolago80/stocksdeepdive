@@ -157,7 +157,8 @@ tr._quality_on_sale_candidate_rows = lambda candidates: _rows_by_ticker
 # stubbed here to a trivial marker so this test is purely about the PAGINATION
 # logic (how many times it's called, and with which rank), not re-testing card HTML.
 _render_calls = []
-def _fake_render_row(rank, row, lang, finer_industry, sort_mode, recent_badge_html=None):
+def _fake_render_row(rank, row, lang, finer_industry, sort_mode, recent_badge_html=None,
+                      cross_list_chip_html=None):
     _render_calls.append(row["ticker"])
     st.markdown(f"CARD:{{row['ticker']}}")
 tr._render_row = _fake_render_row

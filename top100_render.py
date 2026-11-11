@@ -724,6 +724,47 @@ def _drop_chart_svg_html(row, lang):
     return "".join(parts)
 
 
+# TASK 44 item 10 cross-list chip colour (Director-directed, 11 Nov
+# 2026) - a distinct blue/cyan, never the support chip's purple
+# (_SHELF_CHIP_SUPPORT) or the drop chip's red/rose (_SHELF_CHIP_DROP),
+# since all three can land on the same row 3.
+_SHELF_CHIP_CROSS_LIST = ("#0f2433", "#3f7a8f", "#7ad9f5")
+
+
+def _cross_list_chip_html(kind, rank, lang):
+    """TASK 44 item 10 (Director-directed, 11 Nov 2026): the small
+    "★ Also on Quality on sale · #<rank>" / "★ Also in Top 200 ·
+    #<rank>" pill shown on row 3 (the support/drop row), right after
+    the drop chip - never merged into that chip's own string, a
+    sibling pill in the same flex container (same convention
+    _drop_chip_html() uses next to _support_chip_html()).
+
+    `kind` is "quality_on_sale" (rendered on a Top 200 card whose
+    ticker also qualifies for "Quality on sale" - `rank` is the
+    ticker's 1-based position in top100_engine.quality_on_sale_
+    candidates()'s own already-ranked list, TASK 44 item 9's Research-
+    Score-descending order) or "top_200" (rendered on a "Quality on
+    sale" card whose ticker is also a current Top 200 POOL member -
+    `rank` is the SAME global Value Score rank the "TOP 200 · #<n>"
+    origin badge already shows, from _global_value_score_ranks()).
+
+    Gated the same way as the rest of TASK 44's "Quality on sale"
+    work: the caller only ever builds a non-empty rank map (and so
+    only ever calls this) while TOP200_QUALITY_ON_SALE_LIVE is on or
+    the viewer is the owner - this function itself has no gate of its
+    own, matching every other chip builder's "caller decides whether
+    to call me" convention."""
+    key = "cross_list_also_on_sale_chip" if kind == "quality_on_sale" else "cross_list_also_in_top200_chip"
+    text = _t(key, lang, rank=rank)
+    bg, border, color = _SHELF_CHIP_CROSS_LIST
+    return (
+        "<span style='display:inline-flex;align-items:center;"
+        f"border-radius:999px;padding:1px 9px;font-size:10.5px;font-weight:700;"
+        f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
+        f"{html.escape(text)}</span>"
+    )
+
+
 def _finer_industry_by_ticker():
     """{ticker: industry_string} from compounder_data.json's own hand-
     researched coverage (build_compounder_data.py) - Andrew's finer-
@@ -1289,7 +1330,8 @@ def _row_edge_accent_style(score_row):
 
 
 def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=None,
-                 country_badge_html=None, home_country_html=None, recent_badge_html=None):
+                 country_badge_html=None, home_country_html=None, recent_badge_html=None,
+                 cross_list_chip_html=None):
     """One RATED company row - rank/ticker(linked), the leading number
     for the active sort (task's own "the leading number on each row is
     the one doing the sorting"), the other stats next to it, the ten
@@ -1352,7 +1394,13 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     viewer) - lands in the SAME badge slot origin_badge_html/country_
     badge_html already use, right after them, so it can appear
     alongside either (a newly-added Australian row can carry BOTH its
-    origin badge and this one)."""
+    origin badge and this one).
+
+    `cross_list_chip_html` (TASK 44 item 10, Director-directed, 11 Nov
+    2026): the pre-built "★ Also on Quality on sale · #<n>" / "★ Also
+    in Top 200 · #<n>" pill (or None - every caller that doesn't pass
+    one is unaffected), rendered on row 3 right after the drop chip -
+    see _cross_list_chip_html()'s own docstring."""
     ticker = row["ticker"]
     score_row = row["score_row"]
 
@@ -1425,10 +1473,11 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     # (never textually merged with the support chip's own string).
     support_chip = _support_chip_html(row, lang)
     drop_chip = _drop_chip_html(row, lang)
+    cross_list_chip_html = cross_list_chip_html or ""
     support_row_html = (
         "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:6px;'>"
-        + support_chip + drop_chip + "</div>"
-    ) if (support_chip or drop_chip) else ""
+        + support_chip + drop_chip + cross_list_chip_html + "</div>"
+    ) if (support_chip or drop_chip or cross_list_chip_html) else ""
     # TASK 39's own mini chart - a separate row below the chip row (not
     # inside the chip row's flex container, which is sized for pills,
     # not an SVG), gated the same way, "" (no row at all) when there's
@@ -1710,7 +1759,8 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
                     recent_badge_html=recent_badge_map.get(row["ticker"]))
 
 
-def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None):
+def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None,
+                         quality_on_sale_rank_map=None):
     """Full 100: the rated companies under the active sort, then
     (point 3) a labelled bottom shelf of unrated companies ordered by
     Value Score among themselves - shown under every sort view except
@@ -1727,8 +1777,19 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None,
 
     `recent_badge_map` (TASK 30, Part A): {ticker: badge_html} - None/
     missing ticker renders no badge, on either the rated rows or the
-    bottom shelf."""
+    bottom shelf.
+
+    `quality_on_sale_rank_map` (TASK 44 item 10, Director-directed, 11
+    Nov 2026): {ticker: 1-based rank in quality_on_sale_candidates()'s
+    own ordered list} - None/empty (the default - every caller before
+    this task, and this one too while TOP200_QUALITY_ON_SALE_LIVE is
+    off for a non-owner viewer, since render_top100_page() only ever
+    builds a non-empty map under that same gate) renders no cross-list
+    chip at all, byte-identical to before this task. A ticker missing
+    from the map (not a "Quality on sale" candidate today) gets no
+    chip either - only a hit renders _cross_list_chip_html()."""
     recent_badge_map = recent_badge_map or {}
+    quality_on_sale_rank_map = quality_on_sale_rank_map or {}
     rows = _sort_and_gate_rated(enriched, sort_mode)
     if not rows:
         st.caption(_t("empty_tab", lang))
@@ -1738,8 +1799,13 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None,
             st.caption(_t("filter_no_matches", lang))
         else:
             for i, row in ranked:
+                _qos_rank = quality_on_sale_rank_map.get(row["ticker"])
                 _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
-                            recent_badge_html=recent_badge_map.get(row["ticker"]))
+                            recent_badge_html=recent_badge_map.get(row["ticker"]),
+                            cross_list_chip_html=(
+                                _cross_list_chip_html("quality_on_sale", _qos_rank, lang)
+                                if _qos_rank is not None else None
+                            ))
 
     if sort_mode != SORT_VALUE_TODAY:
         if top100_engine.is_backfill_live():
@@ -1806,7 +1872,8 @@ def _quality_on_sale_candidate_rows(candidates):
     return by_ticker
 
 
-def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=None):
+def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=None,
+                                 top_200_rank_map=None, candidates_result=None):
     """TASK 42 item 6b + TASK 44 (Director-directed): top100_engine.
     quality_on_sale_candidates()'s own list (Quality/drop/clean-data
     already filtered, already ranked by Research Score - TASK 44 item
@@ -1849,9 +1916,26 @@ def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_ma
     shelf of its own to put an unrated candidate in (TASK 44 item 2's
     own scoring-ingest integration - see top100_engine._select_
     quality_on_sale_entrants()'s own docstring - is what's meant to
-    shrink this skip list over time, not this render function)."""
+    shrink this skip list over time, not this render function).
+
+    `top_200_rank_map` (TASK 44 item 10, Director-directed, 11 Nov
+    2026): {ticker: 1-based global Value Score rank among the current
+    Top 200 POOL} - the SAME map/number _origin_pool_badge_html()'s
+    teal "TOP 200 · #<n>" badge uses, from _global_value_score_ranks().
+    None/empty (the default) renders no "Also in Top 200" chip -
+    render_top100_page() only ever builds a non-empty map under the
+    same TOP200_QUALITY_ON_SALE_LIVE/owner gate this whole tab is
+    already behind.
+
+    `candidates_result` (TASK 44 item 10): the already-computed
+    top100_engine.quality_on_sale_candidates() return value, passed
+    down by render_top100_page() so it isn't computed twice per page
+    render (once for this tab, once for the Full 200 tab's own cross-
+    list rank map) - None (every existing caller, incl. every test)
+    computes it itself exactly as before this task."""
     recent_badge_map = recent_badge_map or {}
-    result = top100_engine.quality_on_sale_candidates()
+    top_200_rank_map = top_200_rank_map or {}
+    result = candidates_result if candidates_result is not None else top100_engine.quality_on_sale_candidates()
     candidates = result.get("candidates") or []
     if not candidates:
         st.caption(_t("empty_tab", lang))
@@ -1870,8 +1954,13 @@ def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_ma
             print(f"[quality_on_sale] {cand['ticker']}: skipped - no rated score_row to render")
             continue
         rank += 1
+        _top200_rank = top_200_rank_map.get(cand["ticker"])
         _render_row(rank, row, lang, finer_industry.get(row["ticker"]), sort_mode,
-                    recent_badge_html=recent_badge_map.get(row["ticker"]))
+                    recent_badge_html=recent_badge_map.get(row["ticker"]),
+                    cross_list_chip_html=(
+                        _cross_list_chip_html("top_200", _top200_rank, lang)
+                        if _top200_rank is not None else None
+                    ))
 
     if not _show_all and len(candidates) > _QUALITY_ON_SALE_PAGE_SIZE:
         if st.button(_t("quality_on_sale_show_all_button", lang, count=len(candidates)),
@@ -2637,6 +2726,27 @@ def render_top100_page(lang="en"):
     # exact same tab_labels list (and tab count) as before this task.
     _show_quality_on_sale_tab = _quality_on_sale_live() or _is_owner_for_refresh()
 
+    # TASK 44 item 10 (Director-directed, 11 Nov 2026) - cross-list
+    # chips: computed ONCE here, under the SAME gate as the tab itself
+    # (_show_quality_on_sale_tab), and passed down to both the Full 200
+    # tab (for the "Also on Quality on sale" chip) and the "Quality on
+    # sale" tab itself (for the "Also in Top 200" chip) - never
+    # computed per-row, and never computed at all for a gated-off
+    # viewer (both maps stay {} below, so neither tab's chip call site
+    # ever fires _cross_list_chip_html()).
+    _qos_result = None
+    _qos_rank_map = {}
+    _top200_rank_map = {}
+    if _show_quality_on_sale_tab:
+        _top200_rank_map = _global_value_score_ranks(enriched)
+        try:
+            _qos_result = top100_engine.quality_on_sale_candidates()
+            _qos_rank_map = {
+                c["ticker"]: i for i, c in enumerate(_qos_result.get("candidates") or [], start=1)
+            }
+        except Exception as e:
+            print(f"[quality_on_sale] render_top100_page: cross-list rank map failed: {e}")
+
     # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
     # Mixed/Australia/USA/Full 200 exactly as they were (same four
     # render calls, same positions relative to each other); rule 2
@@ -2678,7 +2788,8 @@ def render_top100_page(lang="en"):
                                       group_key, filters=filters, recent_badge_map=_recent_badges)
     with tabs[_next_tab + len(market_plan)]:
         _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
-                             recent_badge_map=_recent_badges)
+                             recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map)
     if _show_quality_on_sale_tab:
         with tabs[_next_tab + len(market_plan) + 1]:
-            _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=_recent_badges)
+            _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
+                                         top_200_rank_map=_top200_rank_map, candidates_result=_qos_result)

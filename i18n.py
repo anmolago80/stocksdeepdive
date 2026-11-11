@@ -4286,6 +4286,10 @@ EN = {
         "Highest weekly close in the last 3 years.\n"
         "Peak {peak_price} ({peak_date}) · current {price} · {drop}% off that peak"
     ),
+    # TASK 44 item 10 (Director-directed, 11 Nov 2026): cross-list
+    # chips - shown on row 3 right after the drop chip.
+    "top100.cross_list_also_on_sale_chip": "★ Also on Quality on sale · #{rank}",
+    "top100.cross_list_also_in_top200_chip": "★ Also in Top 200 · #{rank}",
     "top100.support_tooltip": (
         "Weekly pivot low (3,3), unbroken (2-close rule) - same logic "
         "as your TradingView levels.\n"
@@ -8116,6 +8120,9 @@ ES = {
         "Cierre semanal más alto en los últimos 3 años.\n"
         "Máximo {peak_price} ({peak_date}) · actual {price} · {drop}% por debajo de ese máximo"
     ),
+    # TASK 44 item 10 (Director-directed, 11 Nov 2026): chips de lista cruzada.
+    "top100.cross_list_also_on_sale_chip": "★ También en Calidad en oferta · #{rank}",
+    "top100.cross_list_also_in_top200_chip": "★ También en el Top 200 · #{rank}",
     "top100.support_tooltip": (
         "Mínimo pivote semanal (3,3), no roto (regla de 2 cierres) - la "
         "misma lógica que tus niveles de TradingView.\n"
