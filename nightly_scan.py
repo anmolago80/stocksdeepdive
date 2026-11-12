@@ -199,6 +199,35 @@ def _attach_dividend_payout(row, ticker, log=print):
         log(f"[nightly_scan] {ticker}: dividend payout ratio failed: {e}")
 
 
+# TASK 51 (Director-directed, 12 Nov 2026) - one diagnostic log line
+# per ticker in this watchlist, every night, so the Director can watch
+# the negative-equity debt-bonus fix (and TASK 45's ROE fix before it)
+# actually move these specific names' own Quality v2 without having to
+# open the admin "Quality v2 preview" panel by hand. Never read by
+# anything else - log only, no stored/scored effect of its own.
+QUALITY_V2_DIAGNOSTIC_WATCHLIST = frozenset({
+    "AAL", "HCA", "MTCH", "CCI", "INSE", "KSPI", "MO", "HPQ", "FICO", "LII",
+    "DPZ", "ORC", "NREF", "SOI.L", "CSL.AX", "OCL.AX", "NU", "ADBE", "COKE",
+    "INTU", "CPRT", "WDAY", "ZM",
+})
+
+
+def _log_quality_v2_diagnostic(row, ticker, meta, log):
+    if ticker not in QUALITY_V2_DIAGNOSTIC_WATCHLIST:
+        return
+
+    def _fmt(v):
+        return f"{v:.3f}" if isinstance(v, (int, float)) else str(v)
+
+    log(
+        f"[quality_v2_diag] {ticker} v1={_fmt(row.get('Quality'))} "
+        f"v2={_fmt(row.get('Quality V2'))} roe={_fmt(meta.get('roe'))} "
+        f"roic={_fmt(meta.get('roic'))} d_e={_fmt(meta.get('debt_to_equity'))} "
+        f"debt_penalty={_fmt(meta.get('debt_penalty'))} "
+        f"fallback={meta.get('fallback_fields')}"
+    )
+
+
 def _attach_quality_v2(row, ticker, log=print):
     """TASK 32 (Director-directed, owner request, 5 Nov 2026): SHADOW
     MODE / TEST ONLY - adds "Quality V2"/"Quality V2 Meta" to an
@@ -233,6 +262,7 @@ def _attach_quality_v2(row, ticker, log=print):
         score, meta = quality_v2_engine.get_quality_score_v2(ticker, bundle)
         row["Quality V2"] = score
         row["Quality V2 Meta"] = meta
+        _log_quality_v2_diagnostic(row, ticker, meta, log)
     except Exception as e:
         log(f"[nightly_scan] {ticker}: quality_v2_engine failed: {e}")
 

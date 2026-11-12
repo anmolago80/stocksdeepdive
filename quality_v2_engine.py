@@ -121,6 +121,25 @@ _INPUT_FIELDS = (
 # not independently re-derived.
 ROE_PLAUSIBLE_MAX = 1.0
 
+# TASK 51 (Director-directed, 12 Nov 2026, 13 Nov live preview review) -
+# debt_to_equity had the exact same unguarded-negative-equity shape ROE
+# did before TASK 45, but worse: debt/NEGATIVE equity makes the ratio
+# itself negative, and debt_penalty = min(debt_to_equity * DEBT_
+# PENALTY_RATE, DEBT_PENALTY_CAP) then turns that negative ratio into a
+# NEGATIVE penalty - `score -= debt_penalty` subtracts a negative, i.e.
+# adds up to +25 points for a company that is actually MORE levered,
+# not less (AAL/HCA/MTCH/CCI/INSE/KSPI/MO/HPQ all read Quality v2 = 100
+# after TASK 45 closed the ROE hole, because this was the other half of
+# the same negative-equity blind spot). DEBT_EQUITY_MAX_RATIO is the
+# ratio whose *DEBT_PENALTY_RATE already saturates at DEBT_PENALTY_CAP
+# (300 * 0.05 = 15) - used below as "maximal leverage" whenever equity
+# is non-positive and real debt is outstanding, since a negative-equity
+# company carrying debt is never LESS risky than the worst positive-
+# equity case this scale can express.
+DEBT_PENALTY_RATE = 0.05
+DEBT_PENALTY_CAP = 15
+DEBT_EQUITY_MAX_RATIO = DEBT_PENALTY_CAP / DEBT_PENALTY_RATE
+
 
 def _median_of_available(values):
     vals = [v for v in values if v is not None]
@@ -229,6 +248,10 @@ def get_quality_score_v2(ticker, bundle, info=None):
         "roic": float, "roe": float, "net_margin": float,
         "revenue_growth": float, "earnings_growth": float,
         "fcf_positive": bool or None, "debt_to_equity": float,
+        "debt_penalty": float,           # TASK 51: the actual points
+                                          # subtracted from `score` -
+                                          # always >= 0 (max(0, ...)),
+                                          # never a sign-flipped bonus
     }
     Never raises - (today's v1 score via the fallback-info path, an
     all-fallback meta) on any unexpected error, so one bad ticker's
@@ -247,7 +270,7 @@ def _fallback_only_score(info):
         "defaulted": True, "financials_mode": False,
         "roic": None, "roe": None, "net_margin": None,
         "revenue_growth": None, "earnings_growth": None,
-        "fcf_positive": None, "debt_to_equity": None,
+        "fcf_positive": None, "debt_to_equity": None, "debt_penalty": None,
     }
 
 
@@ -407,15 +430,40 @@ def _get_quality_score_v2(ticker, bundle, info):
     # medianed - same percent-like scale yfinance's own debtToEquity
     # field already uses (0 missing debt treated as zero debt, not
     # missing - the common case for a debt-free compounder).
-    debt_eq_vals = [
-        ((debt_by_fy.get(fy) or 0.0) / equity_by_fy[fy]) * 100
-        for fy in fy_dates
-        if equity_by_fy.get(fy)
-    ]
+    #
+    # TASK 51 (Director-directed, 12 Nov 2026): a FY's equity is
+    # `equity_by_fy.get(fy)` truthy-checked before this fix, which a
+    # NEGATIVE equity value also satisfies (negative numbers are truthy
+    # in Python) - debt / negative equity sign-flips the ratio itself,
+    # and the penalty step below used to sign-flip it a second time
+    # into a bonus. Equity <= 0 with real debt outstanding is now
+    # treated as maximal leverage (DEBT_EQUITY_MAX_RATIO, which already
+    # saturates the DEBT_PENALTY_CAP below - never a bigger "penalty"
+    # than the worst positive-equity case can express); equity <= 0
+    # with no debt at all contributes 0 (no leverage signal either way,
+    # same as a debt-free positive-equity company).
+    debt_eq_vals = []
+    for fy in fy_dates:
+        equity = equity_by_fy.get(fy)
+        debt = debt_by_fy.get(fy) or 0.0
+        if equity is None:
+            continue
+        if equity > 0:
+            debt_eq_vals.append((debt / equity) * 100)
+        elif debt > 0:
+            debt_eq_vals.append(DEBT_EQUITY_MAX_RATIO)
+        else:
+            debt_eq_vals.append(0.0)
     debt_to_equity = _median_of_available(debt_eq_vals)
     if debt_to_equity is None:
         debt_to_equity = info.get("debtToEquity", 0) or 0
         fallback_fields.append("debt_to_equity")
+        # Same guard on the .info fallback (TASK 51): Yahoo's own
+        # reported debtToEquity can be just as sign-flipped by negative
+        # book equity as a statement-derived ratio - never assumed sane
+        # just because it came from .info rather than a statement.
+        if debt_to_equity < 0:
+            debt_to_equity = DEBT_EQUITY_MAX_RATIO
 
     if financials_mode:
         fallback_fields = list(_INPUT_FIELDS)
@@ -430,7 +478,11 @@ def _get_quality_score_v2(ticker, bundle, info):
         score += 10
     elif fcf_positive is False:
         score -= 5
-    debt_penalty = min(debt_to_equity * 0.05, 15)
+    # TASK 51 (Director-directed, 12 Nov 2026): never a negative
+    # penalty (which `score -=` would otherwise turn into a bonus) -
+    # belt-and-braces alongside the debt_to_equity fix above, which
+    # already keeps this ratio non-negative on every path.
+    debt_penalty = max(0.0, min(debt_to_equity * DEBT_PENALTY_RATE, DEBT_PENALTY_CAP))
     score -= debt_penalty
     score = max(min(round(score), 100), 0)
 
@@ -451,4 +503,5 @@ def _get_quality_score_v2(ticker, bundle, info):
         "roic": roic, "roe": roe, "net_margin": net_margin,
         "revenue_growth": revenue_growth, "earnings_growth": earnings_growth,
         "fcf_positive": fcf_positive, "debt_to_equity": debt_to_equity,
+        "debt_penalty": debt_penalty,
     }
