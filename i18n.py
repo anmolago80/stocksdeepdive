@@ -4128,6 +4128,11 @@ EN = {
     # render_top100_page() itself - see that function's own comment.
     "top100.tab_us_foreign": "Top 20 · Foreign US-listed",
     "top100.tab_full": "Full 200",
+    # TASK 48 part B (Director-directed, 12 Nov 2026): the "Near the
+    # cut-off" tab, placed right after "Full 200".
+    "top100.tab_near_cutoff": "Near the cut-off",
+    "top100.near_cutoff_empty": "No companies within 2 points of the cut-off today.",
+    "top100.near_cutoff_gap_chip": "-{gap} below cut-off",
     # TASK 42 item 6b (Director-directed): the "good company, fallen a
     # long way" tab.
     "top100.tab_quality_on_sale": "Quality on sale",
@@ -8026,6 +8031,9 @@ ES = {
     "top100.tab_us": "Top 20 · EE. UU.",
     "top100.tab_us_foreign": "Top 20 · Extranjeras en EE. UU.",
     "top100.tab_full": "Las 200",
+    "top100.tab_near_cutoff": "Cerca del corte",
+    "top100.near_cutoff_empty": "Hoy no hay empresas a menos de 2 puntos del corte.",
+    "top100.near_cutoff_gap_chip": "-{gap} por debajo del corte",
     "top100.tab_quality_on_sale": "Calidad en oferta",
     "top100.quality_on_sale_show_all_button": "Mostrar todo ({count})",
     "top100.tab_market": "Top 20 · {country}",

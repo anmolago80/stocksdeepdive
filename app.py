@@ -33605,6 +33605,11 @@ def _render_quality_v2_preview_panel():
         # + exception, all three at once).
         _sim_exception = top100_engine.simulate_pool_quality_exception(log=print)
         _sim_v2_moat_exception = top100_engine.simulate_pool_v2_moat_and_exception(log=print)
+        # TASK 48C (Director-directed, 12 Nov 2026): the final combined
+        # scenario WITH the sticky buffer - sticky_buffer=True on top
+        # of the exact same v2+moat+exception setup, so this preview
+        # never depends on TOP200_STICKY_BUFFER_LIVE's own real state.
+        _sim_v2_moat_exception_buffer = top100_engine.simulate_pool_v2_moat_and_exception_with_buffer(log=print)
     except Exception as e:
         st.caption(f"Preview failed: {e}")
         return
@@ -33831,6 +33836,77 @@ def _render_quality_v2_preview_panel():
     # computed.
     st.markdown("---")
     _render_quality_review_section(_sim_v2_moat_exception)
+
+    st.markdown("---")
+    st.markdown("### Option 6: Quality v2 + Moat blend + Quality exception + sticky buffer")
+    _render_sticky_buffer_section(_sim_v2_moat_exception, _sim_v2_moat_exception_buffer)
+
+
+def _sticky_buffer_table_rows(rows, is_dropout):
+    """TASK 48C (Director-directed, 12 Nov 2026): shapes sticky_
+    buffer_impact()'s own "kept_dropouts"/"held_out_entrants" rows for
+    st.table() - a kept-drop-out row's own "Gap to cut-off" column is
+    drop-out-only (held-out entrants don't have one - they were
+    ranked ABOVE the naive cut-off, there's no "how far below" to
+    show)."""
+    out = []
+    for r in rows:
+        shaped = {"Ticker": r["ticker"], "Company": r["company_name"], "Value Score": r["value_score"]}
+        if is_dropout:
+            shaped["Gap to cut-off"] = r["gap_to_cutoff"]
+        out.append(shaped)
+    return out
+
+
+def _render_sticky_buffer_section(sim_result_no_buffer, sim_result_with_buffer):
+    """TASK 48C (Director-directed, 12 Nov 2026): the "final combined
+    + sticky buffer" admin preview option - turnover (reusing pool_
+    change_impact_and_cost(), the SAME "vs the live pool" comparison
+    every other option's own impact/cost row already uses), which
+    drop-outs the buffer keeps (score + gap to cut-off) and which
+    would-be entrants it holds out instead (top100_engine.sticky_
+    buffer_impact(), comparing the no-buffer and with-buffer scenarios
+    directly), and a preview of what the "Near the cut-off" tab would
+    show under this exact scenario (top100_engine.near_cutoff_
+    candidates(sim_result=..., score_key=...) - never the real live
+    gates, so this preview never depends on TOP200_STICKY_BUFFER_LIVE's
+    own actual state). Read-only, same safety profile as every other
+    shadow-preview section on this page."""
+    try:
+        _impact = top100_engine.pool_change_impact_and_cost(sim_result_with_buffer, log=print)
+        st.metric("Companies changed vs the live pool (with buffer)",
+                   f"{_impact['changed_count']} ({_impact['changed_pct_of_200']}%)")
+        st.caption(f"{_impact['entrants']} entrants, {_impact['dropouts']} drop-outs")
+    except Exception as e:
+        st.caption(f"Turnover check failed: {e}")
+
+    try:
+        _buffer_impact = top100_engine.sticky_buffer_impact(
+            sim_result_no_buffer, sim_result_with_buffer,
+            score_key=top100_engine._value_score_v2_moat_sort_key, log=print)
+    except Exception as e:
+        st.caption(f"Buffer impact check failed: {e}")
+        return
+    st.markdown(f"**Drop-outs the buffer keeps** ({len(_buffer_impact['kept_dropouts'])})")
+    st.table(_sticky_buffer_table_rows(_buffer_impact["kept_dropouts"], is_dropout=True) or [{"Ticker": "(none)"}])
+    st.markdown(f"**Would-be entrants the buffer holds out** ({len(_buffer_impact['held_out_entrants'])})")
+    st.table(_sticky_buffer_table_rows(_buffer_impact["held_out_entrants"], is_dropout=False) or [{"Ticker": "(none)"}])
+
+    st.markdown("**\"Near the cut-off\" tab preview under this scenario**")
+    try:
+        _ncu_preview = top100_engine.near_cutoff_candidates(
+            sim_result=sim_result_with_buffer, score_key=top100_engine._value_score_v2_moat_sort_key, log=print)
+        _ncu_candidates = _ncu_preview.get("candidates") or []
+        if not _ncu_candidates:
+            st.caption("No companies within 2 points of the cut-off today.")
+        else:
+            st.table([
+                {"Ticker": c["ticker"], "Company": c.get("company_name"),
+                 "Value Score": c["value_score"], "Gap to cut-off": c["gap_to_cutoff"]}
+                for c in _ncu_candidates
+            ])
+    except Exception as e:
+        st.caption(f"Near-the-cut-off preview failed: {e}")
 
 
 def _quality_review_table_rows(rows, is_dropout):

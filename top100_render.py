@@ -765,6 +765,30 @@ def _cross_list_chip_html(kind, rank, lang):
     )
 
 
+_NEAR_CUTOFF_GAP_CHIP_STYLE = ("#1a2333", "#2a3f63", "#7f95b3")
+
+
+def _near_cutoff_gap_chip_html(gap, lang):
+    """TASK 48 part B (Director-directed, 12 Nov 2026) - the "Near the
+    cut-off" tab's own gap-to-cut-off pill (e.g. "-0.2 below cut-off"),
+    rendered on row 3 (the support/drop/cross-list row) via _render_
+    row()'s own `near_cutoff_gap_html` param - a sibling pill in the
+    same flex container, same muted informational style as the
+    "previous rubric"/AWAITING chip family (this is a plain fact about
+    the card's own score, not a verdict). `gap` is near_cutoff_
+    candidates()'s own "gap_to_cutoff" (cut-off minus Value Score,
+    always >= 0 - displayed here as a negative number, "X below cut-
+    off", matching the Director's own exact wording)."""
+    text = _t("near_cutoff_gap_chip", lang, gap=f"{gap:.1f}")
+    bg, border, color = _NEAR_CUTOFF_GAP_CHIP_STYLE
+    return (
+        "<span style='display:inline-flex;align-items:center;"
+        f"border-radius:999px;padding:1px 9px;font-size:10.5px;font-weight:700;"
+        f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
+        f"{html.escape(text)}</span>"
+    )
+
+
 def _finer_industry_by_ticker():
     """{ticker: industry_string} from compounder_data.json's own hand-
     researched coverage (build_compounder_data.py) - Andrew's finer-
@@ -1331,7 +1355,7 @@ def _row_edge_accent_style(score_row):
 
 def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=None,
                  country_badge_html=None, home_country_html=None, recent_badge_html=None,
-                 cross_list_chip_html=None):
+                 cross_list_chip_html=None, near_cutoff_gap_html=None):
     """One RATED company row - rank/ticker(linked), the leading number
     for the active sort (task's own "the leading number on each row is
     the one doing the sorting"), the other stats next to it, the ten
@@ -1400,7 +1424,14 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     2026): the pre-built "★ Also on Quality on sale · #<n>" / "★ Also
     in Top 200 · #<n>" pill (or None - every caller that doesn't pass
     one is unaffected), rendered on row 3 right after the drop chip -
-    see _cross_list_chip_html()'s own docstring."""
+    see _cross_list_chip_html()'s own docstring.
+
+    `near_cutoff_gap_html` (TASK 48 part B, Director-directed, 12 Nov
+    2026): the pre-built "-X.X below cut-off" pill (or None - every
+    other caller is unaffected), rendered on row 3 right after the
+    cross-list chip - see _near_cutoff_gap_chip_html()'s own
+    docstring. Only the "Near the cut-off" tab itself ever passes
+    one."""
     ticker = row["ticker"]
     score_row = row["score_row"]
 
@@ -1474,10 +1505,11 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     support_chip = _support_chip_html(row, lang)
     drop_chip = _drop_chip_html(row, lang)
     cross_list_chip_html = cross_list_chip_html or ""
+    near_cutoff_gap_html = near_cutoff_gap_html or ""
     support_row_html = (
         "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:6px;'>"
-        + support_chip + drop_chip + cross_list_chip_html + "</div>"
-    ) if (support_chip or drop_chip or cross_list_chip_html) else ""
+        + support_chip + drop_chip + cross_list_chip_html + near_cutoff_gap_html + "</div>"
+    ) if (support_chip or drop_chip or cross_list_chip_html or near_cutoff_gap_html) else ""
     # TASK 39's own mini chart - a separate row below the chip row (not
     # inside the chip row's flex container, which is sized for pills,
     # not an SVG), gated the same way, "" (no row at all) when there's
@@ -1967,6 +1999,95 @@ def _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_ma
                      key=f"{_show_all_key}_btn"):
             st.session_state[_show_all_key] = True
             st.rerun()
+
+
+def _near_cutoff_candidate_rows(candidates):
+    """TASK 48 part B (Director-directed, 12 Nov 2026): {ticker: row}
+    for every "Near the cut-off" candidate, enriched exactly like
+    _enriched_pool()/_quality_on_sale_candidate_rows()'s own non-pool
+    branch. Every candidate here is, BY CONSTRUCTION, never a current
+    Top 200 pool/extension member (top100_engine.near_cutoff_
+    candidates() explicitly excludes incumbents) - so there's no
+    "check _enriched_pool() first" step the way quality_on_sale's own
+    helper needs; every candidate always gets its own top100_engine.
+    _build_best_by_ticker() lookup, fed through the SAME _enrich_rows()
+    helper every other tab's enrichment uses. A lookup/enrichment
+    failure is logged and simply leaves that ticker out of the
+    returned dict - the caller already treats a missing ticker as
+    "skip, not rated", never a crash."""
+    by_ticker = {}
+    if not candidates:
+        return by_ticker
+    try:
+        best_by_ticker, _ = top100_engine._build_best_by_ticker()
+        rows = [best_by_ticker[c["ticker"]] for c in candidates if c["ticker"] in best_by_ticker]
+        if rows:
+            scores = top100_store.latest_scores_for_model(
+                top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+            failures = top100_store.score_failures_for_model(
+                top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+            for r in _enrich_rows(rows, scores, failures):
+                by_ticker[r["ticker"]] = r
+    except Exception as e:
+        print(f"[near_cutoff] render: failed to enrich candidates: {e}")
+    return by_ticker
+
+
+def _render_near_cutoff_tab(lang, finer_industry, sort_mode, recent_badge_map=None,
+                             quality_on_sale_rank_map=None, candidates_result=None):
+    """TASK 48 part B (Director-directed, 12 Nov 2026): top100_engine.
+    near_cutoff_candidates()'s own list (non-members within NEAR_
+    CUTOFF_POINTS of the real cut-off, already ranked by Value Score
+    descending, already capped at NEAR_CUTOFF_MAX_CANDIDATES) rendered
+    with the SAME _render_row() every other tab uses - full dimension
+    chips, support/drop chips included for free via that function's
+    own existing wiring, no separate card template for this tab.
+    Display only: these candidates never enter the real Top 200/ASX
+    extension and never push anyone out - this tab exists purely so a
+    reader can see who's hovering just below the line.
+
+    Each card shows its own gap to the cut-off (_near_cutoff_gap_
+    chip_html()) and, when the ticker is ALSO a "Quality on sale"
+    candidate, the same cyan cross-list chip the Full 200 tab already
+    uses - `quality_on_sale_rank_map` is render_top100_page()'s own
+    already-computed map (TASK 44 item 10), passed down so it's never
+    computed twice.
+
+    `candidates_result` (same convention as the "Quality on sale" tab
+    itself): the already-computed top100_engine.near_cutoff_
+    candidates() return value - None (every existing caller, incl.
+    every test) computes it itself.
+
+    A candidate ticker whose enriched row has no RATED score_row (not
+    yet scored, or a lookup failure) is skipped with a log line, never
+    rendered half-built - same convention as every sibling tab. Empty
+    candidate list renders the Director's own exact empty-state
+    message ("No companies within 2 points of the cut-off today.")."""
+    recent_badge_map = recent_badge_map or {}
+    quality_on_sale_rank_map = quality_on_sale_rank_map or {}
+    result = candidates_result if candidates_result is not None else top100_engine.near_cutoff_candidates()
+    candidates = result.get("candidates") or []
+    if not candidates:
+        st.caption(_t("near_cutoff_empty", lang))
+        return
+
+    by_ticker = _near_cutoff_candidate_rows(candidates)
+
+    rank = 0
+    for cand in candidates:
+        row = by_ticker.get(cand["ticker"])
+        if not row or not row.get("score_row") or (row["score_row"] or {}).get("not_rated"):
+            print(f"[near_cutoff] {cand['ticker']}: skipped - no rated score_row to render")
+            continue
+        rank += 1
+        _qos_rank = quality_on_sale_rank_map.get(cand["ticker"])
+        _render_row(rank, row, lang, finer_industry.get(row["ticker"]), sort_mode,
+                    recent_badge_html=recent_badge_map.get(row["ticker"]),
+                    cross_list_chip_html=(
+                        _cross_list_chip_html("quality_on_sale", _qos_rank, lang)
+                        if _qos_rank is not None else None
+                    ),
+                    near_cutoff_gap_html=_near_cutoff_gap_chip_html(cand["gap_to_cutoff"], lang))
 
 
 def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None):
@@ -2747,6 +2868,21 @@ def render_top100_page(lang="en"):
         except Exception as e:
             print(f"[quality_on_sale] render_top100_page: cross-list rank map failed: {e}")
 
+    # TASK 48 part B (Director-directed, 12 Nov 2026) - "Near the cut-
+    # off" tab: same TOP200_STICKY_BUFFER_LIVE/owner-override gate
+    # shape as _show_quality_on_sale_tab above (one shared switch for
+    # the whole of TASK 48, per the Director's own framing). Computed
+    # ONCE here, under its own gate, and reuses `_qos_rank_map` above
+    # for its own "Also on Quality on sale" cross-list chip - never a
+    # second rank map of its own.
+    _show_near_cutoff_tab = top100_engine.top200_sticky_buffer_live() or _is_owner_for_refresh()
+    _ncu_result = None
+    if _show_near_cutoff_tab:
+        try:
+            _ncu_result = top100_engine.near_cutoff_candidates()
+        except Exception as e:
+            print(f"[near_cutoff] render_top100_page: candidate lookup failed: {e}")
+
     # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
     # Mixed/Australia/USA/Full 200 exactly as they were (same four
     # render calls, same positions relative to each other); rule 2
@@ -2763,6 +2899,7 @@ def render_top100_page(lang="en"):
         + ([_t("tab_us_foreign", lang)] if _show_foreign_tab else [])
         + [_market_tab_label(group_key, lang) for group_key, _rows in market_plan]
         + [_t("tab_full", lang)]
+        + ([_t("tab_near_cutoff", lang)] if _show_near_cutoff_tab else [])
         + ([_t("tab_quality_on_sale", lang)] if _show_quality_on_sale_tab else [])
     )
     tabs = st.tabs(tab_labels)
@@ -2789,7 +2926,17 @@ def render_top100_page(lang="en"):
     with tabs[_next_tab + len(market_plan)]:
         _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
                              recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map)
+    # TASK 48 part B: "Near the cut-off" sits right after "Full 200"
+    # and before "Quality on sale" - an incrementing index (rather
+    # than a hand-computed "+1"/"+2" offset) so neither gate's
+    # presence/absence can throw the other tab's own index off.
+    _after_full_tab = _next_tab + len(market_plan) + 1
+    if _show_near_cutoff_tab:
+        with tabs[_after_full_tab]:
+            _render_near_cutoff_tab(lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
+                                     quality_on_sale_rank_map=_qos_rank_map, candidates_result=_ncu_result)
+        _after_full_tab += 1
     if _show_quality_on_sale_tab:
-        with tabs[_next_tab + len(market_plan) + 1]:
+        with tabs[_after_full_tab]:
             _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
                                          top_200_rank_map=_top200_rank_map, candidates_result=_qos_result)

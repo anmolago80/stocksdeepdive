@@ -150,6 +150,118 @@ POOL_SIZE = 200
 # proportional to the (now doubled) global pool.
 TOP20_AU_TARGET = 40
 
+# TASK 48 (Director-directed, 12 Nov 2026) - sticky buffer for
+# incumbents, behind TOP200_STICKY_BUFFER_LIVE (default off, the
+# Director's own switch). An incumbent (a ticker in last night's
+# current_pool()/current_asx_extension()) keeps its place in tonight's
+# selection unless its Value Score falls more than this many points
+# below the naive top-N cut-off; a non-incumbent gets no such
+# allowance - it must score AT OR ABOVE the cut-off to enter, same as
+# today. Applied identically to the main 200 and the ASX extension
+# (see _apply_sticky_buffer()'s own docstring) - never to the backfill
+# path (is_backfill_live()), which the Director's own instruction
+# never asked to combine with this feature and which already has its
+# own, unrelated standin/set-aside mechanics.
+STICKY_BUFFER_POINTS = 2.0
+
+
+def top200_sticky_buffer_live():
+    """The switch - same unset/""/0/off=OFF, 1/on=ON pattern as every
+    other TOP200_*_LIVE gate in this module. Re-read on every call,
+    never cached, so a changed Railway variable takes effect on the
+    very next selection run without a redeploy. Claude Code never sets
+    this - the Director does, on Railway, only after reviewing the
+    preview this task adds."""
+    raw = (os.environ.get("TOP200_STICKY_BUFFER_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
+def _apply_sticky_buffer(merit_ordered, n, incumbent_tickers, score_key=None, log=print):
+    """TASK 48 (Director-directed, 12 Nov 2026) - the shared sticky-
+    buffer cut, used by BOTH select_top100_pool()'s real main-200/ASX-
+    extension cuts and _simulate_pool_generic()'s shadow-preview
+    equivalent, so the real selection and every preview can never
+    disagree on this rule. `merit_ordered` is a FULL candidate list
+    already sorted by `score_key` descending (same convention every
+    caller already follows); `n` is the naive top-N size (POOL_SIZE or
+    the ASX extension's own `needed`); `score_key` defaults to
+    `lambda r: r["value_score"]` (today's plain formula) - a caller
+    using a shadow Value Score variant (v2/moat/v2_moat/...) passes
+    its own sort key, the exact same one it already uses to build
+    `merit_ordered` itself, so the buffer is always evaluated against
+    whichever Value Score variant is actually active - this is what
+    makes the rule work correctly under every combination of
+    TOP200_QUALITY_V2_LIVE/TOP200_MOAT_BLEND_LIVE/TOP200_QUALITY_
+    EXCEPTION_LIVE (each of those only ever changes WHICH score this
+    function is handed, never this function's own buffer logic).
+
+    Rule: the naive top-`n` slice is `merit_ordered[:n]`, with
+    `naive_cutoff` = the n-th row's own score. Any INCUMBENT (ticker
+    in `incumbent_tickers`) ranked BELOW that cut, whose own score is
+    still >= naive_cutoff - STICKY_BUFFER_POINTS, is kept anyway - a
+    non-incumbent at the exact same score gets no such allowance (it
+    simply isn't in `incumbent_tickers`). The pool stays EXACTLY size
+    `n` (or fewer only if `merit_ordered` itself has fewer than `n`
+    candidates total - same edge case the un-buffered cut already
+    has): for every incumbent kept this way, the LOWEST-scoring NON-
+    incumbent already inside the naive top-`n` is displaced instead -
+    "the lowest-scoring would-be entrants are held out, not the
+    incumbents," the Director's own exact wording. If more incumbents
+    qualify for the buffer than there are non-incumbent (entrant)
+    slots to displace (a degenerate, tightly-clustered-scores case),
+    the HIGHEST-scoring qualifying incumbents are kept first (closest
+    to the cut-off, the Director's own "within 2.0 points" framing
+    read as a priority order) and the rest simply don't fit - the
+    pool's exact size is never violated either way.
+
+    Returns (selected_rows, naive_cutoff) - `selected_rows` re-sorted
+    by `score_key` descending (the same order every caller's own un-
+    buffered cut already produces), `naive_cutoff` unaffected by the
+    buffer itself (it's always the real top-`n` cut-off - exactly
+    the figure "Near the cut-off"/the admin preview need to measure
+    distance against). `naive_cutoff` is None when `merit_ordered` is
+    empty."""
+    if score_key is None:
+        score_key = lambda r: r["value_score"]
+    if n <= 0 or not merit_ordered:
+        return [], None
+    naive_pool = merit_ordered[:n]
+    naive_cutoff = score_key(naive_pool[-1])
+    if len(naive_pool) < n:
+        # Fewer candidates than the target size at all - nothing below
+        # the cut to buffer in, the un-buffered cut already keeps
+        # everyone there is.
+        return naive_pool, naive_cutoff
+
+    rest = merit_ordered[n:]
+    buffered_candidates = sorted(
+        (r for r in rest
+         if r["ticker"] in incumbent_tickers and score_key(r) >= naive_cutoff - STICKY_BUFFER_POINTS),
+        key=score_key, reverse=True,
+    )
+    if not buffered_candidates:
+        return naive_pool, naive_cutoff
+
+    entrant_slots = sorted(
+        (r for r in naive_pool if r["ticker"] not in incumbent_tickers),
+        key=score_key,
+    )
+    n_buffer = min(len(buffered_candidates), len(entrant_slots))
+    if n_buffer == 0:
+        log(f"[top100] sticky buffer: {len(buffered_candidates)} incumbent(s) qualified "
+            f"but 0 entrant slots available to displace - no room, pool size unaffected")
+        return naive_pool, naive_cutoff
+
+    kept_buffered = buffered_candidates[:n_buffer]
+    displaced_tickers = {r["ticker"] for r in entrant_slots[:n_buffer]}
+    final_pool = [r for r in naive_pool if r["ticker"] not in displaced_tickers] + kept_buffered
+    final_pool.sort(key=score_key, reverse=True)
+    log(f"[top100] sticky buffer: kept {n_buffer} incumbent(s) within "
+        f"{STICKY_BUFFER_POINTS} pts of the cut-off ({', '.join(sorted(r['ticker'] for r in kept_buffered))}), "
+        f"displaced {n_buffer} lowest-scoring entrant(s) "
+        f"({', '.join(sorted(displaced_tickers))}) to keep the count at {n}")
+    return final_pool, naive_cutoff
+
 # Top 100 selection freshness fix (30 Sep 2026, owner-directed). Root
 # cause of the reported bug ("Top 100 still shows the old list"):
 # select_top100_pool() used to keep each ticker's MAX Long Score across
@@ -1659,7 +1771,7 @@ def _quality_v2_main_driver(ticker, row, log=print):
         return None
 
 
-def _simulate_pool_generic(sort_key, log=print, quality_exception_override=None):
+def _simulate_pool_generic(sort_key, log=print, quality_exception_override=None, sticky_buffer=False):
     """TASK 35 item A3 (6 Nov 2026, Director-directed): the shared body
     simulate_pool_v2()/simulate_pool_moat()/simulate_pool_v2_moat() all
     use - built on _build_best_by_ticker() (the EXACT SAME eligibility
@@ -1677,23 +1789,49 @@ def _simulate_pool_generic(sort_key, log=print, quality_exception_override=None)
     None (every pre-TASK-37 caller) reads the real env gate; simulate_
     pool_quality_exception()/simulate_pool_v2_moat_and_exception()
     below pass True to force the high-quality exception on for this
-    simulation only, without touching TOP200_QUALITY_EXCEPTION_LIVE."""
+    simulation only, without touching TOP200_QUALITY_EXCEPTION_LIVE.
+
+    `sticky_buffer` (TASK 48, 12 Nov 2026, Director-directed): False
+    (every pre-TASK-48 caller - byte-identical to before this param
+    existed) never applies the sticky buffer, regardless of TOP200_
+    STICKY_BUFFER_LIVE's own real env state - this lets a caller
+    preview "what the buffer WOULD do" without that preview depending
+    on (or being confused with) the live switch. True (simulate_pool_
+    v2_moat_and_exception_with_buffer() below) applies the IDENTICAL
+    _apply_sticky_buffer() cut select_top100_pool()'s own real
+    selection uses - same incumbent set (today's live pool/extension),
+    same STICKY_BUFFER_POINTS - against `sort_key`'s own scores, so
+    the buffer is correctly evaluated against whichever Value Score
+    variant THIS simulation is itself previewing."""
     best_by_ticker, eligible_count = _build_best_by_ticker(
         log=log, quality_exception_override=quality_exception_override)
 
     merit_ordered = sorted(best_by_ticker.values(), key=sort_key, reverse=True)
-    pool_rows = merit_ordered[:POOL_SIZE]
+    if sticky_buffer:
+        _incumbent_tickers = (
+            {r["ticker"] for r in top100_store.current_pool()} |
+            {r["ticker"] for r in top100_store.current_asx_extension()}
+        )
+        pool_rows, cutoff = _apply_sticky_buffer(merit_ordered, POOL_SIZE, _incumbent_tickers,
+                                                  score_key=sort_key, log=log)
+    else:
+        pool_rows = merit_ordered[:POOL_SIZE]
+        cutoff = sort_key(pool_rows[-1]) if pool_rows else None
     pool_tickers = {r["ticker"] for r in pool_rows}
-    cutoff = sort_key(pool_rows[-1]) if pool_rows else None
 
     au_in_pool = sum(1 for t in pool_tickers if t.endswith(".AX"))
     extension_tickers = set()
     if au_in_pool < TOP20_AU_TARGET:
         needed = TOP20_AU_TARGET - au_in_pool
-        au_candidates = sorted(
+        au_sorted_candidates = sorted(
             (r for t, r in best_by_ticker.items() if t.endswith(".AX") and t not in pool_tickers),
             key=sort_key, reverse=True,
-        )[:needed]
+        )
+        if sticky_buffer:
+            au_candidates, _ = _apply_sticky_buffer(au_sorted_candidates, needed, _incumbent_tickers,
+                                                      score_key=sort_key, log=log)
+        else:
+            au_candidates = au_sorted_candidates[:needed]
         extension_tickers = {r["ticker"] for r in au_candidates}
 
     return {
@@ -1773,6 +1911,19 @@ def simulate_pool_v2_moat_and_exception(log=print):
     top of _value_score_v2_moat_sort_key). Same scope limits/safety
     profile as every other simulate_pool_* function above."""
     return _simulate_pool_generic(_value_score_v2_moat_sort_key, log=log, quality_exception_override=True)
+
+
+def simulate_pool_v2_moat_and_exception_with_buffer(log=print):
+    """TASK 48C (Director-directed, 12 Nov 2026) - SHADOW MODE / TEST
+    ONLY: simulate_pool_v2_moat_and_exception()'s own final-combined
+    scenario, PLUS the sticky buffer (sticky_buffer=True) - lets the
+    admin preview show turnover/kept-dropouts/held-out-entrants for
+    "the final combined setup, with the buffer" without TOP200_STICKY_
+    BUFFER_LIVE needing to be on at all (same "preview never depends
+    on the live switch" reasoning as every other shadow-preview
+    scenario in this module)."""
+    return _simulate_pool_generic(_value_score_v2_moat_sort_key, log=log,
+                                   quality_exception_override=True, sticky_buffer=True)
 
 
 # TASK 42 item 6b (Director-directed, 8 Nov 2026, "build together" with
@@ -2115,6 +2266,160 @@ def log_quality_on_sale_nightly_summary(log=print):
         log(f"[quality_on_sale] top {len(top20)} by rank (* = also in Top 200): {_tickers_str}")
 
 
+# TASK 48 part B (Director-directed, 12 Nov 2026) - the "Near the
+# cut-off" tab's own thresholds, each its own named constant even
+# though NEAR_CUTOFF_POINTS currently equals STICKY_BUFFER_POINTS -
+# conceptually a separate knob (what the TAB shows vs what the
+# SELECTION buffers), kept independently adjustable.
+NEAR_CUTOFF_POINTS = 2.0
+NEAR_CUTOFF_MAX_CANDIDATES = 30
+NEAR_CUTOFF_MAX_NEW_SCORES = 30
+
+
+def near_cutoff_candidates(log=print, max_candidates=NEAR_CUTOFF_MAX_CANDIDATES,
+                            sim_result=None, score_key=None):
+    """TASK 48 part B (Director-directed, 12 Nov 2026) - the "Near the
+    cut-off" tab's own candidate list: non-members of today's real
+    Top 200 (+ ASX extension) whose Value Score sits within NEAR_
+    CUTOFF_POINTS (2.0) below the real selection's own NAIVE cut-off -
+    the exact same reference line _apply_sticky_buffer() itself
+    measures against (see that function's own docstring), so this
+    tab's own meaning of "near the cut-off" never shifts depending on
+    whether TOP200_STICKY_BUFFER_LIVE is actually on. Built on _build_
+    best_by_ticker() with the REAL env gates (no override) - the
+    exact candidate universe/eligibility select_top100_pool() itself
+    uses tonight, so a ticker can never appear here that the real
+    selection wouldn't even consider.
+
+    `sim_result`/`score_key` (TASK 48C, Director-directed, 12 Nov
+    2026): None (every pre-existing caller, incl. the real "Near the
+    cut-off" tab itself) computes fresh against the REAL env gates and
+    the REAL live pool - "today's actual near-the-cut-off list". The
+    admin preview passes one of simulate_pool_v2_moat_and_exception()/
+    _with_buffer()'s own return dict plus the matching score_key (the
+    SAME sort key that scenario's own cutoff was computed with)
+    instead, for "what the Near the cut-off tab WOULD show under this
+    scenario" - every field (candidate universe/incumbent set/cutoff)
+    is then read from `sim_result` itself rather than recomputed, so
+    the preview can never drift from the exact scenario the rest of
+    that admin option already shows.
+
+    Returns {"cutoff": float|None, "candidates": [...]} - "candidates"
+    sorted by Value Score descending, capped at `max_candidates` (30).
+    Each candidate: {"ticker", "company_name", "sector", "most_recent_
+    quarter", "value_score", "gap_to_cutoff" (cutoff - value_score,
+    always in [0, NEAR_CUTOFF_POINTS] by construction), "research_
+    score" (float|None), "research_score_stale_rubric" (bool - same
+    meaning as quality_on_sale_candidates()'s own field, TASK 46
+    addendum's stale-rubric concept)}. `cutoff` is None only when
+    there are fewer eligible candidates than exist at all (empty
+    universe) - never a signal to the caller that "nothing qualifies"
+    (that's simply an empty "candidates" list with a real cutoff -
+    the "No companies within 2 points of the cut-off today" message
+    is the CALLER's own empty-list case, not a special return value
+    here)."""
+    if score_key is None:
+        score_key = lambda r: r["value_score"]
+    if sim_result is not None:
+        best_by_ticker = sim_result.get("rows") or {}
+        incumbent_tickers = (sim_result.get("pool_tickers") or set()) | (sim_result.get("extension_tickers") or set())
+        cutoff = sim_result.get("cutoff")
+    else:
+        best_by_ticker, eligible_count = _build_best_by_ticker(log=log)
+        incumbent_tickers = (
+            {r["ticker"] for r in top100_store.current_pool()} |
+            {r["ticker"] for r in top100_store.current_asx_extension()}
+        )
+        merit_ordered = sorted(best_by_ticker.values(), key=score_key, reverse=True)
+        cutoff = score_key(merit_ordered[min(POOL_SIZE, len(merit_ordered)) - 1]) if merit_ordered else None
+    if cutoff is None or not best_by_ticker:
+        return {"cutoff": cutoff, "candidates": []}
+
+    candidates = []
+    for ticker, row in best_by_ticker.items():
+        if ticker in incumbent_tickers:
+            continue
+        vs = score_key(row)
+        if vs is None:
+            continue
+        gap = cutoff - vs
+        if gap < 0 or gap > NEAR_CUTOFF_POINTS:
+            continue
+        try:
+            _score_row = top100_store.latest_score_for_ticker(ticker, MODEL_TOP100)
+        except Exception as e:
+            log(f"[near_cutoff] {ticker}: research score lookup failed: {e}")
+            _score_row = None
+        research_score = composite_score(_score_row) if _score_row else None
+        research_score_stale_rubric = bool(_score_row) and _score_row.get("rubric_version") != RUBRIC_VERSION
+        candidates.append({
+            "ticker": ticker,
+            "company_name": row.get("company_name"), "sector": row.get("sector"),
+            "most_recent_quarter": row.get("most_recent_quarter"),
+            "value_score": vs, "gap_to_cutoff": round(gap, 2),
+            "research_score": research_score,
+            "research_score_stale_rubric": research_score_stale_rubric,
+        })
+    candidates.sort(key=lambda c: c["value_score"], reverse=True)
+    return {"cutoff": cutoff, "candidates": candidates[:max_candidates]}
+
+
+def _select_near_cutoff_entrants(prior_entrant_count, daily_entrants_so_far, today, log=print,
+                                  max_new_scores=NEAR_CUTOFF_MAX_NEW_SCORES):
+    """TASK 48 part B (Director-directed, 12 Nov 2026) - candidate
+    selection AND submission for the "Near the cut-off" tab's own
+    scoring, mirroring _select_quality_on_sale_entrants()'s exact
+    design (TASK 46) as its own, FOURTH fully independent category -
+    never the is_prescore/is_quality_on_sale buckets, never commingled
+    with either of their own budget/cost bookkeeping. Same stale-
+    rubric broadening ("needing scoring" = unscored OR scored only
+    under a retired rubric - see near_cutoff_candidates()'s own
+    "research_score_stale_rubric" field), same capacity discipline
+    (batch_room/daily_room/max_new_scores, whichever is tightest),
+    consulted LAST of all four categories - after normal entrants,
+    prescore entrants, AND quality-on-sale entrants have already
+    claimed their own capacity (`prior_entrant_count` = the sum of all
+    three, passed by submit_nightly_batch() below).
+
+    Returns [(row_dict, "near_cutoff"), ...] - row_dict shaped exactly
+    like every sibling entrant-selection function's own rows."""
+    try:
+        result = near_cutoff_candidates(log=log)
+        needing_scoring = [
+            c for c in result["candidates"]
+            if c["research_score"] is None or c.get("research_score_stale_rubric")
+        ]
+        batch_room = MAX_NIGHTLY_SCORES - prior_entrant_count
+        daily_room = TOP100_MAX_ENTRANTS_PER_UTC_DAY - daily_entrants_so_far - prior_entrant_count
+        room = max(0, min(max_new_scores, batch_room, daily_room))
+        if room <= 0:
+            log("[near_cutoff] 0 new scores queued - no room left under tonight's batch/daily caps")
+            return []
+        needing_scoring = needing_scoring[:room]
+        if not needing_scoring:
+            log("[near_cutoff] 0 new scores queued - every near-the-cut-off candidate is "
+                "already scored under the current rubric")
+            return []
+        entrants = [
+            (
+                {"ticker": c["ticker"], "company_name": c.get("company_name"),
+                 "sector": c.get("sector"), "most_recent_quarter": c.get("most_recent_quarter")},
+                "near_cutoff",
+            )
+            for c in needing_scoring
+        ]
+        _new_count = sum(1 for c in needing_scoring if c["research_score"] is None)
+        _stale_count = len(needing_scoring) - _new_count
+        est_cost = estimate_degenerate_resend_cost_usd([e[0] for e in entrants])
+        log(f"[near_cutoff] {len(entrants)} candidates queued for scoring tonight "
+            f"({_new_count} never scored, {_stale_count} previous-rubric; of "
+            f"{len(result['candidates'])} near the cut-off), est ${est_cost:.4f}")
+        return entrants
+    except Exception as e:
+        log(f"[near_cutoff] entrant selection failed (non-fatal): {e}")
+        return []
+
+
 def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):
     """TASK 32 Part 4 (Director-directed, owner request, 5 Nov 2026):
     how many of `rows_v2` (simulate_pool_v2()'s own "rows_v2" - every
@@ -2232,6 +2537,19 @@ def select_top100_pool(log=print, scan_day=None):
         if _pool_expansion_pending else set()
     )
 
+    # TASK 48 (Director-directed, 12 Nov 2026) - the sticky buffer's own
+    # incumbent set, captured here UNCONDITIONALLY for the same reason
+    # as _pool_expansion_baseline just above: this is still LAST
+    # NIGHT's saved selection, before anything below mutates top100_
+    # pool. Covers both the main pool and the ASX extension - "same
+    # rule applies to the ASX extension" per the Director's own
+    # instruction, and an extension-only incumbent is still an
+    # incumbent for this purpose.
+    _incumbent_tickers = (
+        {r["ticker"] for r in top100_store.current_pool()} |
+        {r["ticker"] for r in top100_store.current_asx_extension()}
+    )
+
     best_by_ticker, eligible_count = _build_best_by_ticker(log=log)
 
     # COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
@@ -2281,7 +2599,22 @@ def select_top100_pool(log=print, scan_day=None):
             f"waiting {_summary['scored_set_waiting']}; "
             f"set aside {len(_summary['set_aside_model']) + len(_summary['set_aside_failed'])}")
     else:
-        pool = _merit_ordered[:POOL_SIZE]
+        # TASK 48 (Director-directed, 12 Nov 2026) - the sticky buffer
+        # is never combined with the backfill path above (the
+        # Director's own instruction never asked for that combination,
+        # and backfill already has its own unrelated standin/set-aside
+        # mechanics) - only reached here, is_backfill_live() already
+        # False. _apply_sticky_buffer()'s own `score_key` default
+        # (row["value_score"]) is exactly right here: "value_score" IS
+        # whichever formula is currently live (today's plain formula,
+        # or Quality v2/moat-blended, depending on TOP200_QUALITY_V2_
+        # LIVE/TOP200_MOAT_BLEND_LIVE - see _recompute_value_score()'s
+        # own docstring) - so the buffer always applies against
+        # whatever score variant is actually selecting the real pool.
+        if top200_sticky_buffer_live():
+            pool, _ = _apply_sticky_buffer(_merit_ordered, POOL_SIZE, _incumbent_tickers, log=log)
+        else:
+            pool = _merit_ordered[:POOL_SIZE]
         try:
             _dry_backfill = _apply_backfill(_merit_ordered, model=MODEL_TOP100)
             _dry_summary = _backfill_summary(_merit_ordered, _dry_backfill, model=MODEL_TOP100)
@@ -2332,7 +2665,15 @@ def select_top100_pool(log=print, scan_day=None):
              if t.endswith(".AX") and t not in pool_tickers and t not in _set_aside_tickers),
             key=lambda r: r["value_score"], reverse=True,
         )
-        au_candidates = _au_sorted_candidates[:needed]
+        # TASK 48 (Director-directed, 12 Nov 2026) - "same rule applies
+        # to the ASX extension": the identical sticky-buffer cut as the
+        # main pool above, same incumbent set, never combined with the
+        # backfill path (is_backfill_live() - its own standin logic
+        # just below is untouched either way).
+        if top200_sticky_buffer_live() and not is_backfill_live():
+            au_candidates, _ = _apply_sticky_buffer(_au_sorted_candidates, needed, _incumbent_tickers, log=log)
+        else:
+            au_candidates = _au_sorted_candidates[:needed]
         # A3 amendment of instruction_top200_amendments_and_currency_
         # view.md (5 Oct 2026, Director-directed, "the same rule
         # applies to the Top 20 tabs and the ASX extension") - the
@@ -4328,6 +4669,14 @@ def poll_and_ingest_batch(log=print):
     qos_saved, qos_failed = 0, 0
     qos_input_tokens, qos_output_tokens = 0, 0
     qos_cache_creation_tokens, qos_cache_read_tokens = 0, 0
+    # TASK 48 part B (Director-directed, 12 Nov 2026): parallel
+    # accounting for near-cut-off-tagged packs - the FOURTH fully
+    # independent pack category, same "every increment sits
+    # immediately beside the matching counter it mirrors" convention
+    # as the prescore/quality-on-sale blocks above.
+    ncu_saved, ncu_failed = 0, 0
+    ncu_input_tokens, ncu_output_tokens = 0, 0
+    ncu_cache_creation_tokens, ncu_cache_read_tokens = 0, 0
     try:
         for result in client.messages.batches.results(state["batch_id"]):
             entry = custom_id_map.get(result.custom_id)
@@ -4365,6 +4714,7 @@ def poll_and_ingest_batch(log=print):
             pack_schema_mode = entry.get("schema_mode", "legacy") if isinstance(entry, dict) else "legacy"
             is_prescore_pack = isinstance(entry, dict) and bool(entry.get("is_prescore"))
             is_qos_pack = isinstance(entry, dict) and bool(entry.get("is_quality_on_sale"))
+            is_ncu_pack = isinstance(entry, dict) and bool(entry.get("is_near_cutoff"))
             if not entrants_map:
                 continue
             total_requests += 1
@@ -4390,6 +4740,8 @@ def poll_and_ingest_batch(log=print):
                         prescore_failed += 1
                     if is_qos_pack:
                         qos_failed += 1
+                    if is_ncu_pack:
+                        ncu_failed += 1
                     errored_count += 1
                     failure_reasons.append((ticker, err_type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     if errored_count <= _ERRORED_DETAIL_LIMIT:
@@ -4408,6 +4760,8 @@ def poll_and_ingest_batch(log=print):
                         prescore_failed += 1
                     if is_qos_pack:
                         qos_failed += 1
+                    if is_ncu_pack:
+                        ncu_failed += 1
                     failure_reasons.append((ticker, result.result.type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
                 _log_request_diagnostic(log, result.custom_id, list(entrants_map.keys()),
@@ -4439,6 +4793,11 @@ def poll_and_ingest_batch(log=print):
                 qos_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
                 qos_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
                 qos_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
+            if is_ncu_pack:
+                ncu_input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
+                ncu_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
+                ncu_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
+                ncu_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
             _degenerate_tickers = set()
             _request_blank_tickers = set()
             _matched_by = {}
@@ -4459,6 +4818,8 @@ def poll_and_ingest_batch(log=print):
                         prescore_failed += 1
                     if is_qos_pack:
                         qos_failed += 1
+                    if is_ncu_pack:
+                        ncu_failed += 1
                     failure_reasons.append((ticker, f"parse_error: {e}", entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                 log(f"[top100] batch result for {sorted(entrants_map)}: could not parse, skipped ({e})")
                 continue
@@ -4501,6 +4862,8 @@ def poll_and_ingest_batch(log=print):
                         prescore_failed += 1
                     if is_qos_pack:
                         qos_failed += 1
+                    if is_ncu_pack:
+                        ncu_failed += 1
                     failure_reasons.append((ticker, "request_blank", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     continue
                 if ticker in _degenerate_tickers:
@@ -4524,12 +4887,16 @@ def poll_and_ingest_batch(log=print):
                             prescore_saved += 1
                         if is_qos_pack:
                             qos_saved += 1
+                        if is_ncu_pack:
+                            ncu_saved += 1
                     else:
                         failed += 1
                         if is_prescore_pack:
                             prescore_failed += 1
                         if is_qos_pack:
                             qos_failed += 1
+                        if is_ncu_pack:
+                            ncu_failed += 1
                         failure_reasons.append((ticker, "degenerate_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                         log(f"[top100] {ticker}: degenerate response (sentinel-filled template) - "
                             "not saved, will retry")
@@ -4546,6 +4913,8 @@ def poll_and_ingest_batch(log=print):
                         prescore_failed += 1
                     if is_qos_pack:
                         qos_failed += 1
+                    if is_ncu_pack:
+                        ncu_failed += 1
                     failure_reasons.append((ticker, "missing_from_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: missing from packed batch response, skipped")
                     continue
@@ -4573,6 +4942,8 @@ def poll_and_ingest_batch(log=print):
                     prescore_saved += 1
                 if is_qos_pack:
                     qos_saved += 1
+                if is_ncu_pack:
+                    ncu_saved += 1
     except Exception as e:
         # Audit fix A1 / Fable finding T1 (10 Oct 2026): a stream
         # exception (e.g. a dropped connection partway through
@@ -4651,6 +5022,19 @@ def poll_and_ingest_batch(log=print):
         )
         log(f"[quality_on_sale] scored {qos_saved}, cost ${qos_cost:.2f} "
             f"({qos_failed} failed)")
+
+    # TASK 48 part B (Director-directed, 12 Nov 2026): fires only when
+    # THIS batch actually carried at least one near-cut-off-tagged pack
+    # (ncu_saved/ncu_failed are both 0 on every night with nothing
+    # queued for this feature) - same "real ingest-time cost, no
+    # cumulative/budget tracker" convention as quality-on-sale above.
+    if ncu_saved or ncu_failed:
+        ncu_cost = estimate_batch_cost_usd(
+            ncu_input_tokens, ncu_output_tokens,
+            ncu_cache_creation_tokens, ncu_cache_read_tokens,
+        )
+        log(f"[near_cutoff] scored {ncu_saved}, cost ${ncu_cost:.2f} "
+            f"({ncu_failed} failed)")
 
     # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed): schema_mode + packed/solo split
@@ -5290,6 +5674,18 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     quality_on_sale_entrants = [] if force else _select_quality_on_sale_entrants(
         len(entrants) + len(prescore_entrants), daily["entrants"], today, log=log)
 
+    # TASK 48 part B (Director-directed, 12 Nov 2026): "Near the cut-
+    # off" scoring - its own, FOURTH independent category, consulted
+    # LAST of all four (after normal, prescore, AND quality-on-sale
+    # entrants have already claimed their own capacity) - never on the
+    # force=True path. See _select_near_cutoff_entrants()'s own
+    # docstring for the full capacity/rubric-staleness rule; it never
+    # raises and returns [] whenever nothing qualifies or no room is
+    # left, so this line is a no-op (byte-identical to today) on a
+    # night with nothing to queue.
+    near_cutoff_entrants = [] if force else _select_near_cutoff_entrants(
+        len(entrants) + len(prescore_entrants) + len(quality_on_sale_entrants), daily["entrants"], today, log=log)
+
     # v6 packed requests (1 Oct 2026, owner-directed): group tonight's
     # entrants into packs of up to TOP100_COMPANIES_PER_REQUEST - one
     # Batches API Request per pack, not per company (the actual saving
@@ -5359,6 +5755,24 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         for i in range(0, len(_qos_normal), TOP100_COMPANIES_PER_REQUEST)
     ]
 
+    # TASK 48 part B (Director-directed, 12 Nov 2026): near-cut-off
+    # entrants get their OWN, separate packs too - a FOURTH, fully
+    # independent category, same "never merged into any other pack
+    # group, same pack size/solo-retry rule" reasoning as the prescore/
+    # quality-on-sale blocks above. custom_id_map tags each pack with
+    # "is_near_cutoff" below so poll_and_ingest_batch() can tell these
+    # apart from every other category at ingest time.
+    _ncu_solo_tickers = {
+        row["ticker"] for row, _reason in near_cutoff_entrants
+        if (_failures_for_packing.get(row["ticker"]) or {}).get("reason") == "request_blank"
+    }
+    _ncu_solo = [e for e in near_cutoff_entrants if e[0]["ticker"] in _ncu_solo_tickers]
+    _ncu_normal = [e for e in near_cutoff_entrants if e[0]["ticker"] not in _ncu_solo_tickers]
+    near_cutoff_packs = [[e] for e in _ncu_solo] + [
+        _ncu_normal[i:i + TOP100_COMPANIES_PER_REQUEST]
+        for i in range(0, len(_ncu_normal), TOP100_COMPANIES_PER_REQUEST)
+    ]
+
     # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed): read the switch ONCE for this
     # whole submission (not per-pack) - see top200_schema_mode()'s own
@@ -5387,12 +5801,21 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         return None
 
     # Pre-score packs are appended AFTER every normal pack, quality-on-
-    # sale packs after those - custom_id numbering just continues the
-    # same sequence, nothing special about where either boundary falls.
-    all_packs = packs + prescore_packs + quality_on_sale_packs
-    pack_is_prescore = [False] * len(packs) + [True] * len(prescore_packs) + [False] * len(quality_on_sale_packs)
+    # sale packs after those, near-cut-off packs after those - custom_id
+    # numbering just continues the same sequence, nothing special about
+    # where any boundary falls.
+    all_packs = packs + prescore_packs + quality_on_sale_packs + near_cutoff_packs
+    pack_is_prescore = (
+        [False] * len(packs) + [True] * len(prescore_packs)
+        + [False] * len(quality_on_sale_packs) + [False] * len(near_cutoff_packs)
+    )
     pack_is_quality_on_sale = (
-        [False] * len(packs) + [False] * len(prescore_packs) + [True] * len(quality_on_sale_packs)
+        [False] * len(packs) + [False] * len(prescore_packs)
+        + [True] * len(quality_on_sale_packs) + [False] * len(near_cutoff_packs)
+    )
+    pack_is_near_cutoff = (
+        [False] * len(packs) + [False] * len(prescore_packs)
+        + [False] * len(quality_on_sale_packs) + [True] * len(near_cutoff_packs)
     )
 
     custom_id_map = {}
@@ -5415,6 +5838,7 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
             "entrants": pack_entrants_meta, "schema_mode": schema_mode,
             "is_prescore": pack_is_prescore[i],
             "is_quality_on_sale": pack_is_quality_on_sale[i],
+            "is_near_cutoff": pack_is_near_cutoff[i],
         }
         requests.append(Request(
             custom_id=custom_id,
@@ -5442,18 +5866,18 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
 
     top100_store.clear_submitting_marker()
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
-    # Pre-score AND quality-on-sale entrants count toward the SAME
-    # daily entrant total as every normal entrant (the instruction's
-    # own "never raise those caps" rule) - this is what makes tomorrow
-    # night's own capacity check correctly see tonight's real combined
-    # total. TASK 46 (12 Nov 2026): quality_on_sale_entrants was
-    # missing from this call entirely until now - caught here, before
-    # this bug could let _select_quality_on_sale_entrants()'s own
-    # daily_room math silently under-count tonight's real submission
-    # and, over consecutive nights, push the real total past
-    # TOP100_MAX_ENTRANTS_PER_UTC_DAY.
+    # Pre-score, quality-on-sale, AND near-cut-off entrants count
+    # toward the SAME daily entrant total as every normal entrant (the
+    # instruction's own "never raise those caps" rule) - this is what
+    # makes tomorrow night's own capacity check correctly see tonight's
+    # real combined total. TASK 46 (12 Nov 2026) caught quality_on_
+    # sale_entrants missing from this call entirely; TASK 48 (12 Nov
+    # 2026) adds near_cutoff_entrants here from the start, for the
+    # exact same reason - never let a fourth category silently escape
+    # this count the way the third one originally did.
     top100_store.record_daily_submission(
-        today.isoformat(), len(entrants) + len(prescore_entrants) + len(quality_on_sale_entrants))
+        today.isoformat(),
+        len(entrants) + len(prescore_entrants) + len(quality_on_sale_entrants) + len(near_cutoff_entrants))
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
         f"in {len(packs)} packed request{'s' if len(packs) != 1 else ''} "
         f"({n_packed_packs} packed, {n_solo_packs} solo) for {model}, schema_mode={schema_mode}"
@@ -5463,7 +5887,11 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         + (f"; plus {len(quality_on_sale_entrants)} quality-on-sale compan"
            f"{'y' if len(quality_on_sale_entrants) == 1 else 'ies'} in {len(quality_on_sale_packs)} "
            f"more request{'s' if len(quality_on_sale_packs) != 1 else ''}"
-           if quality_on_sale_entrants else ""))
+           if quality_on_sale_entrants else "")
+        + (f"; plus {len(near_cutoff_entrants)} near-cut-off compan"
+           f"{'y' if len(near_cutoff_entrants) == 1 else 'ies'} in {len(near_cutoff_packs)} "
+           f"more request{'s' if len(near_cutoff_packs) != 1 else ''}"
+           if near_cutoff_entrants else ""))
     return batch.id
 
 
@@ -6085,6 +6513,78 @@ def pool_change_impact_and_cost(sim_result, log=print):
         "entrants_unscored": entrants_unscored,
         "estimated_scoring_cost_usd": round(estimated_scoring_cost_usd, 2),
     }
+
+
+def sticky_buffer_impact(sim_result_no_buffer, sim_result_with_buffer, score_key=None, log=print):
+    """TASK 48C (Director-directed, 12 Nov 2026) - "which drop-outs
+    the buffer keeps (score + gap to cut-off), which entrants it holds
+    out" for the admin preview's own "final combined + buffer" option.
+    `sim_result_no_buffer`/`sim_result_with_buffer` are the SAME
+    scenario's own simulate_pool_v2_moat_and_exception()/_with_buffer()
+    return dicts (one without the buffer, one with) - comparing the
+    two tells exactly what the buffer itself changed, independent of
+    pool_change_impact_and_cost()'s own separate "vs the live pool"
+    comparison (turnover).
+
+    `score_key` defaults to `lambda r: r["value_score"]`, matching
+    near_cutoff_candidates()'s own default - pass the SAME sort key
+    the scenario itself was built with (e.g. _value_score_v2_moat_
+    sort_key) so each row's own reported score matches what that
+    scenario actually ranked it on.
+
+    "Kept drop-outs": every ticker in the naive (no-buffer) scenario's
+    own OUTSIDE set (not in pool_tickers|extension_tickers) that IS in
+    the buffered scenario's own set - the buffer's own real-world
+    effect, "incumbents the buffer pulled back in". "Held-out
+    entrants": every ticker in the naive scenario's own INSIDE set
+    that is NOT in the buffered scenario's own set - "the lowest-
+    scoring would-be entrants the buffer displaced instead", the
+    Director's own exact wording from TASK 48's spec.
+
+    Returns {"kept_dropouts": [{"ticker", "company_name", "value_
+    score", "gap_to_cutoff"}, ...], "held_out_entrants": [{"ticker",
+    "company_name", "value_score"}, ...]} - both sorted by Value Score
+    descending. Read-only, same safety profile as every other
+    simulate_pool_*/*_impact_and_cost function - never writes
+    anything, never touches the live pool/selection."""
+    if score_key is None:
+        score_key = lambda r: r["value_score"]
+    naive_rows = sim_result_no_buffer.get("rows") or {}
+    naive_tickers = (
+        (sim_result_no_buffer.get("pool_tickers") or set())
+        | (sim_result_no_buffer.get("extension_tickers") or set())
+    )
+    buffered_rows = sim_result_with_buffer.get("rows") or {}
+    buffered_tickers = (
+        (sim_result_with_buffer.get("pool_tickers") or set())
+        | (sim_result_with_buffer.get("extension_tickers") or set())
+    )
+    naive_cutoff = sim_result_no_buffer.get("cutoff")
+
+    kept_dropout_tickers = buffered_tickers - naive_tickers
+    held_out_entrant_tickers = naive_tickers - buffered_tickers
+
+    kept_dropouts = []
+    for t in sorted(kept_dropout_tickers):
+        row = buffered_rows.get(t) or naive_rows.get(t) or {}
+        vs = score_key(row) if row else None
+        kept_dropouts.append({
+            "ticker": t, "company_name": row.get("company_name") or t,
+            "value_score": vs,
+            "gap_to_cutoff": round(naive_cutoff - vs, 2) if (naive_cutoff is not None and vs is not None) else None,
+        })
+    kept_dropouts.sort(key=lambda r: (r["value_score"] is None, -(r["value_score"] or 0.0)))
+
+    held_out_entrants = []
+    for t in sorted(held_out_entrant_tickers):
+        row = naive_rows.get(t) or {}
+        vs = score_key(row) if row else None
+        held_out_entrants.append({
+            "ticker": t, "company_name": row.get("company_name") or t, "value_score": vs,
+        })
+    held_out_entrants.sort(key=lambda r: (r["value_score"] is None, -(r["value_score"] or 0.0)))
+
+    return {"kept_dropouts": kept_dropouts, "held_out_entrants": held_out_entrants}
 
 
 # TASK 47 (Director-directed, 12 Nov 2026, "good companies being
