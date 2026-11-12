@@ -234,7 +234,13 @@ _fake_scores = {"GOOD.AX": 55.0, "OUTOFPOOL.AX": 80.0}  # V1FALLBACK.AX: no scor
 
 
 def _fake_score_row(ticker, model):
-    return {"_score": _fake_scores[ticker]} if ticker in _fake_scores else None
+    # rubric_version included (TASK 46, 12 Nov 2026) - a real
+    # top100_store.latest_score_for_ticker() row always carries this
+    # DB column; omitting it here would make quality_on_sale_
+    # candidates()'s own research_score_stale_rubric check see every
+    # fixture score as "from an unknown rubric" (None != RUBRIC_
+    # VERSION), which isn't the real shape this fixture means to test.
+    return {"_score": _fake_scores[ticker], "rubric_version": te.RUBRIC_VERSION} if ticker in _fake_scores else None
 
 
 def _fake_composite(score_row):
@@ -316,17 +322,20 @@ print("[item6_check11_cap_and_empty] an empty universe never raises; a 150-quali
 
 
 # ======================================================================
-# CHECK 11b (TASK 44 item 2/9): _select_quality_on_sale_entrants() -
-# candidate selection for the existing scoring ingest path, NOT YET
-# wired into submit_nightly_batch() (see that function's own docstring
-# for why).
+# CHECK 11b (TASK 44 item 2/9, signature updated by TASK 46 12 Nov
+# 2026 - prior_entrant_count added): _select_quality_on_sale_entrants()
+# - candidate selection, now wired end to end into submit_nightly_
+# batch()/poll_and_ingest_batch() (see tests/test_director_task46_
+# quality_on_sale_scoring.py for that end-to-end coverage - this file
+# keeps its own narrower candidate-selection-only checks).
 # ======================================================================
 with mock.patch.object(te, "_build_best_by_ticker", return_value=(_fake_best, 500)), \
      mock.patch.object(te.top100_store, "current_pool", return_value=_pool_rows), \
      mock.patch.object(te.top100_store, "latest_score_for_ticker", side_effect=_fake_score_row), \
      mock.patch.object(te, "composite_score", side_effect=_fake_composite), \
      mock.patch.object(te.drop_chip_store, "get", side_effect=lambda t: _fake_drops.get(t)):
-    _entrants = te._select_quality_on_sale_entrants(daily_entrants_so_far=0, today=datetime.date(2026, 11, 11))
+    _entrants = te._select_quality_on_sale_entrants(
+        prior_entrant_count=0, daily_entrants_so_far=0, today=datetime.date(2026, 11, 11))
 check("entrant_selection_only_includes_unscored_qualifiers",
       {e[0]["ticker"] for e in _entrants} == {"V1FALLBACK.AX"})
 check("entrant_selection_tags_every_row_with_the_quality_on_sale_reason",
@@ -340,7 +349,8 @@ with mock.patch.object(te, "_build_best_by_ticker", return_value=(_fake_best, 50
      mock.patch.object(te, "composite_score", side_effect=_fake_composite), \
      mock.patch.object(te.drop_chip_store, "get", side_effect=lambda t: _fake_drops.get(t)):
     _entrants_no_room = te._select_quality_on_sale_entrants(
-        daily_entrants_so_far=te.TOP100_MAX_ENTRANTS_PER_UTC_DAY, today=datetime.date(2026, 11, 11))
+        prior_entrant_count=0, daily_entrants_so_far=te.TOP100_MAX_ENTRANTS_PER_UTC_DAY,
+        today=datetime.date(2026, 11, 11))
 check("entrant_selection_respects_the_daily_entrant_cap_(no_room_left_-\\>_empty)",
       _entrants_no_room == [])
 print("[item6_check11b_select_quality_on_sale_entrants] candidate selection for the "

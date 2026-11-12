@@ -5,10 +5,13 @@ TASK 44 follow-up (Director-directed, 12 Nov 2026, after the 23:00 UTC
 Covers:
   1. top100_engine.log_quality_on_sale_nightly_summary() - the new
      "[quality_on_sale] ..." nightly log line: total qualifiers,
-     needing scoring, "0 scored tonight (cost $0.00 ...)" (honestly
-     reported - the scoring-ingest pipeline is still not wired, per
-     _select_quality_on_sale_entrants()'s own docstring), an estimated
-     cost for the unscored group, count also in the Top 200, and the
+     needing scoring, a SELECTION-TIME-only estimated cost for the
+     unscored group (never a real scored/cost figure of its own -
+     TASK 46, 12 Nov 2026, wired the real ingest separately via
+     poll_and_ingest_batch()'s own "[quality_on_sale] scored N, cost
+     $X" line, so this summary's own wording was revised to stop
+     claiming "0 scored tonight" now that a real scored count can
+     exist later the same night), count also in the Top 200, and the
      top 20 tickers in rank order (* marking also-in-Top-200). Also
      confirms scheduler_engine._run_top100() calls it right after the
      support-levels job, inside a non-fatal try/except.
@@ -87,12 +90,15 @@ check("summary line reports how many are shown (25, the fixture's own candidate 
       "25 shown" in _summary)
 check("summary line reports needing_scoring correctly (10 unscored)",
       "10 needing scoring" in _summary)
-check("summary line honestly reports 0 scored tonight and $0.00 real cost - the "
-      "scoring-ingest pipeline is still not wired",
-      "0 scored tonight (cost $0.00" in _summary)
+check("summary line is a SELECTION-TIME snapshot only - it never claims a real "
+      "scored/cost figure of its own now that TASK 46 has wired the real ingest "
+      "(poll_and_ingest_batch()'s own separate '[quality_on_sale] scored N, cost "
+      "$X' line is the honest one; this line stays a pre-submission estimate)",
+      "selection snapshot only" in _summary
+      and "actual submission/capacity/cost logged separately once submitted and "
+          "ingested" in _summary)
 check("summary line reports a non-zero ESTIMATED cost for the unscored group",
-      "est if the unscored group were scored tonight" in _summary
-      and "$0.0000 est" not in _summary)
+      "if all of them were queued tonight" in _summary and "est $0.0000" not in _summary)
 check("summary line reports the also-in-Top-200 count (8 of the 15 scored "
       "candidates have even i, i.e. in_top_200=True: 0,2,4,6,8,10,12,14 = 8)",
       "8 of 25 shown also in the Top 200" in _summary)

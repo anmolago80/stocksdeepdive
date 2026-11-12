@@ -1845,7 +1845,9 @@ def quality_on_sale_candidates(log=print, max_candidates=QUALITY_ON_SALE_MAX_CAN
          member reads False, matching "in Top 200 too?"'s own literal
          wording - the extension exists precisely BECAUSE those rows
          are NOT in the 200), "research_score" (float|None - composite_
-         score(), None = not yet scored)},
+         score(), None = not yet scored), "research_score_stale_rubric"
+         (bool - True when research_score came from a PREVIOUS rubric
+         version, not the current one - TASK 46 addendum, 12 Nov 2026)},
         ...
       ],  # scored candidates first (Research Score descending), then
           # unscored (drop-depth order) - already capped
@@ -1877,6 +1879,16 @@ def quality_on_sale_candidates(log=print, max_candidates=QUALITY_ON_SALE_MAX_CAN
             log(f"[quality_on_sale] {ticker}: research score lookup failed: {e}")
             _score_row = None
         research_score = composite_score(_score_row) if _score_row else None
+        # TASK 46 addendum (Director-directed, 12 Nov 2026, CPRT case -
+        # "scored 27 Sep, missing the Munger-quality and Big-wave
+        # verdicts"): latest_score_for_ticker() reads across ALL rubric
+        # versions, so a stale-rubric row still produces a real
+        # research_score here - this flag is what lets _select_quality_
+        # on_sale_entrants() tell "genuinely unscored" apart from
+        # "scored, but under a retired rubric" (same "previous rubric"
+        # concept top100_render._score_row_with_fallback()'s own
+        # is_fallback_score already uses for card display).
+        research_score_stale_rubric = bool(_score_row) and _score_row.get("rubric_version") != RUBRIC_VERSION
 
         candidates.append({
             "ticker": ticker,
@@ -1890,6 +1902,7 @@ def quality_on_sale_candidates(log=print, max_candidates=QUALITY_ON_SALE_MAX_CAN
             "quality_exception_admitted": bool(row.get("quality_exception_admitted")),
             "in_top_200": ticker in pool_tickers,
             "research_score": research_score,
+            "research_score_stale_rubric": research_score_stale_rubric,
             # TASK 44 item 7 (Director-directed, 11 Nov 2026, "report
             # only, no change to the live rule" moat-floor test): the
             # row's own already-computed Moat score (None if this
@@ -1916,50 +1929,58 @@ def quality_on_sale_candidates(log=print, max_candidates=QUALITY_ON_SALE_MAX_CAN
     }
 
 
-def _select_quality_on_sale_entrants(daily_entrants_so_far, today, log=print,
+def _select_quality_on_sale_entrants(prior_entrant_count, daily_entrants_so_far, today, log=print,
                                       max_new_scores=QUALITY_ON_SALE_MAX_CANDIDATES):
-    """TASK 44 item 2/9 (Director-directed, 11 Nov 2026): candidate
-    selection ONLY - any "Quality on sale" qualifier with no stored
-    research score, in the SAME [(row, reason), ...] shape _select_
-    prescore_entrants() returns, ready to be packed and submitted the
-    SAME way (reusing submit_nightly_batch()'s own packing/custom_id_
-    map/ingest-cost-attribution code, never a second scoring pipeline -
-    "same rubric, ~$0.017 each" is exactly this reuse). Capped at
-    `max_new_scores` (100/night) AND at whatever entrant-count room is
-    left under TOP100_MAX_ENTRANTS_PER_UTC_DAY tonight, same capacity
-    discipline _select_prescore_entrants() already applies.
+    """TASK 44 item 2/9 + TASK 46 (Director-directed, 11/12 Nov 2026):
+    candidate selection AND submission - any "Quality on sale" qualifier
+    with no stored research score under the CURRENT rubric (genuinely
+    unscored, OR scored only under a retired rubric - TASK 46 addendum,
+    the CPRT case, "scored 27 Sep, missing the Munger-quality and Big-
+    wave verdicts" - see quality_on_sale_candidates()'s own "research_
+    score_stale_rubric" field), in the SAME [(row, reason), ...] shape
+    _select_prescore_entrants() returns, packed and submitted via
+    submit_nightly_batch()'s own packing/custom_id_map/ingest-cost-
+    attribution code - see that function's own "quality_on_sale_packs"
+    comment and poll_and_ingest_batch()'s own "is_quality_on_sale_pack"
+    branches for the third, fully independent pack category the
+    Director chose (option (b) of this function's own prior decision
+    point - never commingled with the prescore budget tracker).
 
-    NOT YET CALLED from submit_nightly_batch() - deliberately. Every
-    existing branch point in that function's own ingest path (poll_
-    and_ingest_batch()) keys its cost/log/storage logic off a single
-    "is_prescore" boolean per pack, re-used (not duplicated) by every
-    one of its ~11 call sites; wiring this new candidate list into
-    that pipeline needs the SAME choice the Director should make
-    explicitly before anything spends real money - either (a) tag
-    these packs "is_prescore": True too (zero new ingest code, but
-    commingles tonight's spend with the OWNER's own separate prescore
-    $-budget tracker, which runs independently of this feature and may
-    be configured at the same time), or (b) a third, fully independent
-    pack category (clean separation, but ~11 new untested branches in
-    a live, real-money-spending ingest function this sandbox cannot
-    exercise against a real Batch API response). Built and tested in
-    isolation so either choice is a small, mechanical follow-up once
-    made - see the TASK 44 report for this exact decision point.
+    `prior_entrant_count`: however many slots tonight's NORMAL entrants
+    plus prescore entrants already claim (submit_nightly_batch() passes
+    len(entrants) + len(prescore_entrants)) - "normal nightly newcomers
+    always go first, prescore next, quality-on-sale last" is enforced
+    simply by this function never being consulted until both those
+    counts are already fixed, same capacity discipline _select_
+    prescore_entrants() already applies (batch-level MAX_NIGHTLY_SCORES
+    AND daily-level TOP100_MAX_ENTRANTS_PER_UTC_DAY, whichever is
+    tighter), on top of `max_new_scores` (100/night) itself.
+
+    A ticker never re-scored once it has a CURRENT-rubric score - the
+    stale-rubric case is picked up exactly once, the same night its own
+    rubric becomes current (or whenever capacity allows), and never
+    returns here again afterward since research_score_stale_rubric then
+    reads False.
 
     Returns [(row_dict, "quality_on_sale"), ...] - row_dict shaped
     exactly like _select_prescore_entrants()'s own entrant rows
     ("ticker"/"company_name"/"sector"/"most_recent_quarter")."""
     try:
         result = quality_on_sale_candidates(log=log)
-        unscored = [c for c in result["candidates"] if c["research_score"] is None]
-        daily_room = TOP100_MAX_ENTRANTS_PER_UTC_DAY - daily_entrants_so_far
-        room = max(0, min(max_new_scores, daily_room))
+        needing_scoring = [
+            c for c in result["candidates"]
+            if c["research_score"] is None or c.get("research_score_stale_rubric")
+        ]
+        batch_room = MAX_NIGHTLY_SCORES - prior_entrant_count
+        daily_room = TOP100_MAX_ENTRANTS_PER_UTC_DAY - daily_entrants_so_far - prior_entrant_count
+        room = max(0, min(max_new_scores, batch_room, daily_room))
         if room <= 0:
-            log("[quality_on_sale] 0 new scores queued - no room left under tonight's daily cap")
+            log("[quality_on_sale] 0 new scores queued - no room left under tonight's batch/daily caps")
             return []
-        unscored = unscored[:room]
-        if not unscored:
-            log("[quality_on_sale] 0 new scores queued - every qualifier is already scored")
+        needing_scoring = needing_scoring[:room]
+        if not needing_scoring:
+            log("[quality_on_sale] 0 new scores queued - every qualifier is already scored "
+                "under the current rubric")
             return []
         entrants = [
             (
@@ -1967,13 +1988,15 @@ def _select_quality_on_sale_entrants(daily_entrants_so_far, today, log=print,
                  "sector": c.get("sector"), "most_recent_quarter": c.get("most_recent_quarter")},
                 "quality_on_sale",
             )
-            for c in unscored
+            for c in needing_scoring
         ]
+        _new_count = sum(1 for c in needing_scoring if c["research_score"] is None)
+        _stale_count = len(needing_scoring) - _new_count
         est_cost = estimate_degenerate_resend_cost_usd([e[0] for e in entrants])
-        log(f"[quality_on_sale] {len(entrants)} candidates would be queued for scoring "
-            f"tonight (of {len(result['candidates'])} qualifying, {result['total_qualifying']} "
-            f"total before the cap), est ${est_cost:.4f} - NOT YET SUBMITTED, see this "
-            f"function's own docstring for why")
+        log(f"[quality_on_sale] {len(entrants)} candidates queued for scoring tonight "
+            f"({_new_count} never scored, {_stale_count} previous-rubric; of "
+            f"{len(result['candidates'])} qualifying, {result['total_qualifying']} total "
+            f"before the cap), est ${est_cost:.4f}")
         return entrants
     except Exception as e:
         log(f"[quality_on_sale] entrant selection failed (non-fatal): {e}")
@@ -2033,16 +2056,27 @@ def log_quality_on_sale_nightly_summary(log=print):
     sale_candidates() exactly once - never a second, independently-
     filtered pass over the same data.
 
-    "0 scored tonight" and "cost $0.00" are reported EVERY night until
-    the Director picks between the two scoring-ingest-wiring options
-    _select_quality_on_sale_entrants()'s own docstring lays out (that
-    function is still never called from the real AI-scoring submission
-    pipeline, so nothing is actually spent on this feature yet) -
-    reported honestly, never fabricated. The separate "est $X if the
-    unscored group were scored tonight" figure is the SAME estimate_
-    degenerate_resend_cost_usd() order-of-magnitude estimate _select_
-    quality_on_sale_entrants() itself would log, computed here purely
-    for visibility (this function never queues/submits anything)."""
+    "needing scoring" counts a candidate as unscored when it has no
+    research_score at ALL, OR its only score is from a PREVIOUS rubric
+    (TASK 46 addendum, the CPRT case - see quality_on_sale_candidates()'s
+    own "research_score_stale_rubric" field). This function is purely a
+    SELECTION-TIME snapshot (called once per night, right after tonight's
+    Top 200 selection, before submit_nightly_batch() has even run yet) -
+    it never knows how many of tonight's candidates actually got scored,
+    since that depends on submit_nightly_batch()'s own capacity math
+    (normal entrants + prescore entrants claim room first - see _select_
+    quality_on_sale_entrants()'s own docstring) and the Batch API's own
+    turnaround (often not ingested until a LATER poll, possibly the next
+    night). The real scored count + actual ingest-time cost is logged
+    separately by poll_and_ingest_batch() ("[quality_on_sale] scored N,
+    cost $X") once a batch carrying quality-on-sale packs is actually
+    ingested - never duplicated or re-derived here. The "est $X if the
+    full needing-scoring group were queued tonight" figure below is the
+    SAME estimate_degenerate_resend_cost_usd() order-of-magnitude
+    estimate _select_quality_on_sale_entrants() itself logs, computed
+    here purely for visibility (this function never queues/submits
+    anything, and the real queued group may be smaller once capacity is
+    applied there)."""
     try:
         result = quality_on_sale_candidates(log=log)
     except Exception as e:
@@ -2050,24 +2084,27 @@ def log_quality_on_sale_nightly_summary(log=print):
         return
     candidates = result.get("candidates") or []
     total_qualifying = result.get("total_qualifying", len(candidates))
-    unscored = [c for c in candidates if c.get("research_score") is None]
-    needing_scoring = len(unscored)
+    needs_scoring_rows = [
+        c for c in candidates
+        if c.get("research_score") is None or c.get("research_score_stale_rubric")
+    ]
+    needing_scoring = len(needs_scoring_rows)
     also_in_top_200 = sum(1 for c in candidates if c.get("in_top_200"))
     try:
         est_cost = estimate_degenerate_resend_cost_usd([
             {"ticker": c["ticker"], "company_name": c.get("company_name"),
              "sector": c.get("sector"), "most_recent_quarter": c.get("most_recent_quarter")}
-            for c in unscored
-        ]) if unscored else 0.0
+            for c in needs_scoring_rows
+        ]) if needs_scoring_rows else 0.0
     except Exception as e:
         log(f"[quality_on_sale] nightly summary: cost estimate failed (non-fatal): {e}")
         est_cost = None
     _cost_str = f"${est_cost:.4f}" if est_cost is not None else "n/a"
     log(f"[quality_on_sale] {total_qualifying} total qualifiers tonight "
         f"({len(candidates)} shown after the {QUALITY_ON_SALE_MAX_CANDIDATES}-cap), "
-        f"{needing_scoring} needing scoring, 0 scored tonight (cost $0.00 - scoring-"
-        f"ingest wiring not yet live, see _select_quality_on_sale_entrants()'s own "
-        f"docstring), {_cost_str} est if the unscored group were scored tonight, "
+        f"{needing_scoring} needing scoring (unscored or previous-rubric) - selection "
+        f"snapshot only, est {_cost_str} if all of them were queued tonight (actual "
+        f"submission/capacity/cost logged separately once submitted and ingested), "
         f"{also_in_top_200} of {len(candidates)} shown also in the Top 200")
     top20 = candidates[:20]
     if top20:
@@ -4282,6 +4319,15 @@ def poll_and_ingest_batch(log=print):
     prescore_saved, prescore_failed = 0, 0
     prescore_input_tokens, prescore_output_tokens = 0, 0
     prescore_cache_creation_tokens, prescore_cache_read_tokens = 0, 0
+    # TASK 46 (Director-directed, 12 Nov 2026): parallel accounting for
+    # quality-on-sale-tagged packs - the Director's own chosen "third,
+    # fully independent pack category" (never the is_prescore bucket,
+    # never the prescore $-budget tracker). Same "every increment sits
+    # immediately beside the matching normal/prescore counter it
+    # mirrors" convention as the prescore block above.
+    qos_saved, qos_failed = 0, 0
+    qos_input_tokens, qos_output_tokens = 0, 0
+    qos_cache_creation_tokens, qos_cache_read_tokens = 0, 0
     try:
         for result in client.messages.batches.results(state["batch_id"]):
             entry = custom_id_map.get(result.custom_id)
@@ -4318,6 +4364,7 @@ def poll_and_ingest_batch(log=print):
             # for_batch().
             pack_schema_mode = entry.get("schema_mode", "legacy") if isinstance(entry, dict) else "legacy"
             is_prescore_pack = isinstance(entry, dict) and bool(entry.get("is_prescore"))
+            is_qos_pack = isinstance(entry, dict) and bool(entry.get("is_quality_on_sale"))
             if not entrants_map:
                 continue
             total_requests += 1
@@ -4341,6 +4388,8 @@ def poll_and_ingest_batch(log=print):
                     failed += 1
                     if is_prescore_pack:
                         prescore_failed += 1
+                    if is_qos_pack:
+                        qos_failed += 1
                     errored_count += 1
                     failure_reasons.append((ticker, err_type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     if errored_count <= _ERRORED_DETAIL_LIMIT:
@@ -4357,6 +4406,8 @@ def poll_and_ingest_batch(log=print):
                     failed += 1
                     if is_prescore_pack:
                         prescore_failed += 1
+                    if is_qos_pack:
+                        qos_failed += 1
                     failure_reasons.append((ticker, result.result.type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
                 _log_request_diagnostic(log, result.custom_id, list(entrants_map.keys()),
@@ -4383,6 +4434,11 @@ def poll_and_ingest_batch(log=print):
                 prescore_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
                 prescore_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
                 prescore_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
+            if is_qos_pack:
+                qos_input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
+                qos_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
+                qos_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
+                qos_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
             _degenerate_tickers = set()
             _request_blank_tickers = set()
             _matched_by = {}
@@ -4401,6 +4457,8 @@ def poll_and_ingest_batch(log=print):
                     failed += 1
                     if is_prescore_pack:
                         prescore_failed += 1
+                    if is_qos_pack:
+                        qos_failed += 1
                     failure_reasons.append((ticker, f"parse_error: {e}", entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                 log(f"[top100] batch result for {sorted(entrants_map)}: could not parse, skipped ({e})")
                 continue
@@ -4441,6 +4499,8 @@ def poll_and_ingest_batch(log=print):
                     failed += 1
                     if is_prescore_pack:
                         prescore_failed += 1
+                    if is_qos_pack:
+                        qos_failed += 1
                     failure_reasons.append((ticker, "request_blank", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     continue
                 if ticker in _degenerate_tickers:
@@ -4462,10 +4522,14 @@ def poll_and_ingest_batch(log=print):
                         saved += 1
                         if is_prescore_pack:
                             prescore_saved += 1
+                        if is_qos_pack:
+                            qos_saved += 1
                     else:
                         failed += 1
                         if is_prescore_pack:
                             prescore_failed += 1
+                        if is_qos_pack:
+                            qos_failed += 1
                         failure_reasons.append((ticker, "degenerate_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                         log(f"[top100] {ticker}: degenerate response (sentinel-filled template) - "
                             "not saved, will retry")
@@ -4480,6 +4544,8 @@ def poll_and_ingest_batch(log=print):
                     failed += 1
                     if is_prescore_pack:
                         prescore_failed += 1
+                    if is_qos_pack:
+                        qos_failed += 1
                     failure_reasons.append((ticker, "missing_from_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: missing from packed batch response, skipped")
                     continue
@@ -4505,6 +4571,8 @@ def poll_and_ingest_batch(log=print):
                 saved += 1
                 if is_prescore_pack:
                     prescore_saved += 1
+                if is_qos_pack:
+                    qos_saved += 1
     except Exception as e:
         # Audit fix A1 / Fable finding T1 (10 Oct 2026): a stream
         # exception (e.g. a dropped connection partway through
@@ -4566,6 +4634,23 @@ def poll_and_ingest_batch(log=print):
         log(f"[prescore] ingested: {prescore_saved} scored, {prescore_failed} failed, "
             f"actual ${prescore_cost:.2f}; cumulative ${_prescore_cumulative:.2f} "
             f"of ${_prescore_budget:.2f}")
+
+    # TASK 46 (Director-directed, 12 Nov 2026): fires only when THIS
+    # batch actually carried at least one quality-on-sale-tagged pack
+    # (qos_saved/qos_failed are both 0 on every night with nothing
+    # queued for this feature). The real, ingest-time cost of exactly
+    # those packs - never the pre-submission estimate - per the
+    # Director's own exact requested format: "scored N, cost $X". No
+    # cumulative/budget tracker, unlike prescore above - the Director's
+    # own explicit choice was NOT to commingle this with that separate
+    # $-budget feature, and never asked for one of its own here either.
+    if qos_saved or qos_failed:
+        qos_cost = estimate_batch_cost_usd(
+            qos_input_tokens, qos_output_tokens,
+            qos_cache_creation_tokens, qos_cache_read_tokens,
+        )
+        log(f"[quality_on_sale] scored {qos_saved}, cost ${qos_cost:.2f} "
+            f"({qos_failed} failed)")
 
     # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed): schema_mode + packed/solo split
@@ -5193,6 +5278,18 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     prescore_entrants = [] if force else _select_prescore_entrants(
         len(entrants), daily["entrants"], today, log=log)
 
+    # TASK 46 (Director-directed, 12 Nov 2026): "Quality on sale"
+    # scoring - its own independent category, consulted LAST (after
+    # both normal entrants and prescore entrants have already claimed
+    # their own capacity) - never on the force=True path (an explicit
+    # owner-initiated refresh never also spends on this feature). See
+    # _select_quality_on_sale_entrants()'s own docstring for the full
+    # capacity/rubric-staleness rule; it never raises and returns []
+    # whenever nothing qualifies or no room is left, so this line is a
+    # no-op (byte-identical to today) on a night with nothing to queue.
+    quality_on_sale_entrants = [] if force else _select_quality_on_sale_entrants(
+        len(entrants) + len(prescore_entrants), daily["entrants"], today, log=log)
+
     # v6 packed requests (1 Oct 2026, owner-directed): group tonight's
     # entrants into packs of up to TOP100_COMPANIES_PER_REQUEST - one
     # Batches API Request per pack, not per company (the actual saving
@@ -5243,6 +5340,25 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         for i in range(0, len(_prescore_normal), TOP100_COMPANIES_PER_REQUEST)
     ]
 
+    # TASK 46 (Director-directed, 12 Nov 2026): quality-on-sale entrants
+    # get their OWN, separate packs too - a THIRD, fully independent
+    # category, same "never merged into `packs`/prescore_packs, same
+    # pack size/solo-retry rule" reasoning as the prescore block above.
+    # custom_id_map tags each pack with "is_quality_on_sale" below so
+    # poll_and_ingest_batch() can tell these apart from both normal AND
+    # prescore packs at ingest time - never commingled with the
+    # prescore $-budget tracker (the Director's own explicit choice).
+    _qos_solo_tickers = {
+        row["ticker"] for row, _reason in quality_on_sale_entrants
+        if (_failures_for_packing.get(row["ticker"]) or {}).get("reason") == "request_blank"
+    }
+    _qos_solo = [e for e in quality_on_sale_entrants if e[0]["ticker"] in _qos_solo_tickers]
+    _qos_normal = [e for e in quality_on_sale_entrants if e[0]["ticker"] not in _qos_solo_tickers]
+    quality_on_sale_packs = [[e] for e in _qos_solo] + [
+        _qos_normal[i:i + TOP100_COMPANIES_PER_REQUEST]
+        for i in range(0, len(_qos_normal), TOP100_COMPANIES_PER_REQUEST)
+    ]
+
     # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed): read the switch ONCE for this
     # whole submission (not per-pack) - see top200_schema_mode()'s own
@@ -5270,11 +5386,14 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         log("[top100] anthropic package not available - skipping tonight's batch")
         return None
 
-    # Pre-score packs are appended AFTER every normal pack - custom_id
-    # numbering just continues the same sequence, nothing special about
-    # where the boundary falls.
-    all_packs = packs + prescore_packs
-    pack_is_prescore = [False] * len(packs) + [True] * len(prescore_packs)
+    # Pre-score packs are appended AFTER every normal pack, quality-on-
+    # sale packs after those - custom_id numbering just continues the
+    # same sequence, nothing special about where either boundary falls.
+    all_packs = packs + prescore_packs + quality_on_sale_packs
+    pack_is_prescore = [False] * len(packs) + [True] * len(prescore_packs) + [False] * len(quality_on_sale_packs)
+    pack_is_quality_on_sale = (
+        [False] * len(packs) + [False] * len(prescore_packs) + [True] * len(quality_on_sale_packs)
+    )
 
     custom_id_map = {}
     requests = []
@@ -5295,6 +5414,7 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         custom_id_map[custom_id] = {
             "entrants": pack_entrants_meta, "schema_mode": schema_mode,
             "is_prescore": pack_is_prescore[i],
+            "is_quality_on_sale": pack_is_quality_on_sale[i],
         }
         requests.append(Request(
             custom_id=custom_id,
@@ -5322,17 +5442,28 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
 
     top100_store.clear_submitting_marker()
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
-    # Pre-score entrants count toward the SAME daily entrant total as
-    # every normal entrant (the instruction's own "never raise those
-    # caps" rule) - this is what makes tomorrow night's own capacity
-    # check correctly see tonight's real combined total.
-    top100_store.record_daily_submission(today.isoformat(), len(entrants) + len(prescore_entrants))
+    # Pre-score AND quality-on-sale entrants count toward the SAME
+    # daily entrant total as every normal entrant (the instruction's
+    # own "never raise those caps" rule) - this is what makes tomorrow
+    # night's own capacity check correctly see tonight's real combined
+    # total. TASK 46 (12 Nov 2026): quality_on_sale_entrants was
+    # missing from this call entirely until now - caught here, before
+    # this bug could let _select_quality_on_sale_entrants()'s own
+    # daily_room math silently under-count tonight's real submission
+    # and, over consecutive nights, push the real total past
+    # TOP100_MAX_ENTRANTS_PER_UTC_DAY.
+    top100_store.record_daily_submission(
+        today.isoformat(), len(entrants) + len(prescore_entrants) + len(quality_on_sale_entrants))
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
         f"in {len(packs)} packed request{'s' if len(packs) != 1 else ''} "
         f"({n_packed_packs} packed, {n_solo_packs} solo) for {model}, schema_mode={schema_mode}"
         + (f"; plus {len(prescore_entrants)} pre-score compan{'y' if len(prescore_entrants) == 1 else 'ies'} "
            f"in {len(prescore_packs)} more request{'s' if len(prescore_packs) != 1 else ''}"
-           if prescore_entrants else ""))
+           if prescore_entrants else "")
+        + (f"; plus {len(quality_on_sale_entrants)} quality-on-sale compan"
+           f"{'y' if len(quality_on_sale_entrants) == 1 else 'ies'} in {len(quality_on_sale_packs)} "
+           f"more request{'s' if len(quality_on_sale_packs) != 1 else ''}"
+           if quality_on_sale_entrants else ""))
     return batch.id
 
 
