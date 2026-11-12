@@ -6671,6 +6671,33 @@ def _value_score_main_driver(row):
     return _VALUE_SCORE_COMPONENT_LABELS[biggest]
 
 
+def quality_moat_by_ticker(log=print):
+    """TASK 50 (Director-directed, 12 Nov 2026) - {ticker: {"quality":
+    v1, "quality_v2": v2, "moat": moat}} for the owner-only Top 200
+    Excel export's own Quality (v1)/Quality v2/Moat columns.
+
+    Quality v1/v2/Moat are never stored on a top100_store pool row
+    itself (save_pool()'s own column list has no such fields - see
+    that function's own docstring) - they live only on each night's
+    already-scanned universe rows, the exact same place quality_
+    review_tables()/quality_on_sale_candidates() already read them
+    from. Reusing _build_best_by_ticker(quality_exception_override=
+    True) here (same override quality_on_sale_candidates() uses, so a
+    ticker already admitted into the real Top 200 or a scoring
+    candidate tab is never missing here for a reason unrelated to its
+    own quality/moat data) is a plain re-read of already-saved scan
+    JSON - no new network call, no new AI score, same cost class as
+    the _build_best_by_ticker() call quality_on_sale_candidates()
+    already pays. The export button is itself owner-only, so this
+    extra pass is never charged to an ordinary visitor."""
+    best_by_ticker, _ = _build_best_by_ticker(log=log, quality_exception_override=True)
+    return {
+        ticker: {"quality": row.get("quality"), "quality_v2": row.get("quality_v2"),
+                 "moat": row.get("moat")}
+        for ticker, row in best_by_ticker.items()
+    }
+
+
 def _dropout_review_flagged(moat, research_score, munger_quality, market_structure, quality_v1):
     """TASK 47's own "ANY of" rule for the Drop-outs to review table -
     the Director's own exact thresholds, one `if` per criterion so each

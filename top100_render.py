@@ -9,6 +9,7 @@ wiring). Reads top100_store.py directly (no Streamlit dependency in
 that module) and top100_engine.py for the pure composite/changes math.
 """
 
+import base64
 import datetime as _dt
 import html
 import os
@@ -16,6 +17,7 @@ import os
 import streamlit as st
 
 import compounder_ui
+import data_export_engine
 import drop_chip_store
 import fcf_valuation_engine
 import i18n
@@ -1045,6 +1047,16 @@ def _market_display_name(market, lang):
 
 def _market_tab_label(group_key, lang):
     return _t("tab_market", lang, country=_market_display_name(group_key, lang))
+
+
+def _market_export_key(group_key):
+    """TASK 50 (Director-directed, 12 Nov 2026) - a filename-safe slug
+    for a market tab's own Excel export (StocksDeepDive_<slug>_<date>.
+    xlsx) - `group_key` is _new_market_tab_plan()'s own untranslated
+    country/region key ("Canada", "United Kingdom", "Europe", ...),
+    lowercased with spaces turned into underscores; never the
+    translated tab label, which can carry accents/the "·" separator."""
+    return group_key.lower().replace(" ", "_")
 
 
 def _market_tab_country_badge_html(market, lang):
@@ -2522,6 +2534,205 @@ def _is_owner_for_refresh():
         return False
 
 
+# -----------------------------------------------------------------
+# TASK 50 (Director-directed, 12 Nov 2026) - owner-only "Download
+# (Excel)" export, one per Top 200 tab. Every row/column value here is
+# ALREADY on the page for a rated card (score_row's own v3/v5 fields,
+# support_levels_store.get()/drop_chip_store.get() - the same two
+# stores _support_chip_html()/_drop_chip_html() already read per card,
+# _tradability_spread_pct(), top100_store.current_streak_start_dates())
+# except Quality (v1)/Quality v2/Moat, which this page has never shown
+# anywhere before - see top100_engine.quality_moat_by_ticker()'s own
+# docstring for why that one extra (still network/scoring-free) lookup
+# is needed and why it's safe to pay only for the owner.
+#
+# A ROW SELECTION FUNCTION PER TAB, mirroring that tab's own render
+# function's selection logic (sort/gate/filter/cap) via the SAME
+# shared primitives (_sort_and_gate_rated()/_ranked_rows_after_
+# filters()) rather than sharing the render function itself - kept
+# deliberately separate from (not spliced into) the existing render_*
+# functions, so this read-only addition can never change what an
+# ordinary visitor's page render does, per this repo's own "prefer
+# additive changes... especially on read paths real visitors hit right
+# now" rule. "Paginated tabs: ALL rows" (the Quality on sale tab's own
+# Show-all toggle) is satisfied by iterating the FULL candidate list
+# here, never the page-size-limited slice the render function itself
+# displays by default.
+# -----------------------------------------------------------------
+
+
+def _top20_tab_export_rows(enriched, sort_mode, currency=None, filters=None,
+                            exclude_tickers=None, only_tickers=None):
+    """Same selection _render_top20_tab() itself applies (sort/gate,
+    currency filter, exclude/only tickers, the 20-row cap, then the
+    filter bar) - used for Mixed/USA/Foreign US-listed."""
+    rows = _sort_and_gate_rated(enriched, sort_mode)
+    if currency:
+        rows = [r for r in rows if r["currency"] == currency]
+    if exclude_tickers is not None:
+        rows = [r for r in rows if r["ticker"] not in exclude_tickers]
+    if only_tickers is not None:
+        rows = [r for r in rows if r["ticker"] in only_tickers]
+    rows = rows[:20]
+    return _ranked_rows_after_filters(rows, filters)
+
+
+def _market_tab_export_rows(market_rows, sort_mode, filters=None):
+    """Same selection _render_top20_market_tab() itself applies."""
+    rows = _sort_and_gate_rated(market_rows, sort_mode)
+    rows = rows[:20]
+    return _ranked_rows_after_filters(rows, filters)
+
+
+def _australia_tab_export_rows(enriched, sort_mode, filters=None):
+    """Same selection _render_top20_australia_tab() itself applies -
+    the guaranteed-twenty combined pool-AUD + ASX-extension list, never
+    capped at 20 (that tab shows every qualifying row, same as here)."""
+    pool_au = [r for r in enriched if r["currency"] == "AUD"]
+    combined = pool_au + _enriched_asx_extension()
+    rows = _sort_and_gate_rated(combined, sort_mode)
+    return _ranked_rows_after_filters(rows, filters)
+
+
+def _full100_tab_export_rows(enriched, sort_mode, filters=None):
+    """Same selection _render_full100_tab() itself applies to its own
+    RATED list - the bottom "Not rated" shelf is never exported (it has
+    none of this export's per-row data: no score_row, no dimensions,
+    often no Value Score)."""
+    rows = _sort_and_gate_rated(enriched, sort_mode)
+    return _ranked_rows_after_filters(rows, filters)
+
+
+def _candidate_tab_export_rows(candidates, by_ticker):
+    """Shared by the "Quality on sale" and "Near the cut-off" export
+    buttons - same rank-while-skipping-unrated loop _render_quality_
+    on_sale_tab()/_render_near_cutoff_tab() themselves run, over the
+    FULL candidate list (never the page-size-limited slice either tab
+    displays by default) - "paginated tabs: ALL rows" from the task's
+    own spec."""
+    ranked = []
+    rank = 0
+    for cand in candidates:
+        row = by_ticker.get(cand["ticker"])
+        if not row or not row.get("score_row") or (row["score_row"] or {}).get("not_rated"):
+            continue
+        rank += 1
+        ranked.append((rank, row))
+    return ranked
+
+
+def _top200_export_row(rank, row, *, quality_moat_map, top200_rank_map, qos_rank_map,
+                        streak_start_map, gap_to_cutoff=None):
+    """One row of the Excel export, in the Director's own exact
+    column order (data_export_engine.TOP200_EXPORT_COLUMNS) - English
+    values only, same as every other export this site already offers
+    (table_to_csv_bytes()/build_deep_dive_workbook() never localize
+    their own cell contents either); the page's own lang only picks
+    which language the button/column headers show in, not the data.
+    `gap_to_cutoff` (float|None): only the "Near the cut-off" tab's own
+    caller passes a value - every other tab's export has no such
+    column at all (this function's own caller decides whether to use
+    it, via `extra_column` on data_export_engine.build_top200_tab_
+    workbook())."""
+    ticker = row["ticker"]
+    score_row = row.get("score_row") or {}
+    qm = (quality_moat_map or {}).get(ticker) or {}
+    support_entry = support_levels_store.get(ticker) or {}
+    drop_entry = drop_chip_store.get(ticker) or {}
+    has_support = bool(support_entry.get("has_support"))
+    psychology_bucket = _sentiment_bucket(row.get("psychology"))
+    scored_at = score_row.get("scored_at")
+    out = {
+        "Rank": rank,
+        "Ticker": ticker,
+        "Company": row.get("company_name"),
+        "Country/Market": peer_context.market_for(ticker),
+        "Sector": row.get("sector"),
+        "Research Score": row.get("composite"),
+        "Value Score": row.get("value_score"),
+        "MOS %": row.get("mos_pct"),
+        "Price": row.get("price"),
+        "Currency": row.get("currency"),
+        "Intrinsic Value": row.get("intrinsic_value"),
+        "Quality (v1)": qm.get("quality"),
+        "Quality v2": qm.get("quality_v2"),
+        "Moat": qm.get("moat"),
+        "Dividend %": row.get("dividend_yield_pct"),
+        "Psychology label": psychology_bucket.capitalize() if psychology_bucket else None,
+        "Support date": support_entry.get("support_date") if has_support else None,
+        "Support price": support_entry.get("support_price") if has_support else None,
+        "% above support": support_entry.get("pct_above_support") if has_support else None,
+        "3y peak date": drop_entry.get("peak_date"),
+        "3y peak price": drop_entry.get("peak_price"),
+        "% below 3y peak": drop_entry.get("drop_pct"),
+        "In Top 200 (rank)": (top200_rank_map or {}).get(ticker),
+        "On Quality on sale (rank)": (qos_rank_map or {}).get(ticker),
+        "Market structure": score_row.get("market_structure"),
+        "Munger-quality": score_row.get("munger_quality"),
+        "Big wave": score_row.get("big_wave"),
+        "Easy decision": score_row.get("one_foot_hurdle"),
+        "Current headwind": score_row.get("current_headwind"),
+        "Research read date": scored_at[:10] if scored_at else None,
+        "Recently added date": (streak_start_map or {}).get(ticker),
+        "Spread %": _tradability_spread_pct(ticker),
+    }
+    if gap_to_cutoff is not None:
+        out["Gap to cut-off"] = gap_to_cutoff
+    return out
+
+
+def _render_top200_export_button(tab_key, ranked_fn, *, quality_moat_map, top200_rank_map,
+                                  qos_rank_map, streak_start_map, gap_map=None,
+                                  extra_column=None, lang="en"):
+    """The owner-only "⬇ Download (Excel)" pill - first row of a Top
+    200 tab's own content, right-aligned on its own line, below the
+    tab bar and above the first card (the caller places this call
+    before its own render_fn()). Visible/triggerable ONLY for _is_
+    owner_for_refresh() - the SAME owner check every other admin-only
+    control on this page already uses; every other visitor, signed in
+    or not, gets nothing on this line at all, not even a disabled
+    button.
+
+    A plain data-URI <a download> link rather than st.download_button()
+    - CLAUDE.md's own Streamlit trap note says unsafe_allow_html=True
+    strips `onclick`, but this needs no `onclick` at all: the browser's
+    native `download` attribute on an ordinary anchor tag triggers the
+    save with one click and no dialog, while staying full HTML/CSS so
+    it can be styled as this site's own small outlined pill chip
+    instead of Streamlit's native button chrome, exactly the Director's
+    own spec. `ranked_fn` (zero-arg callable) is called ONLY after the
+    owner check passes - an ordinary visitor's render never pays even
+    the cheap row-selection cost. An empty tab (ranked_fn() returns
+    nothing) renders no button at all."""
+    if not _is_owner_for_refresh():
+        return
+    ranked = ranked_fn()
+    if not ranked:
+        return
+    rows = [
+        _top200_export_row(
+            i, row, quality_moat_map=quality_moat_map, top200_rank_map=top200_rank_map,
+            qos_rank_map=qos_rank_map, streak_start_map=streak_start_map,
+            gap_to_cutoff=(gap_map or {}).get(row["ticker"]),
+        )
+        for i, row in ranked
+    ]
+    xlsx_bytes = data_export_engine.build_top200_tab_workbook(rows, extra_column=extra_column)
+    b64 = base64.b64encode(xlsx_bytes).decode("ascii")
+    file_name = data_export_engine.top200_export_filename(tab_key)
+    label = html.escape(_t("export_button", lang))
+    st.markdown(
+        "<div style='display:flex;justify-content:flex-end;margin-bottom:8px;'>"
+        "<a href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;"
+        f"base64,{b64}' download='{html.escape(file_name)}' "
+        "style='display:inline-flex;align-items:center;gap:5px;border-radius:999px;"
+        "padding:4px 14px;font-size:11.5px;font-weight:700;background:transparent;"
+        "border:1px solid #2a3f63;color:#8aa0b8;text-decoration:none;cursor:pointer;'>"
+        f"⬇ {label}</a></div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _handle_refresh_all_click(lang):
     """The Refresh all button's own click handler - kept as a separate,
     directly-callable function (rather than inlined into the button's
@@ -2883,6 +3094,46 @@ def render_top100_page(lang="en"):
         except Exception as e:
             print(f"[near_cutoff] render_top100_page: candidate lookup failed: {e}")
 
+    # TASK 50 (Director-directed, 12 Nov 2026) - owner-only Top 200
+    # Excel export: the per-render context every tab's export button
+    # needs, computed ONCE and ONLY for the owner (an ordinary visitor
+    # never pays for any of this - every lookup below sits behind the
+    # same _is_owner_for_refresh() check the button itself re-checks).
+    # `_qos_by_ticker`/`_ncu_by_ticker` reuse the SAME enrichment
+    # helpers _render_quality_on_sale_tab()/_render_near_cutoff_tab()
+    # themselves call, so the export's own row set for those two tabs
+    # is provably the same companies, same rated/unrated skip rule, as
+    # what the tab actually displays.
+    _quality_moat_map = {}
+    _streak_start_map = {}
+    _qos_by_ticker = {}
+    _ncu_by_ticker = {}
+    if _is_owner_for_refresh():
+        try:
+            _quality_moat_map = top100_engine.quality_moat_by_ticker()
+        except Exception as e:
+            print(f"[top200_export] quality/moat lookup failed: {e}")
+        try:
+            _export_tickers = set(_recent_badge_tickers)
+            if _qos_result:
+                _export_tickers |= {c["ticker"] for c in (_qos_result.get("candidates") or [])}
+            if _ncu_result:
+                _export_tickers |= {c["ticker"] for c in (_ncu_result.get("candidates") or [])}
+            _streak_start_map = top100_store.current_streak_start_dates(list(_export_tickers))
+        except Exception as e:
+            print(f"[top200_export] streak-start lookup failed: {e}")
+        if _qos_result:
+            _qos_by_ticker = _quality_on_sale_candidate_rows(_qos_result.get("candidates") or [])
+        if _ncu_result:
+            _ncu_by_ticker = _near_cutoff_candidate_rows(_ncu_result.get("candidates") or [])
+
+    def _export_button(tab_key, ranked_fn, gap_map=None, extra_column=None):
+        return lambda: _render_top200_export_button(
+            tab_key, ranked_fn, quality_moat_map=_quality_moat_map,
+            top200_rank_map=_top200_rank_map, qos_rank_map=_qos_rank_map,
+            streak_start_map=_streak_start_map, gap_map=gap_map,
+            extra_column=extra_column, lang=lang)
+
     # TASK 49 (Director-directed, 12 Nov 2026) - the tab order is now:
     # Mixed | Quality on sale | Australia | USA | Foreign US-listed |
     # (one tab per other market present, _new_market_tab_plan()'s own
@@ -2899,45 +3150,84 @@ def render_top100_page(lang="en"):
     # Mixed" the default selected tab, unchanged from before this task.
     _tab_specs = []
 
-    _tab_specs.append((_t("tab_mixed", lang), lambda: _render_top20_tab(
-        enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges)))
+    _tab_specs.append((
+        _t("tab_mixed", lang),
+        _export_button("mixed", lambda: _top20_tab_export_rows(enriched, sort_mode, filters=filters)),
+        lambda: _render_top20_tab(
+            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges),
+    ))
 
     if _show_quality_on_sale_tab:
-        _tab_specs.append((_t("tab_quality_on_sale", lang), lambda: _render_quality_on_sale_tab(
-            lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
-            top_200_rank_map=_top200_rank_map, candidates_result=_qos_result)))
+        _tab_specs.append((
+            _t("tab_quality_on_sale", lang),
+            _export_button("quality_on_sale", lambda: _candidate_tab_export_rows(
+                (_qos_result or {}).get("candidates") or [], _qos_by_ticker)),
+            lambda: _render_quality_on_sale_tab(
+                lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
+                top_200_rank_map=_top200_rank_map, candidates_result=_qos_result),
+        ))
 
-    _tab_specs.append((_t("tab_au", lang), lambda: _render_top20_australia_tab(
-        enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges)))
+    _tab_specs.append((
+        _t("tab_au", lang),
+        _export_button("au", lambda: _australia_tab_export_rows(enriched, sort_mode, filters=filters)),
+        lambda: _render_top20_australia_tab(
+            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges),
+    ))
 
-    _tab_specs.append((_t("tab_us", lang), lambda: _render_top20_tab(
-        enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
-        exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges)))
+    _tab_specs.append((
+        _t("tab_us", lang),
+        _export_button("us", lambda: _top20_tab_export_rows(
+            enriched, sort_mode, currency="USD", filters=filters, exclude_tickers=_foreign_tickers)),
+        lambda: _render_top20_tab(
+            enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
+            exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges),
+    ))
 
     if _show_foreign_tab:
-        _tab_specs.append((_t("tab_us_foreign", lang), lambda: _render_top20_tab(
-            enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
-            only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country,
-            recent_badge_map=_recent_badges)))
+        _tab_specs.append((
+            _t("tab_us_foreign", lang),
+            _export_button("us_foreign", lambda: _top20_tab_export_rows(
+                enriched, sort_mode, currency="USD", filters=filters, only_tickers=_foreign_tickers)),
+            lambda: _render_top20_tab(
+                enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
+                only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country,
+                recent_badge_map=_recent_badges),
+        ))
 
     for group_key, market_rows in market_plan:
         _tab_specs.append((
             _market_tab_label(group_key, lang),
+            _export_button(
+                _market_export_key(group_key),
+                lambda market_rows=market_rows: _market_tab_export_rows(market_rows, sort_mode, filters=filters)),
             lambda group_key=group_key, market_rows=market_rows: _render_top20_market_tab(
                 enriched, lang, finer_industry, sort_mode, market_rows, group_key,
                 filters=filters, recent_badge_map=_recent_badges),
         ))
 
-    _tab_specs.append((_t("tab_full", lang), lambda: _render_full100_tab(
-        enriched, lang, finer_industry, sort_mode, filters=filters,
-        recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map)))
+    _tab_specs.append((
+        _t("tab_full", lang),
+        _export_button("full_200", lambda: _full100_tab_export_rows(enriched, sort_mode, filters=filters)),
+        lambda: _render_full100_tab(
+            enriched, lang, finer_industry, sort_mode, filters=filters,
+            recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map),
+    ))
 
     if _show_near_cutoff_tab:
-        _tab_specs.append((_t("tab_near_cutoff", lang), lambda: _render_near_cutoff_tab(
-            lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
-            quality_on_sale_rank_map=_qos_rank_map, candidates_result=_ncu_result)))
+        _ncu_gap_map = {c["ticker"]: c["gap_to_cutoff"] for c in ((_ncu_result or {}).get("candidates") or [])}
+        _tab_specs.append((
+            _t("tab_near_cutoff", lang),
+            _export_button(
+                "near_cutoff",
+                lambda: _candidate_tab_export_rows((_ncu_result or {}).get("candidates") or [], _ncu_by_ticker),
+                gap_map=_ncu_gap_map, extra_column="Gap to cut-off"),
+            lambda: _render_near_cutoff_tab(
+                lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
+                quality_on_sale_rank_map=_qos_rank_map, candidates_result=_ncu_result),
+        ))
 
-    tabs = st.tabs([label for label, _render_fn in _tab_specs])
-    for tab, (_label, render_fn) in zip(tabs, _tab_specs):
+    tabs = st.tabs([label for label, _export_fn, _render_fn in _tab_specs])
+    for tab, (_label, export_fn, render_fn) in zip(tabs, _tab_specs):
         with tab:
+            export_fn()
             render_fn()

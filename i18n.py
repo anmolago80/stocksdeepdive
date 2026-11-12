@@ -4133,6 +4133,9 @@ EN = {
     "top100.tab_near_cutoff": "Near the cut-off",
     "top100.near_cutoff_empty": "No companies within 2 points of the cut-off today.",
     "top100.near_cutoff_gap_chip": "-{gap} below cut-off",
+    # TASK 50 (Director-directed, 12 Nov 2026): owner-only Excel export
+    # button, one per Top 200 tab.
+    "top100.export_button": "Download (Excel)",
     # TASK 42 item 6b (Director-directed): the "good company, fallen a
     # long way" tab.
     "top100.tab_quality_on_sale": "Quality on sale",
@@ -8034,6 +8037,7 @@ ES = {
     "top100.tab_near_cutoff": "Cerca del corte",
     "top100.near_cutoff_empty": "Hoy no hay empresas a menos de 2 puntos del corte.",
     "top100.near_cutoff_gap_chip": "-{gap} por debajo del corte",
+    "top100.export_button": "Descargar (Excel)",
     "top100.tab_quality_on_sale": "Calidad en oferta",
     "top100.quality_on_sale_show_all_button": "Mostrar todo ({count})",
     "top100.tab_market": "Top 20 · {country}",

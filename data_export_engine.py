@@ -346,3 +346,61 @@ def table_to_csv_bytes(df):
     (CSV)" buttons - a plain pandas DataFrame -> in-memory CSV bytes, no
     reshaping (those tables are already exactly what's on screen)."""
     return df.to_csv(index=False).encode("utf-8")
+
+
+# -----------------------------------------------------------------
+# TASK 50 (Director-directed, 12 Nov 2026) - owner-only "Download
+# (Excel)" export, one per Top 200 tab. Domain-agnostic on purpose:
+# this module knows nothing about Top 200 cards/tabs/gates - top100_
+# render.py builds the row dicts (one per company, already in that
+# tab's own display order) and this module only turns them into a
+# workbook, same split every other export in this file already keeps.
+# -----------------------------------------------------------------
+TOP200_EXPORT_COLUMNS = [
+    "Rank", "Ticker", "Company", "Country/Market", "Sector",
+    "Research Score", "Value Score", "MOS %", "Price", "Currency",
+    "Intrinsic Value", "Quality (v1)", "Quality v2", "Moat",
+    "Dividend %", "Psychology label", "Support date", "Support price",
+    "% above support", "3y peak date", "3y peak price",
+    "% below 3y peak", "In Top 200 (rank)", "On Quality on sale (rank)",
+    "Market structure", "Munger-quality", "Big wave", "Easy decision",
+    "Current headwind", "Research read date", "Recently added date",
+    "Spread %",
+]
+
+
+def top200_export_filename(tab_key, date_str=None):
+    """StocksDeepDive_<tab>_<YYYY-MM-DD>.xlsx - `tab_key` is the
+    caller's own short, filename-safe slug for the tab (e.g. "mixed",
+    "quality_on_sale", "au", "near_cutoff"), never the translated tab
+    label (which can contain spaces/accents/the "·" separator)."""
+    date_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"StocksDeepDive_{tab_key}_{date_str}.xlsx"
+
+
+def build_top200_tab_workbook(rows, extra_column=None):
+    """One sheet, frozen header row, a filter dropdown on every column
+    (the task's own spec) - `rows`: a list of dicts each keyed by
+    TOP200_EXPORT_COLUMNS (plus `extra_column` when given, the "Near
+    the cut-off" tab's own additional "Gap to cut-off" column), already
+    in the exact order the caller wants exported (this function never
+    sorts/filters - that's the Top 200 render layer's own job, so the
+    export can never drift from what the tab actually shows)."""
+    columns = list(TOP200_EXPORT_COLUMNS)
+    if extra_column:
+        columns = columns + [extra_column]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Top 200"
+    ws.append(columns)
+    for cell in ws[1]:
+        cell.font = _HEADER_FONT
+    for row in rows:
+        ws.append([row.get(c) for c in columns])
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for i, col in enumerate(columns, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = max(12, min(32, len(col) + 4))
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
