@@ -280,6 +280,56 @@ QUALITY_EXCEPTION_MAX_MULTIPLE = 4.0
 # condition means.
 _QUALITY_EXCEPTION_NON_STATEMENT_FCF_SOURCES = ("info", "none", "manual", None)
 
+# TASK 45 item 5 (Director-directed, 12 Nov 2026, 12 Nov live preview
+# review): cyclicals excluded from the high-quality exception entirely
+# - a cyclical business's Moat/Quality readings are typically measuring
+# earnings at (or near) the TOP of its cycle, exactly where a DCF is
+# most likely to overshoot - LTM (LATAM Airlines, 3.67x) and HMY
+# (Harmony Gold, 3.20x) both passed every other condition in today's
+# preview. The exception is built for a genuinely durable business
+# having one bad DCF input (the ADBE case), never for a cyclical
+# business whose "quality" is itself cycle-dependent. Matched against
+# the row's own stored "Sector" (Yahoo's own broad sector string,
+# lowercased) - Energy and Basic Materials (which already covers gold/
+# metals mining; Yahoo classifies a gold miner like HMY under "Basic
+# Materials") are both caught this way. Airlines is NOT its own Yahoo
+# sector (airlines sit under "Industrials", shared with many non-
+# cyclical names) - see _quality_exception_excluded_airline() below for
+# that separate, industry-level check.
+QUALITY_EXCEPTION_EXCLUDED_SECTORS = frozenset({"energy", "basic materials"})
+
+
+def _quality_exception_excluded_airline(ticker, log=print):
+    """TASK 45 item 5 (Director-directed, 12 Nov 2026): Airlines is a
+    Yahoo .info["industry"] value, not a .info["sector"] one (Yahoo
+    puts airlines under sector "Industrials") - and only "Sector" is
+    stored on the scan row at all (see nightly_scan.py's own row-
+    building), so this needs its own fresh look-up rather than a row-
+    level check like QUALITY_EXCEPTION_EXCLUDED_SECTORS above.
+
+    Reads fundamentals_data.get_bundle(ticker)'s own already-cached
+    info dict - the SAME bundle quality_v2_engine.py/moat_engine.py
+    already fetched moments earlier in this same nightly pass (a cache
+    hit for every ticker that reaches here), identical "zero extra
+    network cost" precedent as deep_dive_engine.py's own Quality v2
+    Deep Dive line look-up. Called only for a row that's ALREADY DCF-
+    unreliable and has ALREADY passed every other _quality_exception_
+    admits() condition (a small minority of rows per night), never for
+    every row in the universe.
+
+    Never raises - a lookup failure is logged and returns False (this
+    EXTRA check simply can't rule the ticker out that night; every
+    other _quality_exception_admits() condition still applies as
+    normal, same fail-open-on-the-new-check-only posture as every other
+    defensive per-ticker guard in this function)."""
+    try:
+        info = (fundamentals_data.get_bundle(ticker) or {}).get("info") or {}
+    except Exception as e:
+        log(f"[top100] quality exception: {ticker} airline-industry lookup failed "
+            f"(non-fatal, exception admission proceeds on its other criteria): {e}")
+        return False
+    return "airline" in (info.get("industry") or "").lower()
+
 
 def _quality_exception_admits(row):
     """TASK 37's own eligibility test for the high-quality exception to
@@ -313,6 +363,15 @@ def _quality_exception_admits(row):
         for - a missing/zero Price or Intrinsic Value fails this
         condition too, same "never defaults to admit" rule as every
         other check here)
+      - row's own "Sector" is not one of QUALITY_EXCEPTION_EXCLUDED_
+        SECTORS (TASK 45 item 5, Director-directed, 12 Nov 2026,
+        12 Nov live preview review: Energy, Basic Materials - which
+        already covers gold/metals mining - are excluded; a cyclical's
+        high Moat/Quality readings typically reflect cyclical-PEAK
+        earnings, exactly where a DCF overshoots). Airlines - not its
+        own Yahoo sector - is checked SEPARATELY by the caller via
+        _quality_exception_excluded_airline() (needs a fresh info
+        look-up this pure, row-only function doesn't make).
     Never raises - a missing/None field on ANY of these simply fails
     that one condition (never defaults to "admit")."""
     moat = row.get("Moat")
@@ -331,6 +390,8 @@ def _quality_exception_admits(row):
         return False
     iv, price = row.get("Intrinsic Value"), row.get("Price")
     if not iv or not price or price <= 0 or (iv / price) > QUALITY_EXCEPTION_MAX_MULTIPLE:
+        return False
+    if (row.get("Sector") or "").strip().lower() in QUALITY_EXCEPTION_EXCLUDED_SECTORS:
         return False
     return True
 
@@ -1168,7 +1229,16 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                     # exception_admitted_row (gate AND eligible) ever
                     # lets the row fall through to normal eligibility
                     # instead of being excluded.
-                    exception_eligible = _quality_exception_admits(row)
+                    # TASK 45 item 5 (Director-directed, 12 Nov 2026):
+                    # the airline check only ever runs for a row that's
+                    # ALREADY passed every other criterion (Python's
+                    # `and` short-circuits) - a fresh bundle look-up,
+                    # but only for the small minority of rows that
+                    # reach this point, and a cache hit for all of them.
+                    exception_eligible = (
+                        _quality_exception_admits(row)
+                        and not _quality_exception_excluded_airline(ticker, log=log)
+                    )
                     if exception_eligible and ticker not in quality_exception_shadow_tickers:
                         quality_exception_shadow_tickers.append(ticker)
                     if quality_exception_live and exception_eligible:
@@ -1950,6 +2020,62 @@ def quality_on_sale_moat_floor_report(min_moat=40.0, log=print):
         "with_moat_floor_count": with_floor_count,
         "removed": removed,
     }
+
+
+def log_quality_on_sale_nightly_summary(log=print):
+    """TASK 44 item 1 follow-up (Director-directed, 12 Nov 2026): one
+    explicit "[quality_on_sale] ..." nightly log summary, same "named
+    evidence, explicit log line" precedent support_levels_job.py's own
+    nightly block already uses - called from scheduler_engine._run_
+    top100() right after the support-levels job, in that SAME non-
+    fatal try/except (display/reporting only, a failure here must
+    never take down the real Top 200 selection). Calls quality_on_
+    sale_candidates() exactly once - never a second, independently-
+    filtered pass over the same data.
+
+    "0 scored tonight" and "cost $0.00" are reported EVERY night until
+    the Director picks between the two scoring-ingest-wiring options
+    _select_quality_on_sale_entrants()'s own docstring lays out (that
+    function is still never called from the real AI-scoring submission
+    pipeline, so nothing is actually spent on this feature yet) -
+    reported honestly, never fabricated. The separate "est $X if the
+    unscored group were scored tonight" figure is the SAME estimate_
+    degenerate_resend_cost_usd() order-of-magnitude estimate _select_
+    quality_on_sale_entrants() itself would log, computed here purely
+    for visibility (this function never queues/submits anything)."""
+    try:
+        result = quality_on_sale_candidates(log=log)
+    except Exception as e:
+        log(f"[quality_on_sale] nightly summary failed (non-fatal): {e}")
+        return
+    candidates = result.get("candidates") or []
+    total_qualifying = result.get("total_qualifying", len(candidates))
+    unscored = [c for c in candidates if c.get("research_score") is None]
+    needing_scoring = len(unscored)
+    also_in_top_200 = sum(1 for c in candidates if c.get("in_top_200"))
+    try:
+        est_cost = estimate_degenerate_resend_cost_usd([
+            {"ticker": c["ticker"], "company_name": c.get("company_name"),
+             "sector": c.get("sector"), "most_recent_quarter": c.get("most_recent_quarter")}
+            for c in unscored
+        ]) if unscored else 0.0
+    except Exception as e:
+        log(f"[quality_on_sale] nightly summary: cost estimate failed (non-fatal): {e}")
+        est_cost = None
+    _cost_str = f"${est_cost:.4f}" if est_cost is not None else "n/a"
+    log(f"[quality_on_sale] {total_qualifying} total qualifiers tonight "
+        f"({len(candidates)} shown after the {QUALITY_ON_SALE_MAX_CANDIDATES}-cap), "
+        f"{needing_scoring} needing scoring, 0 scored tonight (cost $0.00 - scoring-"
+        f"ingest wiring not yet live, see _select_quality_on_sale_entrants()'s own "
+        f"docstring), {_cost_str} est if the unscored group were scored tonight, "
+        f"{also_in_top_200} of {len(candidates)} shown also in the Top 200")
+    top20 = candidates[:20]
+    if top20:
+        _tickers_str = ", ".join(
+            f"{i}.{c['ticker']}" + ("*" if c.get("in_top_200") else "")
+            for i, c in enumerate(top20, start=1)
+        )
+        log(f"[quality_on_sale] top {len(top20)} by rank (* = also in Top 200): {_tickers_str}")
 
 
 def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):

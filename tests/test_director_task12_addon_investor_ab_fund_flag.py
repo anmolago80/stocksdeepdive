@@ -51,9 +51,11 @@ check("INVE-B.ST is in _FUND_TICKER_OVERRIDE_IS_FUND", "INVE-B.ST" in ns._FUND_T
 check("VEIL.L (the existing TASK 7 entry) is still there too - this "
       "add-on is additive, not a replacement",
       "VEIL.L" in ns._FUND_TICKER_OVERRIDE_IS_FUND)
-check("_FUND_TICKER_OVERRIDE_IS_FUND is exactly these two tickers, "
-      "nothing else added by accident",
-      ns._FUND_TICKER_OVERRIDE_IS_FUND == frozenset({"VEIL.L", "INVE-B.ST"}))
+check("_FUND_TICKER_OVERRIDE_IS_FUND is exactly these three tickers "
+      "(VEIL.L/INVE-B.ST from this task, plus SOI.L added by TASK 45 "
+      "item 3, 12 Nov 2026 - the Director's own 'Quality on sale' "
+      "fund-leak finding), nothing else added by accident",
+      ns._FUND_TICKER_OVERRIDE_IS_FUND == frozenset({"VEIL.L", "INVE-B.ST", "SOI.L"}))
 
 
 # ======================================================================

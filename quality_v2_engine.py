@@ -108,12 +108,47 @@ _INPUT_FIELDS = (
     "fcf_sign", "debt_to_equity",
 )
 
+# TASK 45 item 1/2 (Director-directed, 12 Nov 2026, 12 Nov live preview
+# review): ROE had no equity-sign check and no plausibility clamp at
+# all - unlike ROIC just below it, which already clamps to +-100%
+# (max(-1.0, min(ni / invested, 1.0))). A company with negative or
+# near-zero book equity (heavy buybacks - AAL/HCA/MTCH/SMG/CCI/INSE/
+# KSPI; or a highly-levered mortgage REIT whose Yahoo-reported .info
+# ROE can be JUST as distorted - ORC/NREF/REFI) produces a huge or
+# sign-flipped ROE (a loss divided by negative equity reads POSITIVE),
+# inflating the score by up to +20 points (roe * 100 * 0.20). 100%
+# (1.0) is the same ceiling ROIC already uses, chosen for consistency,
+# not independently re-derived.
+ROE_PLAUSIBLE_MAX = 1.0
+
 
 def _median_of_available(values):
     vals = [v for v in values if v is not None]
     if not vals:
         return None
     return statistics.median(vals)
+
+
+def _plausible_roe(value):
+    """None if `value` is missing, non-numeric, or its magnitude
+    exceeds ROE_PLAUSIBLE_MAX (>100%) - applied to BOTH the per-fiscal-
+    year statement-derived figure AND the .info["returnOnEquity"]
+    fallback, since a negative/near-zero book equity distorts either
+    source the same way (Yahoo's own reported ROE is computed from the
+    SAME balance sheet, so it is no more trustworthy than the
+    statement-derived figure once equity is broken). Treating it as
+    unavailable here means it flows through this module's own existing
+    per-input fallback/median machinery exactly like any other missing
+    value - never a separate, parallel "sanity override" path."""
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(value) > ROE_PLAUSIBLE_MAX:
+        return None
+    return value
 
 
 def _growth_rate_v2(dated_values):
@@ -268,14 +303,37 @@ def _get_quality_score_v2(ticker, bundle, info):
         return fcf_row_by_fy.get(fy)
 
     # ROE: normalized income / stockholders equity, per FY, medianed.
-    roe_vals = [
-        (ni_by_fy.get(fy) / equity_by_fy[fy])
-        for fy in fy_dates
-        if ni_by_fy.get(fy) is not None and equity_by_fy.get(fy)
-    ]
+    # TASK 45 item 1 (Director-directed, 12 Nov 2026): a FY with
+    # non-positive equity is skipped entirely (equity_by_fy[fy] > 0,
+    # not merely truthy - a negative value is truthy in Python and
+    # would otherwise sign-flip the ratio), and any individual FY's
+    # ratio that's still implausible (> +-100%, e.g. from tiny-but-
+    # positive equity) is dropped via _plausible_roe() rather than
+    # feeding the median - exactly the "treat as unavailable" rule the
+    # Director asked for, never a clamp that would keep a distorted
+    # number in the mix.
+    roe_vals = []
+    for fy in fy_dates:
+        ni = ni_by_fy.get(fy)
+        eq = equity_by_fy.get(fy)
+        if ni is None or eq is None or eq <= 0:
+            continue
+        fy_roe = _plausible_roe(ni / eq)
+        if fy_roe is not None:
+            roe_vals.append(fy_roe)
     roe = _median_of_available(roe_vals)
     if roe is None:
-        roe = info.get("returnOnEquity", 0) or 0
+        # TASK 45 item 2 (Director-directed, 12 Nov 2026): the SAME
+        # plausibility guard applies to the .info fallback value too -
+        # this is the path a financials-mode/mortgage-REIT ticker
+        # (ORC/NREF/REFI) actually takes (fy_dates is forced empty for
+        # them), and Yahoo's own reported returnOnEquity can be just as
+        # distorted by negative/near-zero book equity as a statement-
+        # derived figure - never assumed sane just because it came from
+        # .info rather than a statement. An implausible fallback value
+        # becomes 0 (neutral), the SAME "contributes nothing" outcome
+        # v1 already has for a ticker Yahoo reports no ROE for at all.
+        roe = _plausible_roe(info.get("returnOnEquity")) or 0
         fallback_fields.append("roe")
 
     # ROIC: normalized income / (stockholders equity + total debt),

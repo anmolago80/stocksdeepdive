@@ -2047,6 +2047,18 @@ def _run_top100(log, scan_day=None):
     except Exception as e:
         log(f"[scheduler] support levels job failed (non-fatal, display-only): {e}")
 
+    # TASK 44 item 1 follow-up (Director-directed, 12 Nov 2026): one
+    # explicit "[quality_on_sale] ..." nightly log summary - runs AFTER
+    # the support-levels job above (drop_chip_store must be fresh for
+    # tonight, same ordering reason). Read-only/reporting only, same
+    # non-fatal try/except contract as the support-levels job just
+    # above - a failure here must never take down the real Top 200
+    # selection this job's own success/retry-cap bookkeeping depends on.
+    try:
+        top100_engine.log_quality_on_sale_nightly_summary(log=log)
+    except Exception as e:
+        log(f"[scheduler] quality-on-sale nightly summary failed (non-fatal, display-only): {e}")
+
 
 def _run_top100_poll(log):
     """Top 100 Commit 2 (25 Sep 2026, owner-reported): hourly check in

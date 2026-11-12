@@ -274,5 +274,92 @@ print("[task44_check14_widened_ticker_scope] support_levels_job.py's own ticker 
       "itself errors OK")
 
 
+# ======================================================================
+# CHECK 15 (TASK 44 item 2 follow-up, Director-directed, 12 Nov 2026):
+# a ticker whose bulk chunk download comes back with too few weekly
+# bars gets ONE single-ticker retry, recovered when the retry succeeds
+# - root-causing the Director's own 28 "only 1 weekly bar" skips for
+# large, long-listed liquid names (a batch-level hiccup, not a real
+# data gap).
+# ======================================================================
+_good_long_df = _daily_df([10.0] * 120)  # ~24 weeks - comfortably >= 7
+_short_df_retry = _daily_df([10.0] * 5)  # < 1 week
+
+
+def _bulk_then_recovered_retry(tickers):
+    tickers = list(tickers)
+    if tickers == ["RETRY.AX"]:
+        return {"RETRY.AX": _good_long_df}
+    return {"OTHER.AX": _good_long_df, "RETRY.AX": _short_df_retry}
+
+
+_logged_retry = []
+with _mock.patch.object(slj, "_pool_and_extension_tickers_with_currency",
+                         return_value={"RETRY.AX": {"currency": "AUD", "price": 10.0},
+                                        "OTHER.AX": {"currency": "AUD", "price": 20.0}}), \
+     _mock.patch.object(slj, "_download_chunk", side_effect=_bulk_then_recovered_retry):
+    slj.compute_and_store_support_levels_for_pool(log=lambda m: _logged_retry.append(m))
+check("a ticker short on the first bulk attempt is recovered via a single-ticker "
+      "retry, logged as such",
+      any("RETRY.AX: recovered via single-ticker retry" in m for m in _logged_retry))
+check("the recovered ticker has a real stored support-levels entry (the retry's "
+      "own data was actually used, not discarded)",
+      sls.get("RETRY.AX") is not None)
+check("a ticker that already had enough bars on the first attempt is never "
+      "retried or logged as recovered",
+      not any("OTHER.AX: recovered" in m for m in _logged_retry))
+
+# A ticker still short even AFTER the retry is still correctly skipped -
+# CHECK 13 above already covers this via the unchanged "skipped - only ..."
+# log text; confirm here that the retry path itself was actually exercised
+# (not just the original single-attempt skip) via an explicit call-count.
+_retry_calls = []
+
+
+def _always_short(tickers):
+    _retry_calls.append(list(tickers))
+    return {"STILLSHORT.AX": _short_df_retry}
+
+
+_logged_still_short = []
+with _mock.patch.object(slj, "_pool_and_extension_tickers_with_currency",
+                         return_value={"STILLSHORT.AX": {"currency": "AUD", "price": 10.0}}), \
+     _mock.patch.object(slj, "_download_chunk", side_effect=_always_short):
+    slj.compute_and_store_support_levels_for_pool(log=lambda m: _logged_still_short.append(m))
+check("a ticker still short after the retry makes exactly 2 download calls "
+      "(the original bulk chunk, then the single-ticker retry)",
+      _retry_calls == [["STILLSHORT.AX"], ["STILLSHORT.AX"]])
+check("a ticker still short after the retry is logged with the updated "
+      "'after a single-ticker retry' wording, and is NOT marked recovered",
+      any("STILLSHORT.AX: skipped - only" in m and "after a single-ticker retry" in m
+          for m in _logged_still_short)
+      and not any("STILLSHORT.AX: recovered" in m for m in _logged_still_short))
+
+# ======================================================================
+# CHECK 16: a ticker with enough weekly bars on the FIRST attempt is
+# never retried at all - exactly one download call total.
+# ======================================================================
+_single_attempt_calls = []
+
+
+def _counting_download_chunk(tickers):
+    _single_attempt_calls.append(list(tickers))
+    return {"GOOD.AX": _good_long_df}
+
+
+with _mock.patch.object(slj, "_pool_and_extension_tickers_with_currency",
+                         return_value={"GOOD.AX": {"currency": "AUD", "price": 10.0}}), \
+     _mock.patch.object(slj, "_download_chunk", side_effect=_counting_download_chunk):
+    slj.compute_and_store_support_levels_for_pool(log=lambda *a: None)
+check("a ticker with enough weekly bars on the first attempt makes exactly "
+      "ONE download call (no wasted retry)",
+      _single_attempt_calls == [["GOOD.AX"]])
+print("[task44_followup_check15_16_support_levels_retry] a short-on-first-"
+      "attempt ticker is recovered via one single-ticker retry (root-causing "
+      "the Director's own 28 'only 1 weekly bar' skips as a batch-level "
+      "hiccup); a ticker still short after the retry is still correctly "
+      "skipped; a ticker with enough bars already is never retried OK")
+
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

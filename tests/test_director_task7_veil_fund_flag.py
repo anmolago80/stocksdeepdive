@@ -54,12 +54,15 @@ def check(label, condition):
 #
 # TASK 12 add-on (18 Oct 2026): INVE-B.ST (Investor AB) was added
 # alongside VEIL.L - see tests/test_director_task12_addon_investor_ab_
-# fund_flag.py for its own dedicated end-to-end coverage. This check is
+# fund_flag.py for its own dedicated end-to-end coverage. TASK 45 item 3
+# (12 Nov 2026, Director-directed): SOI.L (Schroder Oriental Income
+# Fund) added too, same fund-leak-override mechanism - see tests/
+# test_director_task45_quality_v2_fixes.py's own CHECK 4. This check is
 # updated to reflect the set's new, real contents rather than asserting
 # it's still VEIL.L-only.
 # ======================================================================
-check("_FUND_TICKER_OVERRIDE_IS_FUND contains VEIL.L and INVE-B.ST",
-      ns._FUND_TICKER_OVERRIDE_IS_FUND == frozenset({"VEIL.L", "INVE-B.ST"}))
+check("_FUND_TICKER_OVERRIDE_IS_FUND contains VEIL.L, INVE-B.ST and SOI.L",
+      ns._FUND_TICKER_OVERRIDE_IS_FUND == frozenset({"VEIL.L", "INVE-B.ST", "SOI.L"}))
 
 # ======================================================================
 # CHECK 2: EMG.L's existing not-a-fund override is unchanged by this

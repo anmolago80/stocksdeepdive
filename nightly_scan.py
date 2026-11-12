@@ -314,7 +314,23 @@ _FUND_SECTOR_OVERRIDE_NOT_A_FUND = frozenset({"EMG.L"})
 # though the underlying reason (a holding company's own financials,
 # not a fund structure) differs. Takes effect at the next OMX
 # Stockholm 30 scan.
-_FUND_TICKER_OVERRIDE_IS_FUND = frozenset({"VEIL.L", "INVE-B.ST"})
+# TASK 45 item 3 (Director-directed, 12 Nov 2026, "Quality on sale"
+# live preview finding): SOI.L (Schroder Oriental Income Fund plc) is a
+# closed-end investment trust, same shape as VEIL.L above - a standard
+# company valuation does not apply to it - but its own stored Sector
+# text evidently doesn't land in _FUND_SECTOR_NAMES's exact-match set
+# either (it leaked through with Quality V2 95 and appeared as an
+# entrant in the Director's own 12 Nov preview, despite the fund
+# exclusion existing and working for every OTHER flagged fund). This
+# sandbox has no production access to read SOI.L's own real stored
+# Sector string and confirm exactly which text is slipping past the
+# rule - added here via the SAME hand-maintained override mechanism
+# VEIL.L/INVE-B.ST already use (unconditional, never gated by universe/
+# Sector), which fixes it regardless of what that string turns out to
+# be. Report this exact uncertainty to the Director: the next scan's
+# own stored S&P/FTSE-equivalent universe file would show SOI.L's real
+# "Sector" value for a definitive root-cause confirmation.
+_FUND_TICKER_OVERRIDE_IS_FUND = frozenset({"VEIL.L", "INVE-B.ST", "SOI.L"})
 
 # TASK 7 part 2 (Director, 16 Oct 2026): REVIEW LOGGING ONLY - never
 # auto-flagging. A non-fund row (Is Fund already False, via the rule/

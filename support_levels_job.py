@@ -175,6 +175,13 @@ def compute_and_store_support_levels_for_pool(log=print):
     visible in the nightly log the same way every other bulk-download
     pass already is.
 
+    TASK 44 item 2 follow-up (Director-directed, 12 Nov 2026): a ticker
+    whose bulk chunk download comes back with too few weekly bars gets
+    ONE single-ticker retry before being counted as failed/skipped -
+    see the per-ticker comment below for the root cause this recovers
+    (a large period="5y" multi-ticker batch occasionally returning a
+    near-empty frame for a handful of tickers, not a real data gap).
+
     Returns {"tickers": int, "chunks": int, "computed": int, "failed": int,
     "elapsed_seconds": float} - a plain summary dict, for callers (the
     scheduler, or a test) that want the numbers without re-parsing the
@@ -201,19 +208,49 @@ def compute_and_store_support_levels_for_pool(log=print):
                     daily_df, t, reference_price, log=log,
                 )
                 if len(closes) < SUPPORT_LEVELS_MIN_WEEKLY_BARS:
-                    failed += 1
-                    # 7 Nov 2026 follow-up (Director-directed): the
-                    # Director's own nightly log review found "1
-                    # failed/skipped" with no way to tell WHICH ticker
-                    # or why - this path previously had no per-ticker
-                    # log line at all, only the counter above. Named
-                    # here so a bad night's log always answers "which
-                    # one, and how short" directly, no guessing.
-                    log(f"[support_levels] {t}: skipped - only {len(closes)} weekly "
-                        f"bar(s) available (need >= {SUPPORT_LEVELS_MIN_WEEKLY_BARS}) "
-                        f"- likely no/insufficient price history returned for this "
-                        f"ticker tonight (new listing, delisted, or a failed download)")
-                    continue
+                    # TASK 44 item 2 follow-up (Director-directed, 12
+                    # Nov 2026): the Director's own Railway log review
+                    # found 28 skips here reading "only 1 weekly bar"
+                    # for large, long-listed, liquid names (EA, KVUE,
+                    # WBD, QRVO, ROKU, CBZ) - companies with years of
+                    # real trading history, not genuine new-listing/
+                    # delisted cases. Root cause: the heavy period="5y"
+                    # multi-ticker yf.download() batch call (much more
+                    # data per ticker than nightly_scan.py's own 6mo
+                    # reprice batches) occasionally returns a near-
+                    # empty frame for a handful of tickers within a
+                    # ~175-ticker chunk - a batch-level hiccup, not a
+                    # per-ticker data gap. One single-ticker retry (a
+                    # much smaller, much less failure-prone request)
+                    # recovers exactly that case; a genuinely short-
+                    # history ticker (a real recent IPO) still comes
+                    # back short on retry and is still correctly
+                    # skipped below - this never fabricates data for a
+                    # ticker that truly lacks it.
+                    retry_daily_df = _download_chunk([t]).get(t)
+                    if retry_daily_df is not None:
+                        dates, highs, lows, closes = _weekly_bars_from_daily(
+                            retry_daily_df, t, reference_price, log=log,
+                        )
+                    if len(closes) < SUPPORT_LEVELS_MIN_WEEKLY_BARS:
+                        failed += 1
+                        # 7 Nov 2026 follow-up (Director-directed): the
+                        # Director's own nightly log review found "1
+                        # failed/skipped" with no way to tell WHICH
+                        # ticker or why - this path previously had no
+                        # per-ticker log line at all, only the counter
+                        # above. Named here so a bad night's log always
+                        # answers "which one, and how short" directly,
+                        # no guessing.
+                        log(f"[support_levels] {t}: skipped - only {len(closes)} weekly "
+                            f"bar(s) available after a single-ticker retry (need >= "
+                            f"{SUPPORT_LEVELS_MIN_WEEKLY_BARS}) - likely a genuine new "
+                            f"listing, delisting, or persistent download failure for "
+                            f"this ticker tonight")
+                        continue
+                    log(f"[support_levels] {t}: recovered via single-ticker retry "
+                        f"({len(closes)} weekly bars) - tonight's bulk chunk download "
+                        f"returned too little data for it on the first attempt")
                 result = support_levels_engine.compute_support_levels(dates, highs, lows, closes)
                 support_levels_store.save(t, result, currency=by_ticker[t]["currency"])
                 # TASK 39/TASK 42 item 6b (Director-directed, built
