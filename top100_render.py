@@ -2804,14 +2804,14 @@ def render_top100_page(lang="en"):
     sort_mode = _render_sort_bar(lang)
     filters = _render_filter_bar(lang, enriched)
 
-    # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
-    # Mixed/Australia/USA/Full 200 exactly as they were (same four
-    # render calls, same positions relative to each other); rule 2
-    # inserts one tab per OTHER market actually present in the pool
-    # AFTER "Top 20 · USA" and BEFORE "Full 200" - _new_market_tab_plan()
-    # is the one place that decides which markets get a tab and in
-    # what order (rules 2-4), so this function never hand-lists a
-    # country name.
+    # Director's TASK 7, final version (14 Oct 2026): one tab per OTHER
+    # market actually present in the pool - _new_market_tab_plan() is
+    # the one place that decides which markets get a tab and in what
+    # order (rules 2-4), so this function never hand-lists a country
+    # name. TASK 49 (12 Nov 2026, Director-directed) moved WHERE this
+    # group sits in the overall tab order (see the _tab_specs assembly
+    # below) - this function's own market selection/ordering is
+    # unchanged by that task.
     market_plan = _new_market_tab_plan(enriched)
 
     # TASK 24 (Director-directed, 29 Oct 2026, test stage): foreign-US-
@@ -2883,60 +2883,61 @@ def render_top100_page(lang="en"):
         except Exception as e:
             print(f"[near_cutoff] render_top100_page: candidate lookup failed: {e}")
 
-    # Director's TASK 7, final version (14 Oct 2026): rule 1 keeps
-    # Mixed/Australia/USA/Full 200 exactly as they were (same four
-    # render calls, same positions relative to each other); rule 2
-    # inserts one tab per OTHER market actually present in the pool
-    # AFTER "Top 20 · USA" and BEFORE "Full 200" - _new_market_tab_plan()
-    # is the one place that decides which markets get a tab and in
-    # what order (rules 2-4), so this function never hand-lists a
-    # country name. TASK 24 inserts the new "Top 20 · Foreign US-
-    # listed" tab right after "Top 20 · USA" too, but ONLY while
-    # _show_foreign_tab is True - a gated-off viewer gets the exact
-    # same tab_labels list (and tab count) as before this task.
-    tab_labels = (
-        [_t("tab_mixed", lang), _t("tab_au", lang), _t("tab_us", lang)]
-        + ([_t("tab_us_foreign", lang)] if _show_foreign_tab else [])
-        + [_market_tab_label(group_key, lang) for group_key, _rows in market_plan]
-        + [_t("tab_full", lang)]
-        + ([_t("tab_near_cutoff", lang)] if _show_near_cutoff_tab else [])
-        + ([_t("tab_quality_on_sale", lang)] if _show_quality_on_sale_tab else [])
-    )
-    tabs = st.tabs(tab_labels)
-    with tabs[0]:
-        _render_top20_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
-                           recent_badge_map=_recent_badges)
-    with tabs[1]:
-        _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
-                                     recent_badge_map=_recent_badges)
-    with tabs[2]:
-        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
-                           exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges)
-    _next_tab = 3
-    if _show_foreign_tab:
-        with tabs[_next_tab]:
-            _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
-                               only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country,
-                               recent_badge_map=_recent_badges)
-        _next_tab += 1
-    for offset, (group_key, market_rows) in enumerate(market_plan):
-        with tabs[_next_tab + offset]:
-            _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows,
-                                      group_key, filters=filters, recent_badge_map=_recent_badges)
-    with tabs[_next_tab + len(market_plan)]:
-        _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters,
-                             recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map)
-    # TASK 48 part B: "Near the cut-off" sits right after "Full 200"
-    # and before "Quality on sale" - an incrementing index (rather
-    # than a hand-computed "+1"/"+2" offset) so neither gate's
-    # presence/absence can throw the other tab's own index off.
-    _after_full_tab = _next_tab + len(market_plan) + 1
-    if _show_near_cutoff_tab:
-        with tabs[_after_full_tab]:
-            _render_near_cutoff_tab(lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
-                                     quality_on_sale_rank_map=_qos_rank_map, candidates_result=_ncu_result)
-        _after_full_tab += 1
+    # TASK 49 (Director-directed, 12 Nov 2026) - the tab order is now:
+    # Mixed | Quality on sale | Australia | USA | Foreign US-listed |
+    # (one tab per other market present, _new_market_tab_plan()'s own
+    # order) | Full 200 | Near the cut-off. Built as an ordered list of
+    # (label, render) pairs rather than hand-computed tab indices (the
+    # pre-TASK-49 approach, which only ever had to handle insertions at
+    # the END of the list and had already grown fragile doing that) -
+    # a gated-off tab is simply never appended, so every OTHER tab's
+    # own position among `tabs` falls out automatically, satisfying
+    # the Director's own "if a tab is gated off, the remaining tabs
+    # keep this order" requirement with no index arithmetic anywhere.
+    # Tab 0 (Mixed) is unconditionally first in this list, so Streamlit's
+    # own "first tab is selected by default" behaviour keeps "Top 20 ·
+    # Mixed" the default selected tab, unchanged from before this task.
+    _tab_specs = []
+
+    _tab_specs.append((_t("tab_mixed", lang), lambda: _render_top20_tab(
+        enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges)))
+
     if _show_quality_on_sale_tab:
-        with tabs[_after_full_tab]:
-            _render_quality_on_sale_tab(lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
-                                         top_200_rank_map=_top200_rank_map, candidates_result=_qos_result)
+        _tab_specs.append((_t("tab_quality_on_sale", lang), lambda: _render_quality_on_sale_tab(
+            lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
+            top_200_rank_map=_top200_rank_map, candidates_result=_qos_result)))
+
+    _tab_specs.append((_t("tab_au", lang), lambda: _render_top20_australia_tab(
+        enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges)))
+
+    _tab_specs.append((_t("tab_us", lang), lambda: _render_top20_tab(
+        enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
+        exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges)))
+
+    if _show_foreign_tab:
+        _tab_specs.append((_t("tab_us_foreign", lang), lambda: _render_top20_tab(
+            enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
+            only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country,
+            recent_badge_map=_recent_badges)))
+
+    for group_key, market_rows in market_plan:
+        _tab_specs.append((
+            _market_tab_label(group_key, lang),
+            lambda group_key=group_key, market_rows=market_rows: _render_top20_market_tab(
+                enriched, lang, finer_industry, sort_mode, market_rows, group_key,
+                filters=filters, recent_badge_map=_recent_badges),
+        ))
+
+    _tab_specs.append((_t("tab_full", lang), lambda: _render_full100_tab(
+        enriched, lang, finer_industry, sort_mode, filters=filters,
+        recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map)))
+
+    if _show_near_cutoff_tab:
+        _tab_specs.append((_t("tab_near_cutoff", lang), lambda: _render_near_cutoff_tab(
+            lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
+            quality_on_sale_rank_map=_qos_rank_map, candidates_result=_ncu_result)))
+
+    tabs = st.tabs([label for label, _render_fn in _tab_specs])
+    for tab, (_label, render_fn) in zip(tabs, _tab_specs):
+        with tab:
+            render_fn()
