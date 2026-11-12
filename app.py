@@ -33823,6 +33823,68 @@ def _render_quality_v2_preview_panel():
         _sim_v2_moat_exception, value_score_key=("Value Score (v2+moat)", "value_score_v2_moat"),
     )
 
+    # TASK 47 (Director-directed, 12 Nov 2026, "needed for the
+    # Director's review tomorrow morning") - "good companies being
+    # dropped" check, for the FINAL COMBINED option only (the scenario
+    # this section is already rendering) - report only, no change to
+    # the ranking/selection this section's own tables above already
+    # computed.
+    st.markdown("---")
+    _render_quality_review_section(_sim_v2_moat_exception)
+
+
+def _quality_review_table_rows(rows, is_dropout):
+    """TASK 47 (Director-directed, 12 Nov 2026): shapes quality_review_
+    tables()'s own "dropouts_to_review"/"entrants_to_review" rows for
+    st.table() - a dropout row's "Below cut-off"/"Main driver" columns
+    are only meaningful for a drop-out (the task names them for that
+    table alone), so this is called once per table rather than sharing
+    one column set between the two."""
+    out = []
+    for r in rows:
+        shaped = {
+            "Ticker": r["ticker"], "Company": r["company_name"], "Sector": r["sector"],
+            "Quality v1": r["quality"], "Quality v2": r["quality_v2"], "Moat": r["moat"],
+            "Research Score": r["research_score"],
+            "Munger": r["munger_quality"] or "n/a",
+            "Market structure": r["market_structure"] or "n/a",
+            "Value Score now": r["value_score_now"], "Value Score (new setup)": r["value_score_new"],
+        }
+        if is_dropout:
+            shaped["Below new cut-off"] = r["below_cutoff"]
+            shaped["Main driver"] = r["main_driver"] or "n/a"
+        out.append(shaped)
+    return out
+
+
+def _render_quality_review_section(sim_result):
+    """TASK 47 (Director-directed, 12 Nov 2026): renders top100_engine.
+    quality_review_tables()'s own two tables for the final-combined
+    scenario - "Drop-outs to review" (good companies the new setup
+    would drop, per the Director's own four-criteria "ANY of" rule)
+    and "Entrants to review" (new members that look weak on Research
+    Score or Moat). Read-only, same safety profile as every other
+    shadow-preview section on this page."""
+    st.markdown("#### Drop-outs to review / Entrants to review (TASK 47)")
+    st.caption(
+        "Drop-outs to review: every company the final combined setup would drop "
+        "that still has Moat ≥ 70, Research Score ≥ 70, Munger-quality = yes, "
+        "Market structure = monopoly/duopoly/oligopoly, or Quality v1 ≥ 80 - a "
+        "company that still looks strong on at least one independent signal "
+        "despite dropping out. Entrants to review: every new member with "
+        "Research Score < 50 or Moat < 30. Both sorted by Research Score "
+        "(unscored sorts last). Report only - no change to ranking/selection."
+    )
+    try:
+        _review = top100_engine.quality_review_tables(sim_result, log=print)
+    except Exception as e:
+        st.caption(f"Drop-outs/entrants review failed: {e}")
+        return
+    st.markdown(f"**Drop-outs to review** ({len(_review['dropouts_to_review'])})")
+    st.table(_quality_review_table_rows(_review["dropouts_to_review"], is_dropout=True) or [{"Ticker": "(none)"}])
+    st.markdown(f"**Entrants to review** ({len(_review['entrants_to_review'])})")
+    st.table(_quality_review_table_rows(_review["entrants_to_review"], is_dropout=False) or [{"Ticker": "(none)"}])
+
 
 def _quality_exception_named_table(rows, value_score_key, named_tickers=("ADBE",)):
     """TASK 37 (Director-directed, 6 Nov 2026): one row per admitted

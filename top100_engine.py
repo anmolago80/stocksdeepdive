@@ -6087,6 +6087,233 @@ def pool_change_impact_and_cost(sim_result, log=print):
     }
 
 
+# TASK 47 (Director-directed, 12 Nov 2026, "good companies being
+# dropped" check ahead of the Director's own review of the final
+# combined option) - the exact thresholds the Director's own
+# instruction gave, each its own named constant rather than a bare
+# literal in the filter below.
+QUALITY_REVIEW_MOAT_FLOOR = 70.0
+QUALITY_REVIEW_RESEARCH_SCORE_FLOOR = 70.0
+QUALITY_REVIEW_QUALITY_V1_FLOOR = 80.0
+QUALITY_REVIEW_STRUCTURE_FLAGS = frozenset({"monopoly", "duopoly", "oligopoly"})
+QUALITY_REVIEW_ENTRANT_RESEARCH_SCORE_CEILING = 50.0
+QUALITY_REVIEW_ENTRANT_MOAT_CEILING = 30.0
+
+_VALUE_SCORE_COMPONENT_LABELS = {"quality": "Quality", "moat": "Moat", "mos": "MOS", "psy": "Psychology"}
+
+
+def _value_score_component_contributions(quality, mos_pct, psychology, moat=None, moat_blend=False):
+    """TASK 47 (Director-directed, 12 Nov 2026) - the per-component
+    weighted contribution to one Value Score calculation, reusing
+    ranking_engine's OWN weight tables/_drop_and_reweight() helper
+    (never a second, hand-derived copy of the weighting math) so this
+    can never silently drift from calculate_long_score()'s own real
+    formula. Always computed with discovery_measured=False - the one
+    rule every top100_engine.py caller of calculate_long_score()
+    already shares (see _recompute_value_score()'s own docstring) -
+    so Discovery's weight is always dropped/redistributed here too,
+    same as the real selection formula.
+
+    moat_blend=False: today's plain formula (mode="current") - returns
+    {"quality", "mos", "psy"} (no "moat" key at all - that component
+    simply doesn't exist in this formula).
+    moat_blend=True: mode="moat_blend" - returns {"quality", "moat",
+    "mos", "psy"}; `moat` may be None (dropped + reweighted across the
+    other three, ranking_engine.recompute_value_score()'s own existing
+    convention for a missing Moat score - never scored as 0).
+
+    Report-only - never called by select_top100_pool()/any live sort
+    or selection, purely the debugging aid _value_score_main_driver()
+    below uses."""
+    mos_c = ranking_engine._clamp(mos_pct or 0.0, -ranking_engine.MOS_CLAMP, ranking_engine.MOS_CLAMP)
+    psy_c = ranking_engine._clamp(psychology if psychology is not None else 0.0,
+                                   -ranking_engine.PSY_CLAMP, ranking_engine.PSY_CLAMP)
+    q = quality or 0.0
+    if not moat_blend:
+        w = ranking_engine._drop_and_reweight(
+            {"quality": 0.35, "mos": 0.25, "psy": 0.20, "disc": 0.20}, "disc")
+        return {"quality": q * w["quality"], "mos": mos_c * w["mos"], "psy": psy_c * w["psy"]}
+    w = dict(ranking_engine.MOAT_BLEND_WEIGHTS)
+    if moat is None:
+        moat_w = w.pop("moat")
+        remaining = sum(w.values())
+        w = {k: v + v * (moat_w / remaining) for k, v in w.items()}
+        w = ranking_engine._drop_and_reweight(w, "disc")
+        return {"quality": q * w["quality"], "mos": mos_c * w["mos"], "psy": psy_c * w["psy"]}
+    w = ranking_engine._drop_and_reweight(w, "disc")
+    return {"quality": q * w["quality"], "moat": moat * w["moat"],
+            "mos": mos_c * w["mos"], "psy": psy_c * w["psy"]}
+
+
+def _value_score_main_driver(row):
+    """TASK 47 (Director-directed, 12 Nov 2026) - which single Value
+    Score component ("Quality"/"Moat"/"MOS"/"Psychology") changed the
+    most between TODAY'S plain formula (live Quality v1, no moat) and
+    the final-combined setup (Quality v2 - falling back to v1 when
+    missing, the SAME fallback _recompute_value_score_v2_moat() itself
+    uses - blended with this row's own stored Moat score) - `row` is
+    one top100_engine._build_best_by_ticker() row (needs "quality"/
+    "quality_v2"/"mos_pct"/"psychology"/"moat"). None when neither
+    formula produces any contribution change at all (defensive only -
+    every real pool row has at least a Quality score, so this is
+    normally only reachable for a degenerate all-zero row)."""
+    quality_v1 = row.get("quality")
+    quality_v2 = row.get("quality_v2")
+    quality_new = quality_v2 if quality_v2 is not None else quality_v1
+    old = _value_score_component_contributions(
+        quality_v1, row.get("mos_pct"), row.get("psychology"), moat=None, moat_blend=False)
+    new = _value_score_component_contributions(
+        quality_new, row.get("mos_pct"), row.get("psychology"), moat=row.get("moat"), moat_blend=True)
+    deltas = {comp: new.get(comp, 0.0) - old.get(comp, 0.0) for comp in ("quality", "moat", "mos", "psy")}
+    if not any(deltas.values()):
+        return None
+    biggest = max(deltas.items(), key=lambda kv: abs(kv[1]))[0]
+    return _VALUE_SCORE_COMPONENT_LABELS[biggest]
+
+
+def _dropout_review_flagged(moat, research_score, munger_quality, market_structure, quality_v1):
+    """TASK 47's own "ANY of" rule for the Drop-outs to review table -
+    the Director's own exact thresholds, one `if` per criterion so each
+    reads back to its own named constant above."""
+    if moat is not None and moat >= QUALITY_REVIEW_MOAT_FLOOR:
+        return True
+    if research_score is not None and research_score >= QUALITY_REVIEW_RESEARCH_SCORE_FLOOR:
+        return True
+    if munger_quality == "yes":
+        return True
+    if market_structure in QUALITY_REVIEW_STRUCTURE_FLAGS:
+        return True
+    if quality_v1 is not None and quality_v1 >= QUALITY_REVIEW_QUALITY_V1_FLOOR:
+        return True
+    return False
+
+
+def _entrant_review_flagged(moat, research_score):
+    """TASK 47's own entrant-review rule - Research Score < 50 OR Moat
+    < 30. A ticker with NEITHER signal available (both None) is never
+    flagged - "weak" can't be read off data that doesn't exist."""
+    if research_score is not None and research_score < QUALITY_REVIEW_ENTRANT_RESEARCH_SCORE_CEILING:
+        return True
+    if moat is not None and moat < QUALITY_REVIEW_ENTRANT_MOAT_CEILING:
+        return True
+    return False
+
+
+def quality_review_tables(sim_result, log=print):
+    """TASK 47 (Director-directed, 12 Nov 2026, "needed for the
+    Director's review tomorrow morning") - REPORT ONLY, no change to
+    the live ranking, to `sim_result`'s own rows/cutoff, or to
+    pool_change_impact_and_cost()'s own entrant/dropout counts:
+    `sim_result` is simulate_pool_v2_moat_and_exception()'s own return
+    dict (the "final combined" scenario - Quality v2 + Moat blend +
+    the quality exception, all at once), compared against the LIVE
+    pool (top100_store.current_pool()) - the exact same comparison
+    pool_change_impact_and_cost() itself uses.
+
+    "Drop-outs to review": every drop-out (in the live pool, not in
+    `sim_result`'s own new pool) that meets ANY of the Director's own
+    four criteria (see _dropout_review_flagged()'s own constants) -
+    i.e. a company that still looks strong on at least one independent
+    signal despite dropping out under the new setup.
+
+    "Entrants to review": every entrant (in `sim_result`'s own new
+    pool, not in the live pool) with Research Score < 50 OR Moat < 30
+    - a company that looks weak on at least one independent signal
+    despite being newly admitted.
+
+    Both sorted by Research Score, descending - a ticker with no
+    stored score yet sorts LAST (unknown, never treated as zero).
+
+    Returns {"dropouts_to_review": [...], "entrants_to_review": [...]}
+    - each row: ticker, company_name, sector, quality (v1), quality_v2,
+    moat, research_score, munger_quality, market_structure, value_
+    score_now (today's real, live-formula Value Score), value_score_
+    new (this scenario's own value_score_v2_moat), below_cutoff (drop-
+    outs only - `sim_result`'s own cutoff minus value_score_new,
+    rounded to 1dp; None for an entrant, or when either figure is
+    unavailable - e.g. this ticker is no longer eligible under the new
+    setup at all, not merely out-ranked), main_driver (drop-outs only -
+    the Value Score component whose weighted contribution changed most
+    between today's formula and the new one, via _value_score_main_
+    driver(); None for an entrant, or for a drop-out that's no longer
+    eligible under the new setup at all - there's no "new formula" row
+    to compare against in that case).
+
+    A drop-out no longer eligible AT ALL under the new setup (not in
+    `sim_result`'s own "rows" - e.g. it fails even with the quality
+    exception forced on) still gets its own row here, built from the
+    LIVE pool's own stored fields where the simulated row can't supply
+    them (company_name/sector/value_score_now) - Quality v2/Moat/
+    value_score_new/below_cutoff/main_driver simply read None/None for
+    that row, same "never crash, show what's known" convention as
+    every other report-only function in this module."""
+    rows = sim_result.get("rows") or sim_result.get("rows_v2") or {}
+    new_pool_tickers = sim_result.get("pool_tickers") or sim_result.get("pool_v2_tickers") or set()
+    cutoff = sim_result.get("cutoff", sim_result.get("cutoff_v2"))
+    live_pool_by_ticker = {r["ticker"]: r for r in top100_store.current_pool()}
+    live_pool_tickers = set(live_pool_by_ticker.keys())
+
+    dropout_tickers = sorted(live_pool_tickers - new_pool_tickers)
+    entrant_tickers = sorted(new_pool_tickers - live_pool_tickers)
+
+    def _row_for(ticker, is_dropout):
+        sim_row = rows.get(ticker)
+        live_row = live_pool_by_ticker.get(ticker)
+        try:
+            score_row = top100_store.latest_score_for_ticker(ticker, MODEL_TOP100)
+        except Exception as e:
+            log(f"[top100] quality_review_tables: score lookup failed for {ticker}: {e}")
+            score_row = None
+        research_score = composite_score(score_row) if score_row else None
+        value_score_now = (sim_row or {}).get("value_score")
+        if value_score_now is None and live_row is not None:
+            value_score_now = live_row.get("value_score")
+        value_score_new = (sim_row or {}).get("value_score_v2_moat")
+        below_cutoff = None
+        main_driver = None
+        if is_dropout:
+            if cutoff is not None and value_score_new is not None:
+                below_cutoff = round(cutoff - value_score_new, 1)
+            if sim_row is not None:
+                main_driver = _value_score_main_driver(sim_row)
+        return {
+            "ticker": ticker,
+            "company_name": (sim_row or {}).get("company_name") or (live_row or {}).get("company_name") or ticker,
+            "sector": (sim_row or {}).get("sector") or (live_row or {}).get("sector"),
+            "quality": (sim_row or {}).get("quality"),
+            "quality_v2": (sim_row or {}).get("quality_v2"),
+            "moat": (sim_row or {}).get("moat"),
+            "research_score": research_score,
+            "munger_quality": score_row.get("munger_quality") if score_row else None,
+            "market_structure": score_row.get("market_structure") if score_row else None,
+            "value_score_now": value_score_now,
+            "value_score_new": value_score_new,
+            "below_cutoff": below_cutoff,
+            "main_driver": main_driver,
+        }
+
+    dropouts_to_review = [
+        r for t in dropout_tickers
+        for r in [_row_for(t, is_dropout=True)]
+        if _dropout_review_flagged(r["moat"], r["research_score"], r["munger_quality"],
+                                    r["market_structure"], r["quality"])
+    ]
+    entrants_to_review = [
+        r for t in entrant_tickers
+        for r in [_row_for(t, is_dropout=False)]
+        if _entrant_review_flagged(r["moat"], r["research_score"])
+    ]
+
+    def _by_research_score_desc(r):
+        rs = r["research_score"]
+        return (rs is None, -(rs or 0.0))
+
+    dropouts_to_review.sort(key=_by_research_score_desc)
+    entrants_to_review.sort(key=_by_research_score_desc)
+
+    return {"dropouts_to_review": dropouts_to_review, "entrants_to_review": entrants_to_review}
+
+
 def estimate_degenerate_resend_cost_usd(rows):
     """Rough pre-action cost estimate for A2's "Clear and re-send"
     button - same packed-request estimate submit_nightly_batch() itself
