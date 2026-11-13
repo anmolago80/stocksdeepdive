@@ -133,7 +133,7 @@ def _d(i):
 # genuinely wins max() over the 3-year window.
 _rrl_closes = [13.0, 13.2, 393.42, 13.4, 13.5, 13.6, 13.70]
 _rrl_dates = [_d(i) for i in range(len(_rrl_closes))]
-_rrl_result = dce.compute_peak_and_drop(_rrl_dates, _rrl_closes)
+_rrl_result = dce.compute_peak_and_drop(_rrl_dates, _rrl_closes, ticker="RR.L")
 check("RR.L-shaped fixture: peak_price is still the raw 393.42 (never silently "
       "altered - only drop_pct/chip_shown are suppressed, the raw figure stays "
       "available for diagnostics)",
@@ -168,15 +168,19 @@ print("[task53_checkA2_normal_fixture_unaffected] a genuinely plausible drop is 
 # Boundary: exactly 5.0x is NOT flagged (strictly > 5.0, never >=); just
 # past it IS flagged.
 _boundary_ok_closes = [100.0] + [20.0] * 5  # peak 100, current 20 -> ratio EXACTLY 5.0
-_boundary_ok_result = dce.compute_peak_and_drop([_d(i) for i in range(6)], _boundary_ok_closes)
+_boundary_ok_result = dce.compute_peak_and_drop(
+    [_d(i) for i in range(6)], _boundary_ok_closes, ticker="TEST.L")
 check("boundary: a peak/current ratio of EXACTLY 5.0x is NOT flagged (the floor "
-      "is inclusive of 5.0x itself - only strictly PAST it triggers)",
+      "is inclusive of 5.0x itself - only strictly PAST it triggers), on a .L "
+      "ticker (so this really exercises the ratio boundary, not just the .L scope)",
       _boundary_ok_result["peak_implausible"] is False
       and _boundary_ok_result["drop_pct"] is not None)
 
 _boundary_bad_closes = [100.0] + [19.99] * 5  # ratio 5.0025x - just past the floor
-_boundary_bad_result = dce.compute_peak_and_drop([_d(i) for i in range(6)], _boundary_bad_closes)
-check("boundary: a peak/current ratio just PAST 5.0x (5.0025x) IS flagged",
+_boundary_bad_result = dce.compute_peak_and_drop(
+    [_d(i) for i in range(6)], _boundary_bad_closes, ticker="TEST.L")
+check("boundary: a peak/current ratio just PAST 5.0x (5.0025x) IS flagged, on a "
+      ".L ticker",
       _boundary_bad_result["peak_implausible"] is True
       and _boundary_bad_result["drop_pct"] is None)
 print("[task53_checkA3_boundary] the 5.0x floor is exact and inclusive - only "
@@ -209,7 +213,7 @@ print("[task53_checkB1_peak_fear_guard] the 'peak fear' shadow sort never reads 
       "an implausible peak_price/current_price pair OK")
 
 _rrl_fear = pitr.fear_from_peak_as_of(
-    [(_d(i), c) for i, c in enumerate(_rrl_closes)], _rrl_dates[-1])
+    [(_d(i), c) for i, c in enumerate(_rrl_closes)], _rrl_dates[-1], ticker="RR.L")
 check("point_in_time_replay.fear_from_peak_as_of(): an RR.L-shaped replay returns "
       "fear=None, never a bogus ~96%% fear reading",
       _rrl_fear["fear"] is None and _rrl_fear["peak_price"] == 393.42)
@@ -344,7 +348,7 @@ check("PROOF: the resulting WEEKLY series still has an unrepaired ~390-range "
       "value sitting among the weekly closes (both passes genuinely missed it, "
       "exactly as the Director's own hypothesis described)",
       max(_closes[:-1]) > 300.0)
-_rrl_real_result = dce.compute_peak_and_drop(_dates, _closes)
+_rrl_real_result = dce.compute_peak_and_drop(_dates, _closes, ticker="RR.L")
 check("PROOF, closing the loop: even though BOTH repair passes missed this "
       "value, compute_peak_and_drop()'s own new plausibility guard still "
       "catches it and suppresses drop_pct/chip_shown",

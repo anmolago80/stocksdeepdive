@@ -259,7 +259,7 @@ def compute_and_store_support_levels_for_pool(log=print):
                 # above (5y of history, comfortably more than the
                 # 3-year window this needs) feed the drop-from-peak
                 # chip too - no second download, no second resample.
-                drop_result = drop_chip_engine.compute_peak_and_drop(dates, closes)
+                drop_result = drop_chip_engine.compute_peak_and_drop(dates, closes, ticker=t)
                 drop_chip_store.save(t, drop_result, currency=by_ticker[t]["currency"])
                 computed += 1
             except Exception as e:
@@ -353,6 +353,44 @@ def compute_and_store_support_levels_for_pool(log=print):
             f"jump >= {drop_chip_engine.JUMP_AUDIT_RATIO_FLOOR}x)")
     else:
         log(f"[pence_audit] 0 of {len(_l_tickers_tonight)} .L ticker(s) flagged tonight")
+
+    # TASK 53 follow-up (Director-directed, 13 Nov 2026) - "report how
+    # many non-.L tickers currently have peak_implausible = True (these
+    # are the ones being wrongly hidden) and list them with their drop
+    # %". The implausible-peak guard above is now scoped to .L tickers
+    # only (drop_chip_engine.compute_peak_and_drop()'s own fix), so a
+    # freshly-computed entry can never have peak_implausible=True for a
+    # non-.L ticker - this reports which non-.L tickers computed TONIGHT
+    # have a peak/current ratio past the SAME floor the old, market-
+    # agnostic guard used to suppress, i.e. exactly the names whose real
+    # drop_pct is now shown instead of hidden. A before/after
+    # confirmation each run, not a live gate - and a regression alarm if
+    # peak_implausible is ever True here despite the .L scoping (would
+    # indicate a bug, since it should be structurally impossible).
+    _non_l_tickers_tonight = [t for t in tickers if isinstance(t, str) and not t.upper().endswith(".L")]
+    _non_l_large_ratio = []
+    for _nt in _non_l_tickers_tonight:
+        _ne = drop_chip_store.get(_nt)
+        if not _ne:
+            continue
+        _np, _nc = _ne.get("peak_price"), _ne.get("current_price")
+        if _np and _nc and _np > 0 and _nc > 0 and (_np / _nc) > drop_chip_engine.PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO:
+            _non_l_large_ratio.append((_nt, _ne))
+    if _non_l_large_ratio:
+        for _nt, _ne in _non_l_large_ratio:
+            log(f"[peak_scope_audit] {_nt}: peak={_ne.get('peak_price')} "
+                f"current={_ne.get('current_price')} "
+                f"ratio={_ne['peak_price'] / _ne['current_price']:.1f}x "
+                f"drop={_ne.get('drop_pct')}% peak_implausible={_ne.get('peak_implausible')} "
+                f"(non-.L - the implausible-peak guard never applies to it)")
+        log(f"[peak_scope_audit] {len(_non_l_large_ratio)} of {len(_non_l_tickers_tonight)} "
+            f"non-.L ticker(s) have a peak/current ratio > "
+            f"{drop_chip_engine.PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO}x tonight - their real "
+            f"drop_pct shows (would have been wrongly hidden before this fix)")
+    else:
+        log(f"[peak_scope_audit] 0 of {len(_non_l_tickers_tonight)} non-.L ticker(s) "
+            f"have a peak/current ratio > {drop_chip_engine.PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO}x "
+            f"tonight")
 
     return {
         "tickers": len(tickers), "chunks": n_chunks, "computed": computed,

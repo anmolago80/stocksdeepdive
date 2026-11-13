@@ -64,11 +64,19 @@ FEAR_FROM_PEAK_CLAMP = 50.0
 # multiples of today's price - RR.L: peak 393.42 (still pence, i.e.
 # really GBP 3.93) vs current GBP 13.70, ratio ~28.7x, read as a
 # bogus "-97% drop" that wrongly admitted it to "Quality on sale".
-# No real operating company's genuine weekly-close peak is 5x+ its
-# own current price within a 3-year window (that would be among the
-# most extreme single-stock collapses on record) - a ratio past this
-# floor is treated as a still-unrepaired data artifact, never a real
-# drop, and suppressed at the source rather than guessed at further.
+#
+# TASK 53 follow-up (13 Nov 2026, Director-directed): the ORIGINAL
+# version of this guard applied the ratio floor to EVERY ticker on
+# EVERY market - "no real operating company's genuine weekly-close
+# peak is 5x+ its own current price" is false for a genuine multi-
+# year collapse (a ZM-style -90% or a DOCU-style -80% both clear a
+# 5x peak/current ratio easily), so that blanket version was hiding
+# exactly the kind of real drop "Quality on sale" exists to surface,
+# on every market OTHER than the LSE. The pence/pounds unit-mixing
+# problem this guard exists for is specific to .L listings (GBP vs
+# GBp) - compute_peak_and_drop() now only applies this floor when its
+# own `ticker` parameter ends in ".L"; every other market's drop_pct
+# is never suppressed by this guard, however large.
 PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO = 5.0
 
 # TASK 53's own audit threshold for a single-week close-to-close jump
@@ -90,7 +98,7 @@ def _years_ago(reference_date, years):
         return reference_date.replace(year=reference_date.year - years, day=28)
 
 
-def compute_peak_and_drop(weekly_dates, weekly_closes, window_years=PEAK_WINDOW_YEARS):
+def compute_peak_and_drop(weekly_dates, weekly_closes, window_years=PEAK_WINDOW_YEARS, ticker=None):
     """weekly_dates/weekly_closes: parallel oldest-first lists (the
     SAME shape support_levels_job._weekly_bars_from_daily() already
     produces - a caller computing both the support chip and this one
@@ -114,19 +122,37 @@ def compute_peak_and_drop(weekly_dates, weekly_closes, window_years=PEAK_WINDOW_
                                         # peak/current exist, diagnostic/
                                         # audit use only, never consumed
                                         # by chip_shown or the drop rule
-      "peak_implausible": bool,        # TASK 53: True when peak_price is
-                                        # more than PEAK_TO_CURRENT_
-                                        # IMPLAUSIBLE_RATIO times current_
-                                        # price - almost certainly a still-
-                                        # unrepaired pence/pounds data
-                                        # artifact (support_levels_job's
-                                        # own pence-repair passes can miss
-                                        # a segment whose ratio to TODAY's
-                                        # price has drifted under their
-                                        # own detection floor - see
-                                        # PEAK_TO_CURRENT_IMPLAUSIBLE_
-                                        # RATIO's own comment above), never
-                                        # a real multi-year collapse
+      "peak_implausible": bool,        # TASK 53 follow-up (13 Nov 2026):
+                                        # True only when `ticker` ends in
+                                        # ".L" AND peak_price is more than
+                                        # PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO
+                                        # times current_price - almost
+                                        # certainly a still-unrepaired
+                                        # pence/pounds data artifact
+                                        # (support_levels_job's own pence-
+                                        # repair passes can miss a segment
+                                        # whose ratio to TODAY's price has
+                                        # drifted under their own detection
+                                        # floor - see PEAK_TO_CURRENT_
+                                        # IMPLAUSIBLE_RATIO's own comment
+                                        # above). Scoped to .L ONLY: the
+                                        # pence/pounds unit-mixing bug this
+                                        # guard exists for is a .L-specific
+                                        # data defect (GBP/GBp on the LSE) -
+                                        # the ORIGINAL, market-agnostic
+                                        # version of this guard wrongly
+                                        # suppressed every genuinely large
+                                        # multi-year collapse on every
+                                        # OTHER market too (a real -90%
+                                        # name easily clears a 5x peak/
+                                        # current ratio), hiding exactly
+                                        # the kind of drop "Quality on
+                                        # sale" exists to surface. `ticker`
+                                        # left at its default None (a
+                                        # caller that doesn't pass it) is
+                                        # treated as NOT .L - the guard
+                                        # never fires, never a real drop
+                                        # hidden by omission.
       "chip_shown": bool,              # drop_pct <= DROP_CHIP_THRESHOLD_PCT
                                         # (always False when drop_pct is None)
       "series": [(date, close), ...],  # the 3-year window itself, oldest-
@@ -158,12 +184,19 @@ def compute_peak_and_drop(weekly_dates, weekly_closes, window_years=PEAK_WINDOW_
     peak_date, peak_price = max(series, key=lambda dc: dc[1])
 
     drop_pct_raw = ((current_price / peak_price) - 1.0) * 100.0 if peak_price else None
-    # TASK 53 (Director-directed, 13 Nov 2026, RR.L live case): see
-    # PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO's own comment above for why a
-    # peak many multiples of today's price is treated as a still-
-    # unrepaired pence/pounds artifact rather than a real collapse.
+    # TASK 53 follow-up (Director-directed, 13 Nov 2026): the pence/
+    # pounds unit-mixing bug this guard exists for is a .L-specific
+    # data defect (GBP/GBp on the LSE) - scoped to .L ONLY so a
+    # genuine large multi-year collapse on any OTHER market (ZM-style
+    # -90%, DOCU-style -80%) is never hidden by a guard built for a
+    # different market's own data bug. See PEAK_TO_CURRENT_IMPLAUSIBLE_
+    # RATIO's own comment above for why a .L peak many multiples of
+    # today's price is treated as a still-unrepaired pence/pounds
+    # artifact rather than a real collapse.
+    _is_lse_ticker = bool(ticker) and ticker.strip().upper().endswith(".L")
     peak_implausible = (
-        peak_price is not None and peak_price > 0
+        _is_lse_ticker
+        and peak_price is not None and peak_price > 0
         and current_price is not None and current_price > 0
         and (peak_price / current_price) > PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO
     )

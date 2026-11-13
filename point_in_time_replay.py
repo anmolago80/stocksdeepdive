@@ -232,7 +232,8 @@ def _weekly_closes_as_of(daily_closes_with_dates, date):
     return dates, weekly.tolist()
 
 
-def fear_from_peak_as_of(daily_closes_with_dates, date, window_years=drop_chip_engine.PEAK_WINDOW_YEARS):
+def fear_from_peak_as_of(daily_closes_with_dates, date, window_years=drop_chip_engine.PEAK_WINDOW_YEARS,
+                          ticker=None):
     """TASK 42 item 6a (Director-directed, 8 Nov 2026, CSL.AX replay
     case): drop_chip_engine's own "% below the 3-year weekly peak" fear
     variant, replayed as of a past `date` - resamples `daily_closes_
@@ -248,7 +249,8 @@ def fear_from_peak_as_of(daily_closes_with_dates, date, window_years=drop_chip_e
     weekly_dates, weekly_closes = _weekly_closes_as_of(daily_closes_with_dates, date)
     if not weekly_closes:
         return {"peak_date": None, "peak_price": None, "fear": None}
-    result = drop_chip_engine.compute_peak_and_drop(weekly_dates, weekly_closes, window_years=window_years)
+    result = drop_chip_engine.compute_peak_and_drop(
+        weekly_dates, weekly_closes, window_years=window_years, ticker=ticker)
     # TASK 53 (Director-directed, 13 Nov 2026, RR.L live case): fear_
     # from_peak() reads peak_price/current_price directly, bypassing
     # drop_pct/chip_shown entirely - same "peak_implausible" guard
@@ -264,7 +266,7 @@ def fear_from_peak_as_of(daily_closes_with_dates, date, window_years=drop_chip_e
 
 def quality_on_sale_as_of(date, daily_closes_with_dates, quality_v1, quality_v2, dcf_unreliable,
                            quality_exception_thresholds_met,
-                           min_quality=None):
+                           min_quality=None, ticker=None):
     """TASK 42 item 6c (Director-directed, 8 Nov 2026): would this
     ticker have passed EVERY "Quality on sale" tab rule (top100_
     engine.quality_on_sale_candidates()'s own three rules) as of
@@ -307,7 +309,8 @@ def quality_on_sale_as_of(date, daily_closes_with_dates, quality_v1, quality_v2,
 
     weekly_dates, weekly_closes = _weekly_closes_as_of(daily_closes_with_dates, date)
     peak_drop = (
-        drop_chip_engine.compute_peak_and_drop(weekly_dates, weekly_closes) if weekly_closes else None
+        drop_chip_engine.compute_peak_and_drop(weekly_dates, weekly_closes, ticker=ticker)
+        if weekly_closes else None
     )
     drop_pct = peak_drop.get("drop_pct") if peak_drop else None
     drop_rule_pass = drop_chip_engine.passes_quality_on_sale_drop_rule(drop_pct)
@@ -419,7 +422,7 @@ def quality_on_sale_backtest(ticker, daily_closes_with_dates, start_date, end_da
                     ticker, bundle, friday, info=info, reporting_lag_days=reporting_lag_days)
             result = quality_on_sale_as_of(
                 friday, daily_closes_with_dates, quality_v1=None, quality_v2=quality_v2,
-                dcf_unreliable=None, quality_exception_thresholds_met=None,
+                dcf_unreliable=None, quality_exception_thresholds_met=None, ticker=ticker,
             )
             price = None
             for d, c in (daily_closes_with_dates or []):
@@ -642,7 +645,7 @@ def replay_at_date(ticker, date, baseline=None, baseline_date=None, bundle=None,
     # own root-cause finding ("fear uses a 63-day window... while
     # greed/FOMO penalise the bounce above MA50") - this never re-
     # derives greed/fomo, only substitutes the one term under review.
-    peak_fear_result = fear_from_peak_as_of(daily_closes_with_dates or [], date)
+    peak_fear_result = fear_from_peak_as_of(daily_closes_with_dates or [], date, ticker=ticker)
     peak_fear_psychology = None
     if (peak_fear_result.get("fear") is not None
             and psych.get("greed") is not None and psych.get("fomo") is not None):
@@ -697,7 +700,7 @@ def replay_at_date(ticker, date, baseline=None, baseline_date=None, bundle=None,
     # second derivation.
     quality_on_sale = quality_on_sale_as_of(
         date, daily_closes_with_dates or [], quality_v1, quality_v2,
-        dcf_unreliable, quality_exception_thresholds_met,
+        dcf_unreliable, quality_exception_thresholds_met, ticker=ticker,
     )
 
     return {
