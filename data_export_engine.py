@@ -361,7 +361,7 @@ TOP200_EXPORT_COLUMNS = [
     "Research Score", "Value Score", "MOS %", "Price", "Currency",
     "Intrinsic Value", "Quality (v1)", "Quality v2", "Moat",
     "Dividend %", "Psychology label", "Support date", "Support price",
-    "% above support", "3y peak date", "3y peak price",
+    "% above support", "Support 5y+ low", "3y peak date", "3y peak price",
     "% below 3y peak", "In Top 200 (rank)", "On Quality on sale (rank)",
     "Market structure", "Munger-quality", "Big wave", "Easy decision",
     "Current headwind", "Research read date", "Recently added date",

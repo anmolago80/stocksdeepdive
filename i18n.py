@@ -4286,6 +4286,16 @@ EN = {
     # plain numbers, formatted inline below with their own sign/
     # percent symbol.
     "top100.support_chip": "Support {month_year} · {price} · +{pct_above}% above",
+    # TASK 52 (Director-directed, 12 Nov 2026, PGHN.SW owner-reported):
+    # the same chip, with the "5y+ low" flag inserted between the price
+    # and the "+X% above" figure - support_levels_engine.compute_
+    # support_levels() only ever sees 5 years of history, so a floor
+    # first set earlier than that shows its most recent touch date
+    # instead; this flag says "likely older/deeper than the date shown"
+    # whenever the chosen support sits within 1% of the lowest weekly
+    # low anywhere in that 5-year window.
+    "top100.support_chip_5y_low": "Support {month_year} · {price} · {flag} · +{pct_above}% above",
+    "top100.support_5y_low_flag": "5y+ low",
     "top100.no_support_chip": "No support below - lowest since {month_year}",
     "top100.support_drop_suffix": " · {drop}% from 12-month high",
     # TASK 39 (Director-directed): "−52% from Aug 2023 peak (3y high)".
@@ -8124,6 +8134,8 @@ ES = {
     ),
     "top100.quality_exception_chip": "Admitida: alta calidad + foso (valoración > 3x precio)",
     "top100.support_chip": "Soporte {month_year} · {price} · +{pct_above}% por encima",
+    "top100.support_chip_5y_low": "Soporte {month_year} · {price} · {flag} · +{pct_above}% por encima",
+    "top100.support_5y_low_flag": "mínimo 5a+",
     "top100.no_support_chip": "Sin soporte por debajo - mínimo desde {month_year}",
     "top100.support_drop_suffix": " · {drop}% desde el máximo de 12 meses",
     # TASK 39 (Director-directed): "−52% desde el máximo de ago 2023 (máximo de 3 años)".

@@ -52,6 +52,24 @@ PIVOT_RIGHT_BARS = 3
 WEEKS_PER_YEAR = 52
 LOWEST_SINCE_EXCLUDE_RECENT_WEEKS = 8
 
+# TASK 52 (Director-directed, 12 Nov 2026, PGHN.SW owner-reported):
+# this module only ever sees whatever history its caller fetches -
+# support_levels_job.py's own SUPPORT_LEVELS_HISTORY_PERIOD is "5y", so
+# a floor that was ORIGINALLY set earlier than that (TradingView:
+# PGHN.SW's own pivot low at 583.5, 26 Jun 2017) shows here under its
+# most recent WEEKLY LOW that still touches that same level, not its
+# true original date - there's no way to know the real first-set date
+# without fetching more history (explicitly out of scope: "no extra
+# data"). The only honest fix available from 5 years alone is a FLAG,
+# not a corrected date: when the chosen support (or next support)
+# price sits within FIVE_YEAR_LOW_FLAG_PCT of the single lowest weekly
+# low anywhere in the fetched window, the floor is very likely older
+# than the window itself (price has never gone lower in 5 years, which
+# is exactly the shape a truncated multi-decade floor produces) - "5y+
+# low" says "this may be a deeper, older floor than the date shown,"
+# never a claim about the real date.
+FIVE_YEAR_LOW_FLAG_PCT = 0.01
+
 
 def confirmed_pivot_lows(weekly_lows, left=PIVOT_LEFT_BARS, right=PIVOT_RIGHT_BARS):
     """weekly_lows: a list of (date, low) pairs, oldest-first (chrono-
@@ -145,8 +163,18 @@ def compute_support_levels(weekly_dates, weekly_highs, weekly_lows, weekly_close
       "drop_from_12m_high": float|None,      # (latest_close/high_52w - 1) * 100, negative below the high
       "has_support": bool,
       "lowest_since_date": date|None, "lowest_since_price": float|None,
+      "support_is_5y_low": bool,             # TASK 52: support_price is
+                                              # within FIVE_YEAR_LOW_FLAG_PCT
+                                              # of the lowest weekly low in
+                                              # the whole fetched window -
+                                              # likely an older, truncated
+                                              # floor, never a corrected date
+      "next_support_is_5y_low": bool,        # same check against next_support_price
     } - lowest_since_* are only ever set when has_support is False;
-    support/next_support are only ever set when has_support is True.
+    support/next_support (and their own *_is_5y_low flags) are only
+    ever set/True when has_support is True and that particular price
+    exists (next_support_is_5y_low is always False when there's no
+    next support level at all).
     Returns an all-None/False "no data" shape (never raises) when
     there are too few weeks for even one confirmed pivot - the same
     "missing data never blocks a decision" philosophy as the rest of
@@ -157,6 +185,7 @@ def compute_support_levels(weekly_dates, weekly_highs, weekly_lows, weekly_close
             "next_support_price": None, "next_support_date": None,
             "drop_from_12m_high": None, "has_support": False,
             "lowest_since_date": None, "lowest_since_price": None,
+            "support_is_5y_low": False, "next_support_is_5y_low": False,
         }
 
     latest_close = weekly_closes[-1]
@@ -192,12 +221,26 @@ def compute_support_levels(weekly_dates, weekly_highs, weekly_lows, weekly_close
         support_date, support_price = deduped[0]
         next_support_date, next_support_price = (deduped[1] if len(deduped) > 1 else (None, None))
         pct_above_support = ((latest_close / support_price) - 1.0) * 100.0
+        # TASK 52: the lowest weekly low anywhere in the fetched window
+        # (never just the pivot-confirmed ones) - a support price that
+        # sits within FIVE_YEAR_LOW_FLAG_PCT of it has never been
+        # undercut in the whole period this engine can see, which is
+        # exactly the shape a floor set before the window began would
+        # produce (price simply never revisits anything lower within
+        # 5 years of an even-older true low).
+        lowest_low_in_window = min(weekly_lows)
+        support_is_5y_low = abs(support_price - lowest_low_in_window) <= lowest_low_in_window * FIVE_YEAR_LOW_FLAG_PCT
+        next_support_is_5y_low = (
+            next_support_price is not None
+            and abs(next_support_price - lowest_low_in_window) <= lowest_low_in_window * FIVE_YEAR_LOW_FLAG_PCT
+        )
         return {
             "support_price": support_price, "support_date": support_date,
             "pct_above_support": pct_above_support,
             "next_support_price": next_support_price, "next_support_date": next_support_date,
             "drop_from_12m_high": drop_from_12m_high, "has_support": True,
             "lowest_since_date": None, "lowest_since_price": None,
+            "support_is_5y_low": support_is_5y_low, "next_support_is_5y_low": next_support_is_5y_low,
         }
 
     lowest_since_date, lowest_since_price = _lowest_since(
@@ -208,4 +251,5 @@ def compute_support_levels(weekly_dates, weekly_highs, weekly_lows, weekly_close
         "next_support_price": None, "next_support_date": None,
         "drop_from_12m_high": drop_from_12m_high, "has_support": False,
         "lowest_since_date": lowest_since_date, "lowest_since_price": lowest_since_price,
+        "support_is_5y_low": False, "next_support_is_5y_low": False,
     }

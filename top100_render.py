@@ -510,17 +510,33 @@ def _support_chip_html(row, lang):
     if entry.get("has_support"):
         price_str = compounder_ui._fmt_money(entry.get("support_price"), symbol)
         pct_above = entry.get("pct_above_support") or 0.0
-        text = _t(
-            "support_chip", lang,
-            month_year=_month_year_str(entry.get("support_date"), lang),
-            price=price_str, pct_above=f"{pct_above:.0f}",
-        ) + drop_suffix
+        # TASK 52 (Director-directed, 12 Nov 2026): a separate chip
+        # template (not string surgery on the plain one) so each
+        # language keeps its own natural word order for the inserted
+        # flag - see support_levels_engine.compute_support_levels()'s
+        # own docstring for what "5y+ low" means and why it can only
+        # ever be a flag, never a corrected date.
+        if entry.get("support_is_5y_low"):
+            text = _t(
+                "support_chip_5y_low", lang,
+                month_year=_month_year_str(entry.get("support_date"), lang),
+                price=price_str, flag=_t("support_5y_low_flag", lang),
+                pct_above=f"{pct_above:.0f}",
+            ) + drop_suffix
+        else:
+            text = _t(
+                "support_chip", lang,
+                month_year=_month_year_str(entry.get("support_date"), lang),
+                price=price_str, pct_above=f"{pct_above:.0f}",
+            ) + drop_suffix
         bg, border, color = _SHELF_CHIP_SUPPORT
         if entry.get("next_support_price") is not None:
             next_support = (
                 compounder_ui._fmt_money(entry.get("next_support_price"), symbol)
                 + f" ({_month_year_str(entry.get('next_support_date'), lang)})"
             )
+            if entry.get("next_support_is_5y_low"):
+                next_support += f" · {_t('support_5y_low_flag', lang)}"
         else:
             next_support = "—"
         tooltip = _t(
@@ -2662,6 +2678,7 @@ def _top200_export_row(rank, row, *, quality_moat_map, top200_rank_map, qos_rank
         "Support date": support_entry.get("support_date") if has_support else None,
         "Support price": support_entry.get("support_price") if has_support else None,
         "% above support": support_entry.get("pct_above_support") if has_support else None,
+        "Support 5y+ low": ("yes" if support_entry.get("support_is_5y_low") else "no") if has_support else None,
         "3y peak date": drop_entry.get("peak_date"),
         "3y peak price": drop_entry.get("peak_price"),
         "% below 3y peak": drop_entry.get("drop_pct"),

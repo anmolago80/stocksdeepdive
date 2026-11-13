@@ -113,8 +113,11 @@ check("build_top200_tab_workbook(): row values placed by column key (missing key
       and _ws_a.cell(row=3, column=2).value == "BBB")
 check("build_top200_tab_workbook(): header row frozen",
       _ws_a.freeze_panes == "A2")
+from openpyxl.utils import get_column_letter as _get_column_letter
+
 check("build_top200_tab_workbook(): auto-filter covers the full used range",
-      _ws_a.auto_filter.ref == f"A1:AF{len(_rows_a) + 1}")
+      _ws_a.auto_filter.ref
+      == f"A1:{_get_column_letter(len(de.TOP200_EXPORT_COLUMNS))}{len(_rows_a) + 1}")
 
 _xlsx_a2 = de.build_top200_tab_workbook(_rows_a, extra_column="Gap to cut-off")
 _wb_a2 = load_workbook(io.BytesIO(_xlsx_a2))
