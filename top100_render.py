@@ -647,16 +647,30 @@ def _drop_chart_svg_html(row, lang):
     render time, per the Director's own "Lightweight: NO network calls
     at page render... Render from stored values only" rule.
 
-    "" when gated off for this viewer, there's no stored entry, or the
-    series has fewer than 2 points to draw a line from - never a
-    broken/empty chart. Shown whenever there's a stored entry with a
-    real series, independent of chip_shown - the Director's spec gates
-    the CHART by TOP200_DROP_CHART_LIVE alone, not by the same -20%
-    threshold that gates the text chip."""
+    "" when gated off for this viewer, there's no stored entry, the
+    peak is flagged implausible (TASK 53 - see below), or the series
+    has fewer than 2 points to draw a line from - never a broken/empty
+    chart. Shown whenever there's a stored entry with a real series,
+    independent of chip_shown - the Director's spec gates the CHART by
+    TOP200_DROP_CHART_LIVE alone, not by the same -20% threshold that
+    gates the text chip. The ONE exception is "peak_implausible"
+    (TASK 53): that flag means the series itself still has a still-
+    unrepaired pence data point in it, not just a bad peak line, so
+    the chart is suppressed entirely rather than drawn from data
+    that's known to still be wrong."""
     if not (_drop_chip_live() or _is_owner_for_refresh()):
         return ""
     entry = drop_chip_store.get(row["ticker"])
     if not entry:
+        return ""
+    # TASK 53 (Director-directed, 13 Nov 2026, RR.L live case): an
+    # implausible peak (compute_peak_and_drop()'s own "peak_implausible"
+    # flag) means the SERIES ITSELF still has a still-unrepaired pence
+    # data point in it, not just a bad peak line - the whole chart's own
+    # y-axis would still be built from that corrupted value even with
+    # the text chip already suppressed above. Never drawn in that case,
+    # same "don't show data we know is still wrong" rule as the chip.
+    if entry.get("peak_implausible"):
         return ""
     series = entry.get("series") or []
     if len(series) < 2:

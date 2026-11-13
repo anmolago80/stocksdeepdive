@@ -301,11 +301,23 @@ def compute_and_store_support_levels_for_pool(log=print):
     # same "named tickers, explicit log line" precedent as the support-
     # levels block just above, reading back from drop_chip_store (just
     # written above, this same run) rather than recomputing.
-    for _named in ("CSL.AX", "OCL.AX", "NU", "ADBE"):
+    for _named in ("CSL.AX", "OCL.AX", "NU", "ADBE", "RR.L"):
         _drop_entry = drop_chip_store.get(_named)
         if not _drop_entry:
             log(f"[drop_chip] {_named}: no entry (not a current pool/extension "
                 f"member, or tonight's computation failed/skipped for it)")
+        elif _drop_entry.get("peak_implausible"):
+            # TASK 53 (Director-directed, 13 Nov 2026, RR.L live case):
+            # named ahead of the chip_shown branch below - an implausible
+            # peak suppresses chip_shown too, so without this branch
+            # RR.L would silently fall into the plain "no chip" line and
+            # hide the exact thing this task fixed.
+            log(f"[drop_chip] {_named}: peak IMPLAUSIBLE (likely still-unrepaired "
+                f"pence/pounds data) - peak {_drop_entry.get('peak_price')} on "
+                f"{_drop_entry.get('peak_date')} is "
+                f"{(_drop_entry.get('peak_price') or 0) / (_drop_entry.get('current_price') or 1):.1f}x "
+                f"current {_drop_entry.get('current_price')} - drop chip suppressed "
+                f"(would-be drop {_drop_entry.get('drop_pct_raw')}%)")
         elif _drop_entry.get("chip_shown"):
             log(f"[drop_chip] {_named}: -{abs(_drop_entry.get('drop_pct') or 0):.1f}% "
                 f"from {_drop_entry.get('peak_date')} peak "
@@ -315,6 +327,32 @@ def compute_and_store_support_levels_for_pool(log=print):
                 f"{_drop_entry.get('drop_pct')}% is above the -20% threshold) - "
                 f"peak {_drop_entry.get('peak_price')} on {_drop_entry.get('peak_date')}, "
                 f"current {_drop_entry.get('current_price')}")
+
+    # TASK 53 (Director-directed, 13 Nov 2026) - "run a check across ALL
+    # .L tickers in the support/drop store": reads back every ".L"
+    # ticker computed THIS run (not a second download - drop_chip_store.
+    # get()'s own "series" already carries the 3-year weekly window
+    # compute_peak_and_drop() built above) and reports any whose peak/
+    # current ratio or own internal week-to-week jump still looks like
+    # unrepaired pence data, even after this task's own source fix -
+    # "before" (drop_pct_raw, what the naive formula alone would show)
+    # vs "after" (drop_pct, None whenever peak_implausible suppressed it).
+    _l_tickers_tonight = [t for t in tickers if isinstance(t, str) and t.upper().endswith(".L")]
+    _l_entries = {t: drop_chip_store.get(t) for t in _l_tickers_tonight}
+    _suspect = drop_chip_engine.audit_suspect_entries(_l_entries)
+    if _suspect:
+        for _s in _suspect:
+            _ratio_str = f"{_s['peak_to_current_ratio']:.1f}x" if _s["peak_to_current_ratio"] is not None else "n/a"
+            log(f"[pence_audit] {_s['ticker']}: peak={_s['peak_price']} "
+                f"current={_s['current_price']} ratio={_ratio_str} "
+                f"jump={_s['has_jump']} before_drop={_s['drop_pct_raw']}% "
+                f"after_drop={_s['drop_pct']}%")
+        log(f"[pence_audit] {len(_suspect)} of {len(_l_tickers_tonight)} .L ticker(s) "
+            f"flagged tonight (peak/current > "
+            f"{drop_chip_engine.PEAK_TO_CURRENT_IMPLAUSIBLE_RATIO}x or a single-week "
+            f"jump >= {drop_chip_engine.JUMP_AUDIT_RATIO_FLOOR}x)")
+    else:
+        log(f"[pence_audit] 0 of {len(_l_tickers_tonight)} .L ticker(s) flagged tonight")
 
     return {
         "tickers": len(tickers), "chunks": n_chunks, "computed": computed,

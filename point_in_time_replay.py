@@ -249,7 +249,16 @@ def fear_from_peak_as_of(daily_closes_with_dates, date, window_years=drop_chip_e
     if not weekly_closes:
         return {"peak_date": None, "peak_price": None, "fear": None}
     result = drop_chip_engine.compute_peak_and_drop(weekly_dates, weekly_closes, window_years=window_years)
-    fear = drop_chip_engine.fear_from_peak(result["current_price"], result["peak_price"])
+    # TASK 53 (Director-directed, 13 Nov 2026, RR.L live case): fear_
+    # from_peak() reads peak_price/current_price directly, bypassing
+    # drop_pct/chip_shown entirely - same "peak_implausible" guard
+    # top100_engine._recompute_value_score_v2_moat_peak_fear() already
+    # applies to its own live read of this same field, so a replay at
+    # a past date can't surface the same bogus reading either.
+    fear = (
+        None if result.get("peak_implausible")
+        else drop_chip_engine.fear_from_peak(result["current_price"], result["peak_price"])
+    )
     return {"peak_date": result["peak_date"], "peak_price": result["peak_price"], "fear": fear}
 
 

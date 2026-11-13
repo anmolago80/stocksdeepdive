@@ -1142,6 +1142,15 @@ def _recompute_value_score_v2_moat_peak_fear(ticker, row):
     drop_entry = drop_chip_store.get(ticker)
     if not drop_entry:
         return fallback
+    # TASK 53 (Director-directed, 13 Nov 2026, RR.L live case): the
+    # SAME "peak many multiples of current price is still-unrepaired
+    # pence data, not a real reading" guard compute_peak_and_drop()
+    # itself already applies to drop_pct/chip_shown - fear_from_peak()
+    # reads peak_price/current_price directly, bypassing both, so it
+    # needs its own check against the same "peak_implausible" flag
+    # rather than trusting an implausible peak here too.
+    if drop_entry.get("peak_implausible"):
+        return fallback
     peak_fear = drop_chip_engine.fear_from_peak(drop_entry.get("current_price"), drop_entry.get("peak_price"))
     if peak_fear is None:
         return fallback
