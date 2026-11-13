@@ -2349,12 +2349,25 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         except Exception:
             _dcf_diag_cache_age = None
     _dcf_diag_fin_ccy = (dcf_info.get("financialCurrency") or currency or "").upper()
+    # TASK 54 fix (Director-directed, 13 Nov 2026, NVO live case): `shares`
+    # here was always _basics(bundle)["shares"] - the CORRECTED, bundle-
+    # resolved total this function's caller uses for market cap/BVPS/WACC
+    # elsewhere - never what resolve_intrinsic_value() itself resolved and
+    # used two lines above for the `value`/`iv` this very log line reports
+    # (deliberately: see this function's own docstring, "Deliberately does
+    # NOT pass diluted_shares_override... matching Deep Dive exactly").
+    # Kept for continuity, but shares_used/share_source (meta's own fields,
+    # now populated by fcf_valuation_engine.dcf_intrinsic_value() itself)
+    # are what the IV math actually used - compare those against deep_
+    # dive_engine.py's own [dcf_diag] line for the same ticker, not this
+    # `shares` field.
     print(
         f"[dcf_diag] {ticker} path=fairvalue price={_dcf_diag_price} iv={value} "
         f"growth={growth_used} growth_source={meta.get('growth_source')} "
         f"discount={meta.get('discount_rate_used')} "
         f"fcf_base={meta.get('fcf_used')} "
-        f"shares={_dcf_diag_shares} cache_age={_dcf_diag_cache_age} "
+        f"shares={_dcf_diag_shares} shares_used={meta.get('shares_used')} "
+        f"share_source={meta.get('share_count_source')} cache_age={_dcf_diag_cache_age} "
         f"fin_ccy={_dcf_diag_fin_ccy} listing_ccy={currency} fx={meta.get('fx_rate_used')}"
     )
     return {

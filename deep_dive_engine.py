@@ -356,6 +356,30 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
                     ).total_seconds()
                 except Exception:
                     _dcf_diag_cache_age = None
+            # TASK 54 fix (Director-directed, 13 Nov 2026, NVO live case):
+            # peek_cached_bundle() deliberately ignores the 24h TTL (see its
+            # own docstring - built for an admin audit tool where staleness
+            # doesn't matter). Feeding this path's own DCF inputs from an
+            # arbitrarily old bundle is a different story: the live NVO
+            # report showed this branch reading a 36h-old bundle while the
+            # SAME ticker's Fair Value tab (auto_compounder_engine.py, via
+            # fundamentals_data.get_bundle(), which DOES enforce the 24h
+            # TTL) read a fresh one in the SAME page view - diverging
+            # income_df (and, via normalized_base_and_series()'s own cross-
+            # check, fcf_base/growth) between the two paths for no reason
+            # other than which one happened to re-fetch first. Bound this
+            # peek to the exact same staleness bar get_bundle() already
+            # enforces everywhere else (reusing fundamentals_data's own TTL
+            # constant, not inventing a second threshold) - past it, treat
+            # as if nothing were cached at all: falls through to the
+            # existing needs_oneoff_check()/None branches below, unchanged,
+            # never a new network call of its own.
+            if (
+                _dcf_diag_cache_age is not None
+                and _dcf_diag_cache_age > fundamentals_data._CACHE_TTL_SECONDS
+            ):
+                _bundle = None
+        if _bundle:
             income_df = _bundle.get("income")
             # Audit fix C1 / Fable finding V2 (10 Oct 2026, instruction_
             # combined_10oct.md PART C): fundamentals_data.get_bundle()'s
@@ -443,7 +467,13 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         f"iv={intrinsic_value} growth={dcf_growth} growth_source={iv_meta.get('growth_source')} "
         f"discount={iv_meta.get('discount_rate_used')} "
         f"fcf_base={iv_meta.get('fcf_used')} "
-        f"shares={info.get('sharesOutstanding')} cache_age={_dcf_diag_cache_age} "
+        # TASK 54 fix (13 Nov 2026): shares_used/share_source are the
+        # figures dcf_intrinsic_value() actually resolved and used - info.
+        # get('sharesOutstanding') (kept alongside, not replaced) is the
+        # raw, un-dual-class-corrected field and was never what the DCF
+        # math itself used, on this path or the Fair Value one.
+        f"shares={info.get('sharesOutstanding')} shares_used={iv_meta.get('shares_used')} "
+        f"share_source={iv_meta.get('share_count_source')} cache_age={_dcf_diag_cache_age} "
         f"fin_ccy={(info.get('financialCurrency') or _dcf_diag_listing_ccy or '').upper()} "
         f"listing_ccy={_dcf_diag_listing_ccy} fx={iv_meta.get('fx_rate_used')}"
     )

@@ -2151,6 +2151,12 @@ def dcf_intrinsic_value(
                                        # diluted_shares_override was passed explicitly.
         "share_count_source": str | None,  # "bundle" | "implied" | "filed" | None -
                                        # see whole_company_shares()'s own docstring.
+        "shares_used": float | None,  # TASK 54 (13 Nov 2026): the share count this
+                                       # call actually resolved to and used in the
+                                       # math below - set even when diluted_shares_
+                                       # override was passed. None only on the
+                                       # genuinely-never-ran "no_shares"/exception
+                                       # paths before it's ever assigned.
         "share_count_note": str | None,  # set only when a dual-class candidate was
                                        # FOUND but REJECTED (ratio above the sanity
                                        # ceiling, or an uncorroborated "implied" figure) -
@@ -2239,6 +2245,8 @@ def dcf_intrinsic_value(
         "share_count_flagged": False,
         "share_count_source": None,
         "share_count_note": None,
+        # TASK 54 (13 Nov 2026) - see this function's own docstring.
+        "shares_used": None,
         # Audit fixes Commit 4 (30 Sep 2026, owner-directed) - pure
         # passthrough of capm_engine.resolve_discount_rate_by_market_
         # cap()'s own market_cap_missing flag; True also forces
@@ -2256,12 +2264,42 @@ def dcf_intrinsic_value(
         if diluted_shares_override:
             shares = diluted_shares_override
         else:
+            # TASK 54 fix (Director-directed, 13 Nov 2026, NVO live case):
+            # this call used to never forward `income_df`, even though this
+            # very function already receives it as a parameter and already
+            # threads it into normalized_base_and_series() a few lines below
+            # for the FCF-base calc. whole_company_shares()'s own docstring
+            # has always documented `income_df` as its cheapest, most
+            # authoritative tier ("bundle" - zero new cost when a caller
+            # already has one) - every existing caller of THIS function
+            # that bothers to pass income_df at all (deep_dive_engine.py's
+            # opportunistic peek, auto_compounder_engine._run_canonical_
+            # dcf()'s always-on bundle) was paying to fetch/hold it for
+            # exactly this purpose, but it silently never reached the one
+            # call site that resolves the actual shares the DCF math below
+            # uses - both paths fell through to the weaker, uncorroborated
+            # tier-2 "implied" (info["impliedSharesOutstanding"]) or tier-3
+            # resolution instead. For a dual-class company with no US-style
+            # second ticker in share_class_engine.SHARE_CLASS_PAIRS (NVO:
+            # Novo Nordisk's A-shares aren't separately listed, so tier 3
+            # never fires for it either), that's the only place a correct
+            # whole-company total could ever come from. Zero new network
+            # cost - income_df is already in this function's own scope.
             shares, _dc_flagged, _dc_source, _dc_note = share_class_engine.whole_company_shares(
-                info, ticker=ticker,
+                info, income_df=income_df, ticker=ticker,
             )
             meta["share_count_flagged"] = _dc_flagged
             meta["share_count_source"] = _dc_source
             meta["share_count_note"] = _dc_note
+        # TASK 54 (13 Nov 2026): the actual share count this call resolved
+        # to, exposed on meta so a caller/diagnostic log can report what the
+        # DCF math below genuinely used - before this, every existing
+        # [dcf_diag] log line logged something ELSE entirely (deep_dive_
+        # engine.py's raw info["sharesOutstanding"]; auto_compounder_
+        # engine.py's own separately-resolved _basics(bundle)["shares"]),
+        # neither of which necessarily matched what this function used
+        # internally. Set even on the diluted_shares_override path.
+        meta["shares_used"] = shares
         if shares <= 0:
             # Audit fix B3 / Fable finding V6 (10 Oct 2026): there is
             # no usable share count at all for this ticker (bundle/
