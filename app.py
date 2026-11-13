@@ -50,6 +50,7 @@ import positions_store
 import announce_engine
 import compare_config
 import compare_lists_store
+import compare_notes_store
 import admin_data_audit
 import capm_engine
 import fcf_valuation_engine
@@ -3274,6 +3275,24 @@ def _cap_comparison_tickers(tickers, lang):
     return tickers[:compare_config.COMPARE_MAX_TICKERS]
 
 
+def _parse_ticker_tokens(text):
+    """De-duplicated, order-preserved, upper-cased tickers out of free
+    text - comma/space/newline all treated as separators (a pasted
+    multi-line or comma-separated list works exactly like typed-with-
+    spaces). TASK 55 (13 Nov 2026): pulled out of _dispatch_search()
+    below (byte-identical logic, just given a name) so the Comparison
+    chip-entry box's own paste handling reuses this SAME tokenizer
+    rather than a second, possibly-drifting copy of the same three
+    lines."""
+    raw = (text or "").replace(",", " ").replace("\n", " ").split()
+    parsed = []
+    for tok in raw:
+        tok = tok.strip().upper()
+        if tok and tok not in parsed:
+            parsed.append(tok)
+    return parsed
+
+
 def _dispatch_search(text):
     """One shared handler behind every search box and example chip on the
     site: one ticker -> Deep Dive, two or more -> Comparison.
@@ -3287,12 +3306,7 @@ def _dispatch_search(text):
     once (via the shared _cap_comparison_tickers() helper - see its own
     docstring), applies it everywhere at once rather than needing a
     matching check at each call site."""
-    raw = (text or "").replace(",", " ").replace("\n", " ").split()
-    parsed = []
-    for tok in raw:
-        tok = tok.strip().upper()
-        if tok and tok not in parsed:
-            parsed.append(tok)
+    parsed = _parse_ticker_tokens(text)
     if not parsed:
         st.warning("Type at least one ticker above, then hit Search.")
         return
@@ -15726,6 +15740,26 @@ _COMPARISON_POPULAR_PAIRS = [
 ]
 
 
+def _render_comparison_popular_pairs(lang):
+    """TASK 55 (13 Nov 2026): pulled out of _render_comparison_input_row()
+    below (byte-identical logic) so both the old stacked-box entry row
+    AND the new chip entry row (behind COMPARE_CHIP_ENTRY_LIVE) render
+    the exact same popular-pairs pills, rather than one of them
+    carrying a second, possibly-drifting copy."""
+    _pair_labels = [f"{a} vs {b}" for a, b in _COMPARISON_POPULAR_PAIRS]
+    _sel = st.pills(
+        i18n.t("comparison.popular_pairs_label", lang), _pair_labels,
+        selection_mode="single", key="cmp_popular_pair_chip",
+    )
+    _done_key = "cmp_popular_pair_chip_done"
+    if not _sel:
+        st.session_state.pop(_done_key, None)
+    elif st.session_state.get(_done_key) != _sel:
+        st.session_state[_done_key] = _sel
+        _pair_a, _pair_b = _sel.split(" vs ")
+        _dispatch_search(f"{_pair_a} {_pair_b}")
+
+
 def _render_save_comparison_control(lang):
     """Compare Commit 3 (27 Sep 2026, owner-directed): save the current
     comparison as a named list (signed-in only), then load/rename/
@@ -15839,6 +15873,338 @@ def _render_save_comparison_control(lang):
             st.markdown("---")
 
 
+def _sync_cmp_saved_list_select(lang, name):
+    """TASK 55 bug fix (13 Nov 2026, caught in this task's own test
+    writing, not live-reported): st.selectbox is a "controlled"
+    widget - once a user has picked a value, Streamlit keeps using
+    THAT sticky, widget-owned session_state["cmp_saved_list_select"]
+    on every later rerun, regardless of what `index=` the next call
+    computes. Every OTHER control that changes session_state[
+    "cmp_loaded_list_name"] from OUTSIDE the selector itself (a chip
+    edit clearing it, Save as new/Rename/Delete/"Save this
+    comparison" setting it) must ALSO write this same key, or the
+    selector's own next render sees its sticky OLD value as "the user
+    just picked a different list" and silently snaps cmp_loaded_list_
+    name - and cmp_chips - back to that stale list, discarding
+    whatever the other control just did. Proven directly: Save as new
+    list's own write was being undone on the very next rerun before
+    this fix existed (compare_lists_store itself WAS updated
+    correctly - only the in-memory pointer snapped back).
+
+    Can't write session_state["cmp_saved_list_select"] directly here -
+    by the time a button inside _render_comparison_save_control_
+    chips() is clicked, _render_comparison_saved_list_selector() (the
+    function that actually OWNS that widget) has already run earlier
+    in this SAME script pass, and Streamlit raises Streamlit
+    WidgetAlreadyInstantiatedError on writing to an already-
+    instantiated widget's own key (confirmed directly - the first fix
+    attempted). Every caller here also calls st.rerun() right after,
+    so queuing the value in a plain, non-widget key and having the
+    selector itself apply it on the NEXT run - BEFORE it creates the
+    widget - is the safe pattern."""
+    st.session_state["_cmp_saved_list_select_pending"] = (
+        name if name else i18n.t("comparison.no_list_selected", lang)
+    )
+
+
+def _render_comparison_saved_list_selector(lang, email):
+    """TASK 55 part B (Director-directed, 13 Nov 2026), behind
+    COMPARE_CHIP_ENTRY_LIVE: "Saved list:" selector above the chip
+    box - selecting a list fills st.session_state["cmp_chips"] with
+    its tickers (signed-in only; the caller never calls this
+    otherwise). session_state["cmp_loaded_list_name"] tracks which
+    (if any) saved list the current chip set was last loaded from or
+    saved as - None once the chips have diverged from any saved list
+    by going back to "No list selected", exactly like closing a
+    document without saving under a different name. Reuses compare_
+    lists_store.list_lists() - the SAME store/rows the old popover-
+    based load/rename/delete flow already reads, never a second
+    source of truth for what a user's saved lists are.
+
+    Applies any pending value _sync_cmp_saved_list_select() queued
+    (see that function's own docstring for why it can't write the
+    widget's key directly) - BEFORE creating the widget below, the
+    only point in the whole rerun where that write is legal."""
+    if "_cmp_saved_list_select_pending" in st.session_state:
+        st.session_state["cmp_saved_list_select"] = (
+            st.session_state.pop("_cmp_saved_list_select_pending")
+        )
+    _saved_lists = compare_lists_store.list_lists(email)
+    _list_names = [_l["name"] for _l in _saved_lists]
+    _no_list_label = i18n.t("comparison.no_list_selected", lang)
+    _options = [_no_list_label] + _list_names
+    _loaded = st.session_state.get("cmp_loaded_list_name")
+    _current = _loaded if _loaded in _list_names else _no_list_label
+    _sel = st.selectbox(
+        i18n.t("comparison.saved_list_label", lang), _options,
+        index=_options.index(_current), key="cmp_saved_list_select",
+    )
+    if _sel == _no_list_label:
+        if _loaded:
+            st.session_state["cmp_loaded_list_name"] = None
+    elif _sel != _loaded:
+        _matched = next((_l for _l in _saved_lists if _l["name"] == _sel), None)
+        if _matched is not None:
+            st.session_state["cmp_chips"] = list(_matched["tickers"])
+            st.session_state["cmp_loaded_list_name"] = _sel
+            st.rerun()
+
+
+def _render_comparison_chip_box(lang):
+    """TASK 55 part A (Director-directed, 13 Nov 2026), behind
+    COMPARE_CHIP_ENTRY_LIVE: one box holding ticker chips, replacing
+    the stacked "Ticker 1/VS/Ticker 2/+ add company" boxes of
+    _render_comparison_input_row() below (which stays completely
+    unchanged - this is a SEPARATE entry row, never a modification of
+    it, so the gate's OFF path is byte-identical to before this task).
+
+    st.session_state["cmp_chips"] is the working, NOT-yet-run list of
+    tickers this box is building - distinct from cmp_stocks (the last
+    list a Compare click, saved-list load, URL share, or popular-pair
+    click actually RAN a comparison for), the same "staged input,
+    read only when Compare is clicked" relationship the OLD row's own
+    _t1/_t2/_extra_tickers text_input values already have to cmp_
+    stocks. Seeded from cmp_stocks ONCE per session-state lifetime
+    (not every rerun) so a comparison already showing (URL share,
+    popular pair, the day's rotating default) arrives with its own
+    tickers already chipped, matching what a visitor sees on screen.
+
+    No real "chip with an X" widget exists in Streamlit, and raw HTML
+    can't host a working click handler here (CLAUDE.md's own
+    documented trap: unsafe_allow_html strips onclick) - each chip is
+    instead a real st.button labelled "TICKER ✕" (comparison.
+    chip_remove_label), four to a row so a 15-chip set (compare_
+    config.COMPARE_MAX_TICKERS) still wraps into at most four rows
+    rather than one unreadably long one. Clicking it removes that one
+    ticker and reruns - a real click handler, not a stripped onclick.
+
+    Paste handling reuses app._parse_ticker_tokens() - the SAME
+    comma/space/newline tokenizer _dispatch_search() itself uses for
+    every other entry point - and _cap_comparison_tickers() - the
+    SAME cap+warning every other entry point already enforces - so
+    typing/pasting into this box can never diverge from what the
+    header search box, a shared URL, or the old stacked boxes would
+    have allowed."""
+    # Same "pending, applied before the next st.rerun()-triggered
+    # redraw" pattern as _sync_cmp_saved_list_select()'s own fix
+    # below: _cap_comparison_tickers() calls st.warning() the instant
+    # a paste goes over the cap, but the add-handling code at the
+    # bottom of this function calls st.rerun() right after (so the
+    # new chip immediately shows without an extra click) - and that
+    # rerun discards the just-shown warning before anyone sees it, the
+    # same Streamlit pitfall. Shown here, at the top, on the FOLLOWING
+    # run instead.
+    _pending_cap_warning = st.session_state.pop("_cmp_chip_cap_warning", None)
+    if _pending_cap_warning:
+        st.warning(_pending_cap_warning)
+
+    st.session_state.setdefault("cmp_chips", list(st.session_state.get("cmp_stocks") or []))
+    _chips = st.session_state["cmp_chips"]
+
+    if _chips:
+        _per_row = 4
+        for _row_start in range(0, len(_chips), _per_row):
+            _row_chips = _chips[_row_start:_row_start + _per_row]
+            _chip_cols = st.columns(len(_row_chips))
+            for _col, _tk in zip(_chip_cols, _row_chips):
+                with _col:
+                    if st.button(
+                        i18n.t("comparison.chip_remove_label", lang, ticker=_tk),
+                        key=f"cmp_chip_rm_{_tk}", width="stretch",
+                    ):
+                        st.session_state["cmp_chips"] = [
+                            _t for _t in st.session_state["cmp_chips"] if _t != _tk
+                        ]
+                        st.session_state["cmp_loaded_list_name"] = None
+                        _sync_cmp_saved_list_select(lang, None)
+                        st.rerun()
+    st.caption(i18n.t("comparison.list_ticker_count", lang, count=len(_chips)))
+
+    with st.form("cmp_chip_add_form", clear_on_submit=True, border=False):
+        _add_col, _add_btn_col = st.columns([4, 1], vertical_alignment="bottom")
+        with _add_col:
+            _new_text = st.text_input(
+                i18n.t("comparison.chip_add_placeholder", lang),
+                key="cmp_chip_add_input",
+                placeholder=i18n.t("comparison.chip_add_placeholder", lang),
+                label_visibility="collapsed",
+            )
+        with _add_btn_col:
+            _added = st.form_submit_button(
+                i18n.t("comparison.chip_add_button", lang), width="stretch",
+                key="cmp_chip_add_submit",
+            )
+    if _added and _new_text and _new_text.strip():
+        _new_tickers = _parse_ticker_tokens(_new_text)
+        _combined = list(st.session_state["cmp_chips"])
+        for _t in _new_tickers:
+            if _t not in _combined:
+                _combined.append(_t)
+        _entered = len(_combined)
+        _combined = _cap_comparison_tickers(_combined, lang)
+        if _entered > compare_config.COMPARE_MAX_TICKERS:
+            # Stashed for the top of this function's NEXT run (see the
+            # pending-warning block up there) - _cap_comparison_
+            # tickers() above already called st.warning() too, but
+            # that copy is about to be discarded by the st.rerun()
+            # below before anyone sees it.
+            st.session_state["_cmp_chip_cap_warning"] = i18n.t(
+                "comparison.max_tickers_warning", lang,
+                cap=compare_config.COMPARE_MAX_TICKERS, entered=_entered,
+            )
+        if _combined != st.session_state["cmp_chips"]:
+            st.session_state["cmp_chips"] = _combined
+            st.session_state["cmp_loaded_list_name"] = None
+            _sync_cmp_saved_list_select(lang, None)
+        st.rerun()
+
+
+def _render_comparison_save_control_chips(lang, email):
+    """TASK 55 part B (13 Nov 2026), behind COMPARE_CHIP_ENTRY_LIVE:
+    the second button next to Compare. With a list loaded (session_
+    state["cmp_loaded_list_name"] set, via the selector above or a
+    just-completed save) it reads 'Update "<name>"' and overwrites
+    that list with the current chips (compare_lists_store.save_list()
+    already creates-or-overwrites by name, so "Update" is simply that
+    same call); a small "More" popover alongside offers Save as new
+    list / Rename / Delete. With no list loaded it reads "Save this
+    comparison" (comparison.save_button, the pre-existing key) and
+    opens a name-entry popover - saving there also sets cmp_loaded_
+    list_name, so the SAME button immediately becomes "Update" for
+    whatever was just saved, without a rerun-losing round trip.
+
+    Signed-out callers never reach this (page_comparison()'s own
+    caller branches on `email` first) - same "nothing is ever stored
+    for a signed-out visitor" guarantee _render_save_comparison_
+    control() above already documents, now shared by construction
+    rather than re-asserted here."""
+    _chips = st.session_state.get("cmp_chips") or []
+    _loaded = st.session_state.get("cmp_loaded_list_name")
+
+    if _loaded:
+        _upd_col, _more_col = st.columns([3, 1])
+        with _upd_col:
+            if st.button(
+                i18n.t("comparison.update_list_button", lang, name=_loaded),
+                type="primary", key="cmp_update_list_btn", width="stretch",
+            ):
+                _ok, _err_key = compare_lists_store.save_list(email, _loaded, _chips)
+                if _ok:
+                    st.success(i18n.t("comparison.save_success", lang, name=_loaded))
+                else:
+                    st.warning(i18n.t(f"comparison.error_{_err_key}", lang))
+        with _more_col:
+            with st.popover(i18n.t("comparison.more_actions_button", lang), key="cmp_more_actions_popover"):
+                if st.button(i18n.t("comparison.save_as_new_button", lang), key="cmp_save_as_new_btn"):
+                    st.session_state["_cmp_save_as_new_open"] = True
+                if st.session_state.get("_cmp_save_as_new_open"):
+                    _new_name = st.text_input(
+                        i18n.t("comparison.save_name_label", lang), key="cmp_save_as_new_name_input",
+                        placeholder=i18n.t("comparison.save_name_placeholder", lang),
+                    )
+                    if st.button(i18n.t("comparison.save_confirm", lang),
+                                 key="cmp_save_as_new_confirm_btn", type="primary"):
+                        _ok, _err_key = compare_lists_store.save_list(email, _new_name, _chips)
+                        if _ok:
+                            st.session_state["cmp_loaded_list_name"] = _new_name.strip()
+                            _sync_cmp_saved_list_select(lang, _new_name.strip())
+                            st.session_state["_cmp_save_as_new_open"] = False
+                            st.success(i18n.t("comparison.save_success", lang, name=_new_name.strip()))
+                            st.rerun()
+                        else:
+                            st.warning(i18n.t(f"comparison.error_{_err_key}", lang))
+                st.divider()
+                if st.button(i18n.t("comparison.rename_button", lang), key="cmp_rename_loaded_btn"):
+                    st.session_state["_cmp_renaming_loaded"] = True
+                if st.session_state.get("_cmp_renaming_loaded"):
+                    _rename_to = st.text_input(
+                        i18n.t("comparison.rename_name_label", lang), value=_loaded,
+                        key="cmp_rename_loaded_input",
+                    )
+                    if st.button(i18n.t("comparison.rename_confirm", lang),
+                                 key="cmp_rename_loaded_confirm_btn", type="primary"):
+                        _ok, _err_key = compare_lists_store.rename_list(email, _loaded, _rename_to)
+                        if _ok:
+                            st.session_state["cmp_loaded_list_name"] = _rename_to.strip()
+                            _sync_cmp_saved_list_select(lang, _rename_to.strip())
+                            st.session_state["_cmp_renaming_loaded"] = False
+                            st.rerun()
+                        else:
+                            st.warning(i18n.t(f"comparison.error_{_err_key}", lang))
+                st.divider()
+                if st.button(i18n.t("comparison.delete_button", lang), key="cmp_delete_loaded_btn"):
+                    st.session_state["_cmp_deleting_loaded"] = True
+                if st.session_state.get("_cmp_deleting_loaded"):
+                    st.warning(i18n.t("comparison.delete_confirm_question", lang, name=_loaded))
+                    if st.button(i18n.t("comparison.delete_confirm_yes", lang),
+                                 key="cmp_delete_loaded_yes_btn", type="primary"):
+                        compare_lists_store.delete_list(email, _loaded)
+                        st.session_state["cmp_loaded_list_name"] = None
+                        _sync_cmp_saved_list_select(lang, None)
+                        st.session_state["_cmp_deleting_loaded"] = False
+                        st.rerun()
+    else:
+        with st.popover(i18n.t("comparison.save_button", lang), key="cmp_save_new_popover"):
+            st.caption(i18n.t("comparison.save_caption", lang, count=len(_chips)))
+            _new_name = st.text_input(
+                i18n.t("comparison.save_name_label", lang), key="cmp_save_new_name_input",
+                placeholder=i18n.t("comparison.save_name_placeholder", lang),
+                label_visibility="collapsed",
+            )
+            if st.button(i18n.t("comparison.save_confirm", lang),
+                         key="cmp_save_new_confirm_btn", type="primary"):
+                _ok, _err_key = compare_lists_store.save_list(email, _new_name, _chips)
+                if _ok:
+                    st.session_state["cmp_loaded_list_name"] = _new_name.strip()
+                    _sync_cmp_saved_list_select(lang, _new_name.strip())
+                    st.success(i18n.t("comparison.save_success", lang, name=_new_name.strip()))
+                    st.rerun()
+                else:
+                    st.warning(i18n.t(f"comparison.error_{_err_key}", lang))
+
+
+def _render_comparison_input_row_chips(lang):
+    """TASK 55 (Director-directed, 13 Nov 2026), behind COMPARE_CHIP_
+    ENTRY_LIVE (owner always sees this version too, per the task's
+    own "owner always sees the new version for review" instruction -
+    page_comparison() itself is where that OR is applied, same
+    pattern as every other *_LIVE gate's owner-override). Replaces
+    _render_comparison_input_row() below entirely when the gate is
+    on; that function is untouched, so the gate OFF path renders
+    exactly as it did before this task."""
+    email = paywall_engine.current_user_email()
+
+    if email:
+        _render_comparison_saved_list_selector(lang, email)
+
+    _render_comparison_chip_box(lang)
+
+    _btn_col, _save_col = st.columns([1, 1], vertical_alignment="top")
+    with _btn_col:
+        _go = st.button(
+            i18n.t("comparison.compare_button", lang), type="primary",
+            key="cmp_chips_compare_btn", width="stretch",
+        )
+    if _go:
+        _chips = st.session_state.get("cmp_chips") or []
+        if len(_chips) < 2:
+            st.warning(i18n.t("comparison.need_two_warning", lang))
+        else:
+            _dispatch_search(" ".join(_chips))
+
+    if email:
+        _render_comparison_save_control_chips(lang, email)
+    else:
+        st.caption(i18n.t("comparison.save_signin_prompt", lang))
+        if st.button(i18n.t("comparison.save_signin_cta", lang), key="cmp_chips_save_signin_btn"):
+            st.session_state["_cmp_show_signin_inline"] = True
+            st.rerun()
+        if st.session_state.get("_cmp_show_signin_inline"):
+            paywall_engine._render_signin_control_inline(key="cmp_chips_signin_inline", lang=lang)
+
+    _render_comparison_popular_pairs(lang)
+
+
 def _render_comparison_input_row(lang):
     """Mega-batch Part 6, extended by Commit 2 (27 Sep 2026, owner-
     directed): "[ticker] VS [ticker] [+ add company...] [Compare]" on top
@@ -15910,18 +16276,7 @@ def _render_comparison_input_row(lang):
     # control sits right below the Compare button, per instruction.
     _render_save_comparison_control(lang)
 
-    _pair_labels = [f"{a} vs {b}" for a, b in _COMPARISON_POPULAR_PAIRS]
-    _sel = st.pills(
-        i18n.t("comparison.popular_pairs_label", lang), _pair_labels,
-        selection_mode="single", key="cmp_popular_pair_chip",
-    )
-    _done_key = "cmp_popular_pair_chip_done"
-    if not _sel:
-        st.session_state.pop(_done_key, None)
-    elif st.session_state.get(_done_key) != _sel:
-        st.session_state[_done_key] = _sel
-        _pair_a, _pair_b = _sel.split(" vs ")
-        _dispatch_search(f"{_pair_a} {_pair_b}")
+    _render_comparison_popular_pairs(lang)
 
 
 def page_comparison():
@@ -15983,7 +16338,15 @@ def page_comparison():
     if st.session_state.get("cmp_stocks"):
         st.query_params["tickers"] = ",".join(st.session_state["cmp_stocks"])
 
-    _render_comparison_input_row(_cmp_lang)
+    # TASK 55 (Director-directed, 13 Nov 2026): COMPARE_CHIP_ENTRY_LIVE
+    # swaps the stacked-box entry row for the compact chip entry row -
+    # same owner-always-sees-it-for-review OR every other *_LIVE gate
+    # in this codebase uses (see top100_render.py's own matching
+    # pattern). Gate off, non-owner: byte-identical to before this task.
+    if compare_config.compare_chip_entry_live() or ai_gate.is_owner(paywall_engine.current_user_email()):
+        _render_comparison_input_row_chips(_cmp_lang)
+    else:
+        _render_comparison_input_row(_cmp_lang)
 
     _render_scan_results(
         page_label="Comparison",
@@ -16898,6 +17261,62 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "a description of data, not a recommendation. Sorting is "
                     "arithmetic."
                 )
+
+            # TASK 55 part C (Director-directed, 13 Nov 2026), behind
+            # COMPARE_CHIP_ENTRY_LIVE: a private "My notes" column,
+            # Comparison only, signed-in only - sits right after the
+            # free preview table above (the one with the Long Score
+            # bar and LONG/WATCHLIST Investment Signal the task named)
+            # and BEFORE the paywall gate below, since a personal note
+            # is a utility, not a scored metric worth gating. Adds one
+            # more column to the SAME `results` DataFrame already
+            # built above (no second scan/compute) - data_export_
+            # engine.table_to_csv_bytes() further down already keeps
+            # every non-underscore column of `results`, so this flows
+            # into the CSV automatically with no change to that code.
+            #
+            # st.data_editor (not the HTML _sdd_table() above) is the
+            # only way to get a genuinely click-to-type, saves-on-
+            # blur/Enter cell in Streamlit - the SAME pattern already
+            # used on this page for the DCF override editor further
+            # down. Every rerun compares the editor's returned value
+            # against what's currently stored and persists only the
+            # cells that changed, which IS the auto-save: a cell edit
+            # already triggers the rerun that carries the new value.
+            _notes_email = paywall_engine.current_user_email()
+            _notes_lang = st.session_state.get("lang", "en")
+            _notes_gate_on = bool(
+                state_prefix == "cmp" and _notes_email
+                and (compare_config.compare_chip_entry_live()
+                     or ai_gate.is_owner(_notes_email))
+            )
+            if _notes_gate_on:
+                _notes_tickers = list(results["Ticker"])
+                _notes_map = compare_notes_store.get_notes(_notes_email, _notes_tickers)
+                results["My notes"] = results["Ticker"].map(lambda t: _notes_map.get(t, ""))
+                _notes_col_label = i18n.t("comparison.notes_column_header", _notes_lang)
+                st.caption(i18n.t("comparison.notes_caption", _notes_lang))
+                _notes_editor_df = pd.DataFrame({
+                    "Ticker": results["Ticker"],
+                    _notes_col_label: results["My notes"],
+                })
+                _notes_edited = st.data_editor(
+                    _notes_editor_df,
+                    width="stretch", hide_index=True,
+                    disabled=["Ticker"],
+                    column_config={
+                        _notes_col_label: st.column_config.TextColumn(max_chars=280),
+                    },
+                    key=f"cmp_notes_editor_{state_prefix}",
+                )
+                for _, _notes_row in _notes_edited.iterrows():
+                    _notes_tk = _notes_row["Ticker"]
+                    _notes_new = _notes_row[_notes_col_label] or ""
+                    if _notes_new != _notes_map.get(_notes_tk, ""):
+                        _notes_ok, _notes_err_key = compare_notes_store.save_note(
+                            _notes_email, _notes_tk, _notes_new)
+                        if not _notes_ok and _notes_err_key == "note_too_long":
+                            st.warning(i18n.t("comparison.error_note_too_long", _notes_lang))
 
             # Español completion, Part 1: feature_label/teaser routed
             # through i18n.t() (gate.results_full_label/gate.results_teaser).

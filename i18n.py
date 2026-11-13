@@ -2635,6 +2635,20 @@ EN = {
     "comparison.delete_confirm_yes": "Yes, delete",
     "comparison.delete_confirm_cancel": "Cancel",
 
+    # TASK 55 (13 Nov 2026) - compact chip entry, editable saved
+    # lists, private notes (COMPARE_CHIP_ENTRY_LIVE).
+    "comparison.chip_add_placeholder": "Add a ticker (e.g. AAPL) - paste several at once",
+    "comparison.chip_add_button": "Add",
+    "comparison.chip_remove_label": "{ticker} ✕",
+    "comparison.saved_list_label": "Saved list",
+    "comparison.no_list_selected": "No list selected",
+    "comparison.update_list_button": "Update “{name}”",
+    "comparison.more_actions_button": "More",
+    "comparison.save_as_new_button": "Save as new list",
+    "comparison.notes_column_header": "My notes",
+    "comparison.notes_caption": "Private notes - visible only to you. Click a cell to type; saves automatically.",
+    "comparison.error_note_too_long": "Keep notes to 280 characters or fewer.",
+
     # Mega-batch Part 7: Results Calendar week board.
     "calendar.subtitle": "Every report this week, at a glance.",
     "calendar.methodology": (
@@ -6767,6 +6781,20 @@ ES = {
     "comparison.delete_confirm_question": "¿Eliminar “{name}”? Esto no se puede deshacer.",
     "comparison.delete_confirm_yes": "Sí, eliminar",
     "comparison.delete_confirm_cancel": "Cancelar",
+
+    # TASK 55 (13 Nov 2026) - entrada compacta con chips, listas
+    # guardadas editables, notas privadas (COMPARE_CHIP_ENTRY_LIVE).
+    "comparison.chip_add_placeholder": "Agrega un ticker (ej. AAPL) - pega varios a la vez",
+    "comparison.chip_add_button": "Agregar",
+    "comparison.chip_remove_label": "{ticker} ✕",
+    "comparison.saved_list_label": "Lista guardada",
+    "comparison.no_list_selected": "Ninguna lista seleccionada",
+    "comparison.update_list_button": "Actualizar “{name}”",
+    "comparison.more_actions_button": "Más",
+    "comparison.save_as_new_button": "Guardar como lista nueva",
+    "comparison.notes_column_header": "Mis notas",
+    "comparison.notes_caption": "Notas privadas - solo visibles para ti. Haz clic en una celda para escribir; se guardan automáticamente.",
+    "comparison.error_note_too_long": "Usa como máximo 280 caracteres en la nota.",
 
     # Mega-batch Part 7: tablero semanal del Calendario de resultados.
     "calendar.subtitle": "Todos los informes de esta semana, de un vistazo.",

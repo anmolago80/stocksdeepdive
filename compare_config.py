@@ -17,3 +17,21 @@ A bare constant with no other imports needs neither.
 """
 
 COMPARE_MAX_TICKERS = 15
+
+
+import os
+
+
+def compare_chip_entry_live():
+    """TASK 55 (Director-directed, 13 Nov 2026) - the switch for the
+    Comparison page's compact chip entry, editable saved lists, and
+    private notes column. Same unset/""/0/off=OFF, 1/on=ON pattern as
+    every other *_LIVE gate in this codebase (e.g. top100_engine.
+    top200_sticky_buffer_live()) - re-read on every call, never
+    cached, so a changed Railway variable takes effect on the very
+    next page render with no redeploy. Claude Code never sets this -
+    the Director does, on Railway, only after reviewing the new
+    version (app.py's own call sites OR this, same "owner always sees
+    it for review" pattern as every prior *_LIVE gate)."""
+    raw = (os.environ.get("COMPARE_CHIP_ENTRY_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
