@@ -2641,13 +2641,27 @@ EN = {
     "comparison.chip_add_button": "Add",
     "comparison.chip_remove_label": "{ticker} ✕",
     "comparison.saved_list_label": "Saved list",
-    "comparison.no_list_selected": "No list selected",
+    # TASK 58 (14 Nov 2026) repurposed this value to double as the
+    # "start fresh" option in the saved-list selector (see
+    # app._render_comparison_saved_list_selector()'s own docstring) -
+    # the i18n KEY is unchanged (every call site keys off the name
+    # "comparison.no_list_selected", including the TASK 55 test file's
+    # own sentinel check), only the displayed text changed.
+    "comparison.no_list_selected": "+ Start a new list",
     "comparison.update_list_button": "Update “{name}”",
     "comparison.more_actions_button": "More",
     "comparison.save_as_new_button": "Save as new list",
     "comparison.notes_column_header": "My notes",
     "comparison.notes_caption": "Private notes - visible only to you. Click a cell to type; saves automatically.",
     "comparison.error_note_too_long": "Keep notes to 280 characters or fewer.",
+
+    # TASK 58 (14 Nov 2026) - Companies multiselect entry, "+ Start a
+    # new list", one-row Compare/Save (still COMPARE_CHIP_ENTRY_LIVE).
+    "comparison.companies_label": "Companies",
+    "comparison.companies_placeholder": "Type a ticker or company name",
+    "comparison.companies_caption": "{count} companies · type a ticker or company name, press Enter",
+    "comparison.clear_all_link": "Clear all",
+    "comparison.save_new_list_button": "Save as new list…",
 
     # Mega-batch Part 7: Results Calendar week board.
     "calendar.subtitle": "Every report this week, at a glance.",
@@ -6788,13 +6802,22 @@ ES = {
     "comparison.chip_add_button": "Agregar",
     "comparison.chip_remove_label": "{ticker} ✕",
     "comparison.saved_list_label": "Lista guardada",
-    "comparison.no_list_selected": "Ninguna lista seleccionada",
+    "comparison.no_list_selected": "+ Iniciar una lista nueva",
     "comparison.update_list_button": "Actualizar “{name}”",
     "comparison.more_actions_button": "Más",
     "comparison.save_as_new_button": "Guardar como lista nueva",
     "comparison.notes_column_header": "Mis notas",
     "comparison.notes_caption": "Notas privadas - solo visibles para ti. Haz clic en una celda para escribir; se guardan automáticamente.",
     "comparison.error_note_too_long": "Usa como máximo 280 caracteres en la nota.",
+
+    # TASK 58 (14 Nov 2026) - multiselect de Empresas, "+ Iniciar una
+    # lista nueva", Comparar/Guardar en una sola fila (sigue detrás de
+    # COMPARE_CHIP_ENTRY_LIVE).
+    "comparison.companies_label": "Empresas",
+    "comparison.companies_placeholder": "Escribe un ticker o el nombre de la empresa",
+    "comparison.companies_caption": "{count} empresas · escribe un ticker o el nombre de la empresa y presiona Enter",
+    "comparison.clear_all_link": "Borrar todo",
+    "comparison.save_new_list_button": "Guardar como lista nueva…",
 
     # Mega-batch Part 7: tablero semanal del Calendario de resultados.
     "calendar.subtitle": "Todos los informes de esta semana, de un vistazo.",

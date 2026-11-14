@@ -431,6 +431,54 @@ def build_private_only_ticker_index():
     }
 
 
+def all_scanned_companies(include_private=False):
+    """{ticker: company_name} across every saved scan's own rows -
+    TASK 58 (Director-directed, 14 Nov 2026): the "Companies" multi-
+    select's suggestion roster on the Comparison page ("all scanned
+    tickers", searchable by company name, e.g. "herm" -> "RMS.PA —
+    Hermès International"). nightly_scan.py's own row-builder has
+    stamped a "Company Name" field (info.get("longName") or
+    shortName, falling back to the ticker itself) onto every row since
+    TASK 32 - this reads that field straight off whatever is already
+    stored, never a new fetch of its own.
+
+    `include_private=False` (the default) matches list_saved_
+    universes()'s own default-deny posture for a PUBLIC-facing roster
+    (quote_recorder.py's own module comment on this codebase's
+    standing "default deny" convention for anything a general visitor
+    can see) - a private universe's tickers (FTSE 100/250, Nikkei 225,
+    TOPIX 500, the "Foreign US-listed" test-stage universe, etc.) are
+    real public-market tickers, not confidential in themselves, but
+    this function's own ONE caller is a public page's autocomplete
+    list, so it stays on the same side of that line every other
+    public-facing scan_store reader already does rather than widening
+    it here. A visitor can still freely TYPE any ticker at all (this
+    roster only feeds suggestions, never validation - resolution still
+    happens exactly where it always has).
+
+    One pass over list_saved_universes()/load_scan_raw() (same "read
+    each saved universe file exactly once" shape ticker_universes_
+    including_private() above already established, for the same
+    reason: this is read on every Comparison page view, not once per
+    ticker). The FIRST company name seen for a given ticker wins (a
+    ticker appearing in more than one universe - e.g. a Dow Jones 30
+    member that's also in the S&P 500 - should have the same name in
+    both rows anyway); a row with no "Company Name" of its own falls
+    back to the ticker itself, same as nightly_scan.py's own stamping
+    default."""
+    out = {}
+    for universe in list_saved_universes(include_private=include_private):
+        payload = load_scan_raw(universe, allow_private=include_private)
+        if not payload:
+            continue
+        for row in payload.get("rows") or []:
+            t = (row.get("Ticker") or "").strip().upper()
+            if not t or t in out:
+                continue
+            out[t] = (row.get("Company Name") or "").strip() or t
+    return out
+
+
 def find_ticker_row(ticker, allow_private=False):
     """The freshest saved overnight-scan row for `ticker`, across every
     universe with a scan on disk, or None if no fresh scan covers it.

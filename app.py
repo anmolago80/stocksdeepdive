@@ -3252,6 +3252,22 @@ def _render_overnight_snapshot_line(ticker):
     )
 
 
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=2)
+def _comparison_company_roster():
+    """TASK 58 (Director-directed, 14 Nov 2026): {ticker: company_name}
+    across every public saved scan universe (scan_store.
+    all_scanned_companies() - see its own docstring), cached so the
+    Comparison page's Companies multiselect doesn't re-read every
+    saved universe file from disk on every single rerun (a widget
+    interaction, a saved-list load, a Compare click all rerun this
+    script). ttl=1800 matches this file's own dominant @st.cache_data
+    TTL for data that only genuinely changes once a night - correctness
+    doesn't depend on this being instant; a visitor who adds a brand
+    new ticker simply types it (accept_new_options=True), roster
+    membership is suggestions only, never validation."""
+    return scan_store.all_scanned_companies()
+
+
 def _cap_comparison_tickers(tickers, lang):
     """Commit 2 amendment (27 Sep 2026, owner-directed): the ONE place the
     compare_config.COMPARE_MAX_TICKERS cap is actually applied, called by
@@ -15873,6 +15889,25 @@ def _render_save_comparison_control(lang):
             st.markdown("---")
 
 
+def _sync_cmp_chips(value_list):
+    """TASK 58 (Director-directed, 14 Nov 2026): same "pending value,
+    applied before the widget is next created" pattern as _sync_cmp_
+    saved_list_select() right below (that function's own docstring has
+    the full writeup of WHY this is needed, not re-explained twice
+    here) - cmp_chips is now the Companies multiselect's OWN widget key
+    directly (st.multiselect(..., key="cmp_chips")), so any write to it
+    from code that runs AFTER that widget has already been created in
+    THIS SAME script pass (right now, only the "Clear all" link, which
+    sits below the widget in _render_comparison_companies_box()) would
+    raise Streamlit's WidgetAlreadyInstantiatedError. A write that
+    happens BEFORE the widget renders in a given pass (the saved-list
+    selector's own load/"+ Start a new list" branches, both of which
+    run earlier in the script than the Companies box) stays a plain,
+    direct session_state write + st.rerun(), same as before this task -
+    this helper is only for the one call site that comes after."""
+    st.session_state["_cmp_chips_pending"] = list(value_list)
+
+
 def _sync_cmp_saved_list_select(lang, name):
     """TASK 55 bug fix (13 Nov 2026, caught in this task's own test
     writing, not live-reported): st.selectbox is a "controlled"
@@ -15909,17 +15944,36 @@ def _sync_cmp_saved_list_select(lang, name):
 
 def _render_comparison_saved_list_selector(lang, email):
     """TASK 55 part B (Director-directed, 13 Nov 2026), behind
-    COMPARE_CHIP_ENTRY_LIVE: "Saved list:" selector above the chip
-    box - selecting a list fills st.session_state["cmp_chips"] with
-    its tickers (signed-in only; the caller never calls this
-    otherwise). session_state["cmp_loaded_list_name"] tracks which
-    (if any) saved list the current chip set was last loaded from or
-    saved as - None once the chips have diverged from any saved list
-    by going back to "No list selected", exactly like closing a
-    document without saving under a different name. Reuses compare_
-    lists_store.list_lists() - the SAME store/rows the old popover-
-    based load/rename/delete flow already reads, never a second
-    source of truth for what a user's saved lists are.
+    COMPARE_CHIP_ENTRY_LIVE: "Saved list:" selector above the
+    Companies box - selecting a list fills st.session_state[
+    "cmp_chips"] with its tickers (signed-in only; the caller never
+    calls this otherwise). session_state["cmp_loaded_list_name"]
+    tracks which (if any) saved list the current chip set was last
+    loaded from or saved as - None once the chips have diverged from
+    any saved list by picking "+ Start a new list", exactly like
+    closing a document without saving under a different name. Reuses
+    compare_lists_store.list_lists() - the SAME store/rows the old
+    popover-based load/rename/delete flow already reads, never a
+    second source of truth for what a user's saved lists are.
+
+    TASK 58 (Director-directed, 14 Nov 2026): the first option is now
+    "+ Start a new list" (comparison.no_list_selected's own displayed
+    text - see that key's own i18n.py comment for why the KEY name is
+    unchanged) - choosing it, when something WAS previously loaded,
+    now ALSO empties the Companies box (cmp_chips = []), not merely
+    unloading the list name as before this task. This write is always
+    safe to do directly (no _sync_cmp_chips() pending-queue needed):
+    this function runs, and so reaches this branch, BEFORE _render_
+    comparison_companies_box() creates the cmp_chips-keyed widget
+    later in the SAME script pass - see _sync_cmp_chips()'s own
+    docstring for the one call site that genuinely needs the queue
+    (one that runs AFTER that widget has already rendered).
+    Deliberately does NOT fire merely because this selector's own
+    default value already equals "+ Start a new list" on an ordinary
+    render with nothing loaded (`if _loaded:` below gates on an actual
+    loaded-list -> unloaded TRANSITION) - the day's rotating default
+    comparison, a URL share, or a popular-pair click must never be
+    silently wiped just because nothing happens to be loaded yet.
 
     Applies any pending value _sync_cmp_saved_list_select() queued
     (see that function's own docstring for why it can't write the
@@ -15941,7 +15995,9 @@ def _render_comparison_saved_list_selector(lang, email):
     )
     if _sel == _no_list_label:
         if _loaded:
+            st.session_state["cmp_chips"] = []
             st.session_state["cmp_loaded_list_name"] = None
+            st.rerun()
     elif _sel != _loaded:
         _matched = next((_l for _l in _saved_lists if _l["name"] == _sel), None)
         if _matched is not None:
@@ -15950,112 +16006,121 @@ def _render_comparison_saved_list_selector(lang, email):
             st.rerun()
 
 
-def _render_comparison_chip_box(lang):
-    """TASK 55 part A (Director-directed, 13 Nov 2026), behind
-    COMPARE_CHIP_ENTRY_LIVE: one box holding ticker chips, replacing
-    the stacked "Ticker 1/VS/Ticker 2/+ add company" boxes of
-    _render_comparison_input_row() below (which stays completely
-    unchanged - this is a SEPARATE entry row, never a modification of
-    it, so the gate's OFF path is byte-identical to before this task).
+def _render_comparison_companies_box(lang):
+    """TASK 58 (Director-directed, 14 Nov 2026), behind COMPARE_CHIP_
+    ENTRY_LIVE: replaces TASK 55's own chip-buttons-plus-"Add a
+    ticker"-row entirely (the owner's own screenshot of that version
+    showed large half-width "TICKER ✕" buttons and a separate Add
+    row - not the compact, intuitive box this task asks for) with ONE
+    st.multiselect(accept_new_options=True). _render_comparison_input_
+    row() below (the OLD, pre-TASK-55 stacked-box row) stays completely
+    untouched - this is still a SEPARATE entry row, so the gate's OFF
+    path remains byte-identical to before TASK 55/58.
 
-    st.session_state["cmp_chips"] is the working, NOT-yet-run list of
-    tickers this box is building - distinct from cmp_stocks (the last
-    list a Compare click, saved-list load, URL share, or popular-pair
-    click actually RAN a comparison for), the same "staged input,
-    read only when Compare is clicked" relationship the OLD row's own
-    _t1/_t2/_extra_tickers text_input values already have to cmp_
-    stocks. Seeded from cmp_stocks ONCE per session-state lifetime
-    (not every rerun) so a comparison already showing (URL share,
-    popular pair, the day's rotating default) arrives with its own
-    tickers already chipped, matching what a visitor sees on screen.
+    The widget IS cmp_chips (key="cmp_chips" directly - the SAME
+    session-state key Compare/Save/the saved-list selector above
+    already read/write) rather than a separately-staged value kept in
+    sync with it: Streamlit's own multiselect already handles "type a
+    suggestion or free text + Enter to add", "click a pill's own x to
+    remove" and the dropdown-suggestion list natively, so none of
+    TASK 55's own "pending add" plumbing is needed for that part.
+    `options` is every ticker scan_store has ever stored a row for on
+    a PUBLIC universe (_comparison_company_roster(), cached), shown as
+    "TICKER — Company Name" via format_func - Streamlit's own fuzzy
+    search matches against that FORMATTED label text (confirmed by
+    reading multiselect.py's own proto-building code: format_func's
+    output is what gets sent to the frontend as each option's
+    searchable label), which is how typing "herm" finds "RMS.PA —
+    Hermès International". accept_new_options=True means a ticker NOT
+    in that roster can still always be typed and added - "free-typed
+    tickers still allowed", never pre-validated here (real validation
+    still happens exactly where it always has, once Compare actually
+    tries to resolve it).
 
-    No real "chip with an X" widget exists in Streamlit, and raw HTML
-    can't host a working click handler here (CLAUDE.md's own
-    documented trap: unsafe_allow_html strips onclick) - each chip is
-    instead a real st.button labelled "TICKER ✕" (comparison.
-    chip_remove_label), four to a row so a 15-chip set (compare_
-    config.COMPARE_MAX_TICKERS) still wraps into at most four rows
-    rather than one unreadably long one. Clicking it removes that one
-    ticker and reruns - a real click handler, not a stripped onclick.
+    Normalization (uppercase, de-dupe, and splitting a pasted comma/
+    space-separated blob that landed in the free-text field as ONE
+    accepted new option back into its own several tickers - reusing
+    _parse_ticker_tokens(), the SAME tokenizer every other entry point
+    already uses) plus the SAME compare_config.COMPARE_MAX_TICKERS cap
+    and warning _cap_comparison_tickers() already enforces everywhere
+    else are applied to whatever the widget returns on EVERY run; if
+    that changes anything, the result is queued via _sync_cmp_chips()
+    (this function runs AFTER the widget has already been created in
+    THIS pass, so a direct re-write here would raise Streamlit's
+    WidgetAlreadyInstantiatedError - see that helper's own docstring)
+    and this reruns so the widget's own displayed pills immediately
+    reflect it rather than lagging a run behind.
 
-    Paste handling reuses app._parse_ticker_tokens() - the SAME
-    comma/space/newline tokenizer _dispatch_search() itself uses for
-    every other entry point - and _cap_comparison_tickers() - the
-    SAME cap+warning every other entry point already enforces - so
-    typing/pasting into this box can never diverge from what the
-    header search box, a shared URL, or the old stacked boxes would
-    have allowed."""
-    # Same "pending, applied before the next st.rerun()-triggered
-    # redraw" pattern as _sync_cmp_saved_list_select()'s own fix
-    # below: _cap_comparison_tickers() calls st.warning() the instant
-    # a paste goes over the cap, but the add-handling code at the
-    # bottom of this function calls st.rerun() right after (so the
-    # new chip immediately shows without an extra click) - and that
-    # rerun discards the just-shown warning before anyone sees it, the
-    # same Streamlit pitfall. Shown here, at the top, on the FOLLOWING
-    # run instead.
+    "Clear all" is a small link-styled button (never raw HTML - the
+    same onclick-stripping trap CLAUDE.md documents) that empties the
+    box - it only ever clears the WORKING chip set, never touches or
+    deletes any saved list on disk."""
+    if "_cmp_chips_pending" in st.session_state:
+        st.session_state["cmp_chips"] = st.session_state.pop("_cmp_chips_pending")
+    st.session_state.setdefault("cmp_chips", list(st.session_state.get("cmp_stocks") or []))
+
+    # Same "pending, applied on the FOLLOWING run" pattern TASK 55's
+    # own chip-add form already used: _cap_comparison_tickers() calls
+    # st.warning() the instant the cap is exceeded, but the tidy-up
+    # block below calls st.rerun() right after (so the widget's own
+    # pills immediately reflect the capped set) - that rerun would
+    # otherwise discard the just-shown warning before anyone sees it.
     _pending_cap_warning = st.session_state.pop("_cmp_chip_cap_warning", None)
     if _pending_cap_warning:
         st.warning(_pending_cap_warning)
 
-    st.session_state.setdefault("cmp_chips", list(st.session_state.get("cmp_stocks") or []))
-    _chips = st.session_state["cmp_chips"]
+    _roster = _comparison_company_roster()
 
-    if _chips:
-        _per_row = 4
-        for _row_start in range(0, len(_chips), _per_row):
-            _row_chips = _chips[_row_start:_row_start + _per_row]
-            _chip_cols = st.columns(len(_row_chips))
-            for _col, _tk in zip(_chip_cols, _row_chips):
-                with _col:
-                    if st.button(
-                        i18n.t("comparison.chip_remove_label", lang, ticker=_tk),
-                        key=f"cmp_chip_rm_{_tk}", width="stretch",
-                    ):
-                        st.session_state["cmp_chips"] = [
-                            _t for _t in st.session_state["cmp_chips"] if _t != _tk
-                        ]
-                        st.session_state["cmp_loaded_list_name"] = None
-                        _sync_cmp_saved_list_select(lang, None)
-                        st.rerun()
-    st.caption(i18n.t("comparison.list_ticker_count", lang, count=len(_chips)))
+    def _fmt(t):
+        _name = _roster.get(t)
+        return f"{t} — {_name}" if _name and _name != t else t
 
-    with st.form("cmp_chip_add_form", clear_on_submit=True, border=False):
-        _add_col, _add_btn_col = st.columns([4, 1], vertical_alignment="bottom")
-        with _add_col:
-            _new_text = st.text_input(
-                i18n.t("comparison.chip_add_placeholder", lang),
-                key="cmp_chip_add_input",
-                placeholder=i18n.t("comparison.chip_add_placeholder", lang),
-                label_visibility="collapsed",
-            )
-        with _add_btn_col:
-            _added = st.form_submit_button(
-                i18n.t("comparison.chip_add_button", lang), width="stretch",
-                key="cmp_chip_add_submit",
-            )
-    if _added and _new_text and _new_text.strip():
-        _new_tickers = _parse_ticker_tokens(_new_text)
-        _combined = list(st.session_state["cmp_chips"])
-        for _t in _new_tickers:
-            if _t not in _combined:
-                _combined.append(_t)
-        _entered = len(_combined)
-        _combined = _cap_comparison_tickers(_combined, lang)
-        if _entered > compare_config.COMPARE_MAX_TICKERS:
-            # Stashed for the top of this function's NEXT run (see the
-            # pending-warning block up there) - _cap_comparison_
-            # tickers() above already called st.warning() too, but
-            # that copy is about to be discarded by the st.rerun()
-            # below before anyone sees it.
-            st.session_state["_cmp_chip_cap_warning"] = i18n.t(
-                "comparison.max_tickers_warning", lang,
-                cap=compare_config.COMPARE_MAX_TICKERS, entered=_entered,
-            )
-        if _combined != st.session_state["cmp_chips"]:
-            st.session_state["cmp_chips"] = _combined
-            st.session_state["cmp_loaded_list_name"] = None
-            _sync_cmp_saved_list_select(lang, None)
+    _raw_selected = st.multiselect(
+        i18n.t("comparison.companies_label", lang),
+        options=sorted(_roster.keys()),
+        format_func=_fmt,
+        key="cmp_chips",
+        accept_new_options=True,
+        placeholder=i18n.t("comparison.companies_placeholder", lang),
+    )
+
+    # Pure tidy-up of whatever the widget itself just accepted (split a
+    # pasted comma/space blob the free-text field took as ONE new
+    # option into its own several tickers, uppercase, de-dupe, and the
+    # same cap+warning every other entry point enforces) - deliberately
+    # never touches cmp_loaded_list_name: adding/removing a company
+    # from an already-loaded list is a normal edit to that list's own
+    # membership, not "starting a different comparison" (only the
+    # saved-list selector's own "+ Start a new list"/loading a
+    # DIFFERENT list, and "Clear all" below, unload it) - a user who
+    # loads "My retail picks", adds one more ticker, and clicks
+    # 'Update "My retail picks"' gets exactly that, never forced into
+    # "Save as new list" for a one-ticker tweak.
+    _tokenized = _parse_ticker_tokens(" ".join(_raw_selected))
+    _entered = len(_tokenized)
+    _normalized = _cap_comparison_tickers(_tokenized, lang)
+    if _entered > compare_config.COMPARE_MAX_TICKERS:
+        # Stashed for the top of this function's NEXT run (see the
+        # pending-warning block above) - _cap_comparison_tickers()
+        # above already called st.warning() too, but that copy is
+        # about to be discarded by the st.rerun() below before anyone
+        # sees it.
+        st.session_state["_cmp_chip_cap_warning"] = i18n.t(
+            "comparison.max_tickers_warning", lang,
+            cap=compare_config.COMPARE_MAX_TICKERS, entered=_entered,
+        )
+    if _normalized != list(_raw_selected):
+        _sync_cmp_chips(_normalized)
+        st.rerun()
+
+    st.caption(i18n.t("comparison.companies_caption", lang, count=len(_raw_selected)))
+    if _raw_selected and st.button(
+        i18n.t("comparison.clear_all_link", lang), key="cmp_companies_clear_all_btn",
+        type="tertiary",
+    ):
+        _sync_cmp_chips([])
+        st.session_state["cmp_loaded_list_name"] = None
+        _sync_cmp_saved_list_select(lang, None)
         st.rerun()
 
 
@@ -16144,7 +16209,12 @@ def _render_comparison_save_control_chips(lang, email):
                         st.session_state["_cmp_deleting_loaded"] = False
                         st.rerun()
     else:
-        with st.popover(i18n.t("comparison.save_button", lang), key="cmp_save_new_popover"):
+        # TASK 58 (14 Nov 2026): a dedicated "Save as new list…"
+        # wording for this specific no-list-loaded chips-flow button -
+        # "comparison.save_button" ("💾 Save this comparison") stays
+        # exactly as it is for the OLD row's own _render_save_
+        # comparison_control(), which this task never touches.
+        with st.popover(i18n.t("comparison.save_new_list_button", lang), key="cmp_save_new_popover"):
             st.caption(i18n.t("comparison.save_caption", lang, count=len(_chips)))
             _new_name = st.text_input(
                 i18n.t("comparison.save_name_label", lang), key="cmp_save_new_name_input",
@@ -16164,21 +16234,28 @@ def _render_comparison_save_control_chips(lang, email):
 
 
 def _render_comparison_input_row_chips(lang):
-    """TASK 55 (Director-directed, 13 Nov 2026), behind COMPARE_CHIP_
-    ENTRY_LIVE (owner always sees this version too, per the task's
-    own "owner always sees the new version for review" instruction -
-    page_comparison() itself is where that OR is applied, same
-    pattern as every other *_LIVE gate's owner-override). Replaces
-    _render_comparison_input_row() below entirely when the gate is
-    on; that function is untouched, so the gate OFF path renders
-    exactly as it did before this task."""
+    """TASK 55 (Director-directed, 13 Nov 2026), reworked by TASK 58
+    (14 Nov 2026) into the Companies-multiselect design, behind
+    COMPARE_CHIP_ENTRY_LIVE (owner always sees this version too, per
+    the task's own "owner always sees the new version for review"
+    instruction - page_comparison() itself is where that OR is
+    applied, same pattern as every other *_LIVE gate's owner-override).
+    Replaces _render_comparison_input_row() below entirely when the
+    gate is on; that function is untouched, so the gate OFF path
+    renders exactly as it did before TASK 55/58."""
     email = paywall_engine.current_user_email()
 
     if email:
         _render_comparison_saved_list_selector(lang, email)
 
-    _render_comparison_chip_box(lang)
+    _render_comparison_companies_box(lang)
 
+    # TASK 58 (Director-directed, 14 Nov 2026, owner screenshot
+    # finding): Compare and Save/Update on ONE row - `_save_col` was
+    # already defined here before this task but never actually USED
+    # (_render_comparison_save_control_chips() below rendered AFTER,
+    # and outside, both columns, which is exactly why the owner's own
+    # screenshot showed Save sitting on its own line under Compare).
     _btn_col, _save_col = st.columns([1, 1], vertical_alignment="top")
     with _btn_col:
         _go = st.button(
@@ -16192,15 +16269,16 @@ def _render_comparison_input_row_chips(lang):
         else:
             _dispatch_search(" ".join(_chips))
 
-    if email:
-        _render_comparison_save_control_chips(lang, email)
-    else:
-        st.caption(i18n.t("comparison.save_signin_prompt", lang))
-        if st.button(i18n.t("comparison.save_signin_cta", lang), key="cmp_chips_save_signin_btn"):
-            st.session_state["_cmp_show_signin_inline"] = True
-            st.rerun()
-        if st.session_state.get("_cmp_show_signin_inline"):
-            paywall_engine._render_signin_control_inline(key="cmp_chips_signin_inline", lang=lang)
+    with _save_col:
+        if email:
+            _render_comparison_save_control_chips(lang, email)
+        else:
+            st.caption(i18n.t("comparison.save_signin_prompt", lang))
+            if st.button(i18n.t("comparison.save_signin_cta", lang), key="cmp_chips_save_signin_btn"):
+                st.session_state["_cmp_show_signin_inline"] = True
+                st.rerun()
+            if st.session_state.get("_cmp_show_signin_inline"):
+                paywall_engine._render_signin_control_inline(key="cmp_chips_signin_inline", lang=lang)
 
     _render_comparison_popular_pairs(lang)
 
@@ -16280,7 +16358,28 @@ def _render_comparison_input_row(lang):
 
 
 def page_comparison():
-    _render_header(compact=True, page_label="Comparison", current="comparison")
+    # TASK 55 (13 Nov 2026)/TASK 58 (14 Nov 2026): COMPARE_CHIP_ENTRY_
+    # LIVE's own owner-override OR, computed ONCE here (both _render_
+    # header()'s show_search below and the entry-row choice further
+    # down need it) - same owner-always-sees-it-for-review pattern
+    # every other *_LIVE gate in this codebase uses (see top100_
+    # render.py's own matching pattern). Gate off, non-owner: BOTH the
+    # header's search box and the old stacked-box entry row render
+    # exactly as they did before TASK 55/58.
+    _cmp_chip_live = compare_config.compare_chip_entry_live() or ai_gate.is_owner(
+        paywall_engine.current_user_email())
+    # TASK 58 (Director-directed, 14 Nov 2026): the header's own site-
+    # wide search box is hidden on Comparison ONLY while the new
+    # Companies box is live - that box IS this page's own search/entry
+    # point now, and the header's [3,4,3] search strip sitting right
+    # above it was redundant/confusing (same show_search=False
+    # mechanism Deep Dive's own empty-state hero already uses - see
+    # that call site's own comment for the general pattern). Every
+    # OTHER page's header is completely untouched.
+    _render_header(
+        compact=True, page_label="Comparison", current="comparison",
+        show_search=not _cmp_chip_live,
+    )
     _bump_page_view("comparison")
     _cmp_lang = st.session_state.get("lang", "en")
 
@@ -16338,12 +16437,9 @@ def page_comparison():
     if st.session_state.get("cmp_stocks"):
         st.query_params["tickers"] = ",".join(st.session_state["cmp_stocks"])
 
-    # TASK 55 (Director-directed, 13 Nov 2026): COMPARE_CHIP_ENTRY_LIVE
-    # swaps the stacked-box entry row for the compact chip entry row -
-    # same owner-always-sees-it-for-review OR every other *_LIVE gate
-    # in this codebase uses (see top100_render.py's own matching
-    # pattern). Gate off, non-owner: byte-identical to before this task.
-    if compare_config.compare_chip_entry_live() or ai_gate.is_owner(paywall_engine.current_user_email()):
+    # _cmp_chip_live computed once at the top of this function (also
+    # drives _render_header()'s show_search above).
+    if _cmp_chip_live:
         _render_comparison_input_row_chips(_cmp_lang)
     else:
         _render_comparison_input_row(_cmp_lang)

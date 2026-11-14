@@ -78,6 +78,13 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OWNER_EMAIL = ai_gate.owner_email()
 USER_A = "task55-user-a@example.com"
 USER_B = "task55-user-b@example.com"
+# TASK 58 (14 Nov 2026): a DEDICATED third user for the new "Clear all"
+# check below, rather than reusing USER_A - Section C's own C6 check
+# asserts USER_A has EXACTLY two saved lists at that point ("Task55
+# test list" + "Task55 copy"), so saving a third list under USER_A
+# earlier in Section B would make that count check fail for a reason
+# that has nothing to do with Save-as-new itself.
+USER_C = "task55-user-c@example.com"
 
 passed = 0
 failed = 0
@@ -189,32 +196,43 @@ check("page_comparison() itself branches on compare_config."
 
 
 # ======================================================================
-# SECTION B: chip add / remove / paste / max.
+# SECTION B (TASK 58, 14 Nov 2026 - replaces the old chip-buttons +
+# "Add a ticker" row's own tests entirely, same reason app.py's own
+# _render_comparison_chip_box() was replaced by _render_comparison_
+# companies_box(): the owner's screenshot showed large half-width
+# chip buttons and a separate Add row, not this compact box):
+# Companies multiselect add / remove / paste-as-one-new-option / max.
 # ======================================================================
 _at_b = _run(_script(
     'app._render_comparison_input_row_chips(st.session_state["lang"])',
     email=USER_A, chip_entry_live=True,
     extra_state={"cmp_stocks": ["AAPL"]},
 ))
-check("B1: chips seeded from cmp_stocks - one removable chip button "
-      "for AAPL",
-      any(b.key == "cmp_chip_rm_AAPL" for b in _at_b.button))
+check("B1: chips seeded from cmp_stocks - the Companies multiselect's "
+      "own value is ['AAPL']",
+      _at_b.multiselect(key="cmp_chips").value == ["AAPL"])
 check("B1: the '1 companies' count caption is shown",
       any("1" in c.value for c in _at_b.caption if "companies" in c.value.lower()
           or "empresas" in c.value.lower()))
 
-# Add a single ticker by typing + submitting the form.
-_at_b.text_input(key="cmp_chip_add_input").input("GOOGL")
-_at_b.button(key="cmp_chip_add_submit").click()
+# Add a single, free-typed ticker (accept_new_options=True) - simulated
+# via .select(), same as AppTest's own documented way to add a value
+# that need not already be a member of `options`.
+_at_b.multiselect(key="cmp_chips").select("GOOGL")
 _at_b.run()
-check("B2: typing one ticker + submit adds it to cmp_chips",
+check("B2: a free-typed ticker (not in the scanned-company roster) is "
+      "added to cmp_chips",
       "GOOGL" in _at_b.session_state["cmp_chips"])
 
-# Paste several at once, comma+space mixed - all added, deduped.
-_at_b.text_input(key="cmp_chip_add_input").input("MSFT, NVDA AAPL")
-_at_b.button(key="cmp_chip_add_submit").click()
+# Paste several at once, comma+space mixed, typed into the free-text
+# field as ONE accepted new option (exactly what accept_new_options
+# itself accepts from one Enter press) - app._render_comparison_
+# companies_box() tokenizes/dedupes/splits it via the SAME app.
+# _parse_ticker_tokens() every other entry point uses.
+_at_b.multiselect(key="cmp_chips").select("MSFT, NVDA AAPL")
 _at_b.run()
-check("B3: pasting a comma/space-separated list adds every new ticker",
+check("B3: pasting a comma/space-separated blob into the free-text "
+      "field splits into every new ticker",
       "MSFT" in _at_b.session_state["cmp_chips"]
       and "NVDA" in _at_b.session_state["cmp_chips"])
 check("B3: a ticker already present (AAPL, pasted again) is not "
@@ -224,11 +242,8 @@ check("B3: chips are now AAPL, GOOGL, MSFT, NVDA (order-preserved, "
       "insertion order)",
       _at_b.session_state["cmp_chips"] == ["AAPL", "GOOGL", "MSFT", "NVDA"])
 
-# Max cap: push well past COMPARE_MAX_TICKERS (15) in one paste.
-_at_b.text_input(key="cmp_chip_add_input").input(
-    " ".join(f"TICK{i}" for i in range(20))
-)
-_at_b.button(key="cmp_chip_add_submit").click()
+# Max cap: push well past COMPARE_MAX_TICKERS (15) in one pasted blob.
+_at_b.multiselect(key="cmp_chips").select(" ".join(f"TICK{i}" for i in range(20)))
 _at_b.run()
 check(f"B4: capped at compare_config.COMPARE_MAX_TICKERS "
       f"({compare_config.COMPARE_MAX_TICKERS}) even after a huge paste",
@@ -238,17 +253,40 @@ check("B4: the existing max-tickers warning fires (reused, not a new "
       any("15" in w.value or "capped" in w.value.lower() or "máximo" in w.value.lower()
           for w in _at_b.warning))
 
-# Remove a chip by clicking its own "TICKER ✕" button.
+# Remove a ticker by unselecting its own pill (the multiselect's own
+# native removal - no separate "x" button of this app's own).
 _at_b2 = _run(_script(
     'app._render_comparison_input_row_chips(st.session_state["lang"])',
     email=USER_A, chip_entry_live=True,
     extra_state={"cmp_chips": ["AAPL", "MSFT", "GOOGL"], "cmp_stocks": ["AAPL", "MSFT", "GOOGL"]},
 ))
-_at_b2.button(key="cmp_chip_rm_MSFT").click()
+_at_b2.multiselect(key="cmp_chips").unselect("MSFT")
 _at_b2.run()
-check("B5: clicking a chip's own remove button removes exactly that "
-      "ticker, keeping the others in order",
+check("B5: unselecting one ticker removes exactly that one, keeping "
+      "the others in order",
       _at_b2.session_state["cmp_chips"] == ["AAPL", "GOOGL"])
+
+# Clear all - empties the box, never touches a saved list on disk.
+compare_lists_store.save_list(USER_C, "Task55 clear-all test", ["AAPL", "MSFT"])
+_at_b3 = _run(_script(
+    'app._render_comparison_input_row_chips(st.session_state["lang"])',
+    email=USER_C, chip_entry_live=True,
+    extra_state={"cmp_chips": ["AAPL", "MSFT"], "cmp_stocks": ["AAPL", "MSFT"],
+                 "cmp_loaded_list_name": "Task55 clear-all test"},
+))
+check("B6: 'Clear all' is offered whenever the box isn't already empty",
+      any(b.key == "cmp_companies_clear_all_btn" for b in _at_b3.button))
+_at_b3.button(key="cmp_companies_clear_all_btn").click()
+_at_b3.run()
+check("B6: clicking 'Clear all' empties cmp_chips",
+      _at_b3.session_state["cmp_chips"] == [])
+check("B6: clicking 'Clear all' also unloads any loaded list (the "
+      "Save button will offer 'Save as new list…' again, not "
+      "'Update')",
+      _at_b3.session_state.get("cmp_loaded_list_name") is None)
+check("B6: 'Clear all' itself never touches the saved list on disk - "
+      "it still exists afterwards",
+      any(_l["name"] == "Task55 clear-all test" for _l in compare_lists_store.list_lists(USER_C)))
 
 
 # ======================================================================
@@ -278,9 +316,10 @@ check("C2: signed in - the 'Saved list' selectbox IS present, "
       any(s.key == "cmp_saved_list_select" for s in _at_c2.selectbox)
       and _at_c2.selectbox(key="cmp_saved_list_select").value
       == _i18n_mod.t("comparison.no_list_selected", "en"))
-check("C2: with no list loaded yet, the 'Save this comparison' "
-      "popover is present (the pre-existing key) and its own name-"
-      "entry field is reachable - never the Update button",
+check("C2: with no list loaded yet, the 'Save as new list…' popover "
+      "(TASK 58's own wording for this exact state - key unchanged "
+      "since TASK 55) is present and its own name-entry field is "
+      "reachable - never the Update button",
       _at_c2.get_by_key("cmp_save_new_popover") is not None
       and any(t.key == "cmp_save_new_name_input" for t in _at_c2.text_input)
       and not any(b.key == "cmp_update_list_btn" for b in _at_c2.button))
