@@ -327,20 +327,26 @@ check("_render_top20_tab/_render_top20_australia_tab/_render_full100_tab are cal
       "TASK 30, 4 Nov 2026, added an optional recent_badge_map kwarg (default None) to all "
       "four, TASK 44 item 10, 11 Nov 2026, added an optional quality_on_sale_rank_map kwarg "
       "(default None) to _render_full100_tab's own call, TASK 49, 12 Nov 2026, moved these "
-      "calls into the _tab_specs ordered-list assembly (lambdas, different indentation), and "
+      "calls into the _tab_specs ordered-list assembly (lambdas, different indentation), "
       "TASK 50, 12 Nov 2026, added a sibling export_fn element to each _tab_specs entry "
-      "(further indentation, no change to the render lambdas' own arguments) - the base "
-      "positional signature + filters=filters is still exactly what's checked here) - "
-      "confirmed by source inspection",
+      "(further indentation, no change to the render lambdas' own arguments), and TASK 59, "
+      "14 Nov 2026, added the SAME optional quality_on_sale_rank_map kwarg (default None) to "
+      "_render_top20_tab/_render_top20_australia_tab's own calls too (TASK 44 item 10 had only "
+      "ever wired it into _render_full100_tab/_render_near_cutoff_tab, leaving the cross-list "
+      "chip missing on every other Top 200 tab) - the base positional signature + "
+      "filters=filters is still exactly what's checked here) - confirmed by source inspection",
       "_render_top20_tab(\n"
-      "            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges),"
+      "            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges,\n"
+      "            quality_on_sale_rank_map=_qos_rank_map),"
       in _render_module_src
       and "_render_top20_australia_tab(\n"
-      "            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges),"
+      "            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges,\n"
+      "            quality_on_sale_rank_map=_qos_rank_map),"
       in _render_module_src
       and "_render_top20_tab(\n"
       "            enriched, lang, finer_industry, sort_mode, currency=\"USD\", filters=filters,\n"
-      "            exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges)," in _render_module_src
+      "            exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges,\n"
+      "            quality_on_sale_rank_map=_qos_rank_map)," in _render_module_src
       and "_render_full100_tab(\n"
       "            enriched, lang, finer_industry, sort_mode, filters=filters,\n"
       "            recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map),"

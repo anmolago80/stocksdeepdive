@@ -1121,7 +1121,7 @@ def _market_count_line(group_key, count, lang):
 
 
 def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_rows, group_key, filters=None,
-                              recent_badge_map=None):
+                              recent_badge_map=None, quality_on_sale_rank_map=None):
     """Rule 5: those pool members, top 20 by the active sort and active
     filters, same card rendering as the USA tab (_render_top20_tab()) -
     rated-gated, no bottom shelf, no extension - `market_rows` is this
@@ -1132,8 +1132,13 @@ def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_r
     every member present, never instead of them.
 
     `recent_badge_map` (TASK 30, Part A): {ticker: badge_html} - None/
-    missing ticker renders no badge."""
+    missing ticker renders no badge.
+
+    `quality_on_sale_rank_map` (TASK 59, Director-directed, 14 Nov
+    2026): see _render_top20_tab()'s own docstring - same param, same
+    "None/empty renders no cross-list chip at all" default."""
     recent_badge_map = recent_badge_map or {}
+    quality_on_sale_rank_map = quality_on_sale_rank_map or {}
     rows = _sort_and_gate_rated(market_rows, sort_mode)
     total = len(rows)
     rows = rows[:20]
@@ -1149,9 +1154,14 @@ def _render_top20_market_tab(enriched, lang, finer_industry, sort_mode, market_r
                 _market_tab_country_badge_html(peer_context.market_for(row["ticker"]), lang)
                 if group_key == "Europe" else None
             )
+            _qos_rank = quality_on_sale_rank_map.get(row["ticker"])
             _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
                         country_badge_html=country_badge,
-                        recent_badge_html=recent_badge_map.get(row["ticker"]))
+                        recent_badge_html=recent_badge_map.get(row["ticker"]),
+                        cross_list_chip_html=(
+                            _cross_list_chip_html("quality_on_sale", _qos_rank, lang)
+                            if _qos_rank is not None else None
+                        ))
     if total < 20:
         st.caption(_market_count_line(group_key, total, lang))
 
@@ -1774,7 +1784,7 @@ def _home_country_label_html(home_country):
 
 def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, filters=None,
                        exclude_tickers=None, only_tickers=None, home_country_by_ticker=None,
-                       recent_badge_map=None):
+                       recent_badge_map=None, quality_on_sale_rank_map=None):
     """Top 20 by the active sort (point 2, "applying to every tab
     including Full 100"). Point 3: unrated companies are excluded from
     the Top 20 tabs entirely - never shown here, not even in a shelf -
@@ -1798,8 +1808,19 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
     forwarded to _render_row() as a small label for any row whose
     ticker is a key in it; omitted or a miss, no label - every other
     caller is unaffected. `recent_badge_map` (TASK 30, Part A):
-    {ticker: badge_html} - None/missing ticker renders no badge."""
+    {ticker: badge_html} - None/missing ticker renders no badge.
+
+    `quality_on_sale_rank_map` (TASK 59, Director-directed, 14 Nov
+    2026 - this tab, _render_top20_australia_tab() and _render_top20_
+    market_tab() were the only three tabs _render_full100_tab()'s own
+    TASK 44 item 10 cross-list chip never reached, since render_
+    top100_page() built _qos_rank_map but only ever passed it to Full
+    200/Near the cut-off): {ticker: 1-based rank in quality_on_sale_
+    candidates()'s own ordered list} - same "None/empty renders no
+    chip at all" default as _render_full100_tab()'s own param, see
+    that function's own docstring for the full reasoning."""
     recent_badge_map = recent_badge_map or {}
+    quality_on_sale_rank_map = quality_on_sale_rank_map or {}
     rows = _sort_and_gate_rated(enriched, sort_mode)
     if currency:
         rows = [r for r in rows if r["currency"] == currency]
@@ -1828,9 +1849,14 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, 
             # the dict was built safely.
             if isinstance(_hc, str) and _hc.strip():
                 home_country_html = _home_country_label_html(_hc)
+        _qos_rank = quality_on_sale_rank_map.get(row["ticker"])
         _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
                     home_country_html=home_country_html,
-                    recent_badge_html=recent_badge_map.get(row["ticker"]))
+                    recent_badge_html=recent_badge_map.get(row["ticker"]),
+                    cross_list_chip_html=(
+                        _cross_list_chip_html("quality_on_sale", _qos_rank, lang)
+                        if _qos_rank is not None else None
+                    ))
 
 
 def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None,
@@ -2132,7 +2158,8 @@ def _render_near_cutoff_tab(lang, finer_industry, sort_mode, recent_badge_map=No
                     near_cutoff_gap_html=_near_cutoff_gap_chip_html(cand["gap_to_cutoff"], lang))
 
 
-def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None):
+def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None, recent_badge_map=None,
+                                 quality_on_sale_rank_map=None):
     """Top 20 · Australia guaranteed-twenty (25 Sep 2026, owner-
     approved mock, "top20_australia_extended_mock.html") - a GUARANTEED
     twenty: every AUD pool row plus (point 1) the ASX extension's own
@@ -2155,8 +2182,13 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filte
     `recent_badge_map` (TASK 30, Part A): {ticker: badge_html}, keyed
     over the FULL universe (global pool + ASX extension) by the caller
     - so an extension-only ticker's badge is found here too, even
-    though it's never a key `enriched` alone would carry."""
+    though it's never a key `enriched` alone would carry.
+
+    `quality_on_sale_rank_map` (TASK 59, Director-directed, 14 Nov
+    2026): see _render_top20_tab()'s own docstring - same param, same
+    "None/empty renders no cross-list chip at all" default."""
     recent_badge_map = recent_badge_map or {}
+    quality_on_sale_rank_map = quality_on_sale_rank_map or {}
     pool_au = [r for r in enriched if r["currency"] == "AUD"]
     extension = _enriched_asx_extension()
     combined = pool_au + extension
@@ -2179,9 +2211,14 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filte
             st.caption(_t("filter_no_matches", lang))
         else:
             for i, row in ranked:
+                _qos_rank = quality_on_sale_rank_map.get(row["ticker"])
                 _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
                             origin_badge_html=origin_badge(row),
-                            recent_badge_html=recent_badge_map.get(row["ticker"]))
+                            recent_badge_html=recent_badge_map.get(row["ticker"]),
+                            cross_list_chip_html=(
+                                _cross_list_chip_html("quality_on_sale", _qos_rank, lang)
+                                if _qos_rank is not None else None
+                            ))
 
     if sort_mode != SORT_VALUE_TODAY:
         if top100_engine.is_backfill_live():
@@ -3185,7 +3222,8 @@ def render_top100_page(lang="en"):
         _t("tab_mixed", lang),
         _export_button("mixed", lambda: _top20_tab_export_rows(enriched, sort_mode, filters=filters)),
         lambda: _render_top20_tab(
-            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges),
+            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges,
+            quality_on_sale_rank_map=_qos_rank_map),
     ))
 
     if _show_quality_on_sale_tab:
@@ -3202,7 +3240,8 @@ def render_top100_page(lang="en"):
         _t("tab_au", lang),
         _export_button("au", lambda: _australia_tab_export_rows(enriched, sort_mode, filters=filters)),
         lambda: _render_top20_australia_tab(
-            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges),
+            enriched, lang, finer_industry, sort_mode, filters=filters, recent_badge_map=_recent_badges,
+            quality_on_sale_rank_map=_qos_rank_map),
     ))
 
     _tab_specs.append((
@@ -3211,7 +3250,8 @@ def render_top100_page(lang="en"):
             enriched, sort_mode, currency="USD", filters=filters, exclude_tickers=_foreign_tickers)),
         lambda: _render_top20_tab(
             enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
-            exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges),
+            exclude_tickers=_foreign_tickers, recent_badge_map=_recent_badges,
+            quality_on_sale_rank_map=_qos_rank_map),
     ))
 
     if _show_foreign_tab:
@@ -3222,7 +3262,7 @@ def render_top100_page(lang="en"):
             lambda: _render_top20_tab(
                 enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters,
                 only_tickers=_foreign_tickers, home_country_by_ticker=_foreign_home_country,
-                recent_badge_map=_recent_badges),
+                recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map),
         ))
 
     for group_key, market_rows in market_plan:
@@ -3233,7 +3273,7 @@ def render_top100_page(lang="en"):
                 lambda market_rows=market_rows: _market_tab_export_rows(market_rows, sort_mode, filters=filters)),
             lambda group_key=group_key, market_rows=market_rows: _render_top20_market_tab(
                 enriched, lang, finer_industry, sort_mode, market_rows, group_key,
-                filters=filters, recent_badge_map=_recent_badges),
+                filters=filters, recent_badge_map=_recent_badges, quality_on_sale_rank_map=_qos_rank_map),
         ))
 
     _tab_specs.append((

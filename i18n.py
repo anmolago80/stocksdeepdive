@@ -4335,7 +4335,13 @@ EN = {
     # TASK 44 item 10 (Director-directed, 11 Nov 2026): cross-list
     # chips - shown on row 3 right after the drop chip.
     "top100.cross_list_also_on_sale_chip": "★ Also on Quality on sale · #{rank}",
-    "top100.cross_list_also_in_top200_chip": "★ Also in Top 200 · #{rank}",
+    # TASK 59 (Director-directed, 14 Nov 2026): "overall" added so this
+    # global Value Score rank (from _global_value_score_ranks(), the
+    # SAME number the "TOP 200 · #<n>" origin badge already shows) is
+    # never mistaken for the tab's own 1-20 position number the card
+    # sits at - the two are unrelated numbering schemes shown right
+    # next to each other on a Quality on sale card.
+    "top100.cross_list_also_in_top200_chip": "★ Also in Top 200 · #{rank} overall",
     "top100.support_tooltip": (
         "Weekly pivot low (3,3), unbroken (2-close rule) - same logic "
         "as your TradingView levels.\n"
@@ -8197,7 +8203,7 @@ ES = {
     ),
     # TASK 44 item 10 (Director-directed, 11 Nov 2026): chips de lista cruzada.
     "top100.cross_list_also_on_sale_chip": "★ También en Calidad en oferta · #{rank}",
-    "top100.cross_list_also_in_top200_chip": "★ También en el Top 200 · #{rank}",
+    "top100.cross_list_also_in_top200_chip": "★ También en el Top 200 · #{rank} en general",
     "top100.support_tooltip": (
         "Mínimo pivote semanal (3,3), no roto (regla de 2 cierres) - la "
         "misma lógica que tus niveles de TradingView.\n"

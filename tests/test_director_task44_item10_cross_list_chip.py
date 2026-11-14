@@ -86,8 +86,11 @@ print("[task44_item10_check1_chip_html] _cross_list_chip_html() renders the "
 # ======================================================================
 check("EN cross_list_also_on_sale_chip substitutes {rank}",
       i18n.t("top100.cross_list_also_on_sale_chip", "en", rank=12) == "★ Also on Quality on sale · #12")
+# TASK 59 (14 Nov 2026) added " overall" to this one wording - see that
+# task's own test file for the full reasoning (disambiguates this
+# global Value Score rank from the tab's own 1-20 position number).
 check("EN cross_list_also_in_top200_chip substitutes {rank}",
-      i18n.t("top100.cross_list_also_in_top200_chip", "en", rank=5) == "★ Also in Top 200 · #5")
+      i18n.t("top100.cross_list_also_in_top200_chip", "en", rank=5) == "★ Also in Top 200 · #5 overall")
 check("ES cross_list_also_on_sale_chip is present and substitutes {rank}",
       "12" in i18n.t("top100.cross_list_also_on_sale_chip", "es", rank=12))
 check("ES cross_list_also_in_top200_chip is present and substitutes {rank}",
