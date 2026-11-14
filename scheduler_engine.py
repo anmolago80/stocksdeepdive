@@ -978,6 +978,51 @@ def _rescan_request_status():
     }
 
 
+# TASK 56 (Director-directed, 13 Nov 2026) - "Recompute Quality v2 for
+# all stored rows", a ONE-OFF owner-triggered refresh, never scheduled.
+# Same queue-a-request/scheduler-picks-it-up-next-tick shape as Rescan
+# now above, and for the identical reason: a Streamlit request thread
+# running a potentially multi-hour pass itself would hold no job lock,
+# refresh no heartbeat, and look exactly like an abandoned worker to
+# every other process watching this one's locks. No `universes`
+# parameter - the Director's own instruction is "all stored rows",
+# never a subset.
+
+def _queue_quality_v2_refresh_request(requested_by=None, log=print):
+    """Writes a quality-v2-refresh request to scheduler_state.json for
+    the scheduler loop to pick up on its next tick (see _run_queued_
+    quality_v2_refresh_tick()'s own docstring). Returns (True, None) if
+    queued; (False, reason) if one is already queued/running - only one
+    at a time, same "one in-flight thing" shape as _queue_rescan_
+    request() above."""
+    state = _load_state()
+    existing = state.get("quality_v2_refresh_request")
+    if existing:
+        return False, (
+            f"A Quality v2 refresh is already {existing.get('status', 'queued')} "
+            f"(requested {existing.get('requested_at', 'earlier')}) - try again "
+            f"once it completes."
+        )
+    requested_at = datetime.now(timezone.utc).isoformat()
+    state["quality_v2_refresh_request"] = {
+        "requested_at": requested_at, "requested_by": requested_by, "status": "queued",
+    }
+    _save_state(state)
+    log(f"[scheduler] quality v2 refresh queued (requested by "
+        f"{requested_by or 'owner'} at {requested_at})")
+    return (_load_state().get("quality_v2_refresh_request") is not None), None
+
+
+def _quality_v2_refresh_request_status():
+    """{"pending": ..., "last_run": ...} - same shape/reasoning as
+    _rescan_request_status() above, read by app.py's admin panel."""
+    state = _load_state()
+    return {
+        "pending": state.get("quality_v2_refresh_request"),
+        "last_run": state.get("quality_v2_refresh_last_run"),
+    }
+
+
 # TASK 25 (Director-directed, 31 Oct 2026, part A): the reprice pass's
 # own short-lived child process - containment for the native (non-
 # Python-heap) memory MALLOC_ARENA_MAX=2 did NOT stop (Railway evidence:
@@ -1137,6 +1182,174 @@ def _run_reprice_pass_in_child(to_reprice, run_night, log):
             f"before finishing - falling back to running the reprice loop in-process")
         return False
     return True
+
+
+# TASK 56 (13 Nov 2026) - the Quality v2 refresh's own short-lived
+# CHILD PROCESS, same memory-containment reasoning and same "plain
+# subprocess.Popen of a standalone script, never multiprocessing's
+# spawn" mechanics as _REPRICE_CHILD_ENTRY_PATH's own comment above -
+# see that comment for the full "why not spawn" writeup, unchanged
+# here. A pass over every stored row in every stored universe holds
+# far more in memory at its peak than a single night's reprice ever
+# does (private universes included, no due-tonight filter at all), so
+# the same per-chunk Python-heap growth that prompted the reprice
+# fix applies here at least as strongly.
+_QUALITY_V2_REFRESH_CHILD_ENTRY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "quality_v2_refresh_child_entry.py")
+_QUALITY_V2_REFRESH_CHILD_TIMEOUT_SECONDS = 6 * 3600
+
+
+def _run_quality_v2_refresh_pass_in_child(log):
+    """Runs nightly_scan.run_quality_v2_refresh_pass() inside a short-
+    lived child process instead of this one - see the two module
+    comments just above for why. No payload to hand off on the child's
+    stdin (unlike the reprice pass, this always covers every stored
+    universe - "all stored rows" per the Director's own instruction,
+    never a subset) - quality_v2_refresh_child_entry.py starts the pass
+    the instant it's launched. Same stdout-relay/timeout/fallback-to-
+    in-process contract as _run_reprice_pass_in_child() above - see
+    that function's own docstring for the full protocol; only the
+    child script and the timeout constant differ here."""
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, _QUALITY_V2_REFRESH_CHILD_ENTRY_PATH],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+    except Exception as e:
+        log(f"[scheduler] quality v2 refresh: child process failed to start ({e}) - "
+            f"falling back to running the refresh pass in-process")
+        return False
+
+    line_queue = queue.Queue()
+
+    def _read_stdout():
+        try:
+            for raw_line in proc.stdout:
+                line_queue.put(raw_line.rstrip("\n"))
+        except Exception:
+            pass
+        finally:
+            line_queue.put(None)
+
+    threading.Thread(target=_read_stdout, daemon=True).start()
+
+    deadline = time.time() + _QUALITY_V2_REFRESH_CHILD_TIMEOUT_SECONDS
+    reached_eof = False
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            line = line_queue.get(timeout=min(1.0, remaining))
+        except queue.Empty:
+            continue
+        if line is None:
+            reached_eof = True
+            break
+        log(line)
+
+    if not reached_eof:
+        log(f"[scheduler] quality v2 refresh: child process exceeded "
+            f"{_QUALITY_V2_REFRESH_CHILD_TIMEOUT_SECONDS}s - terminating and falling "
+            f"back to running the refresh pass in-process")
+        proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        return False
+
+    try:
+        exitcode = proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        exitcode = None
+    if exitcode != 0:
+        log(f"[scheduler] quality v2 refresh: child process exited with code "
+            f"{exitcode} before finishing - falling back to running the refresh "
+            f"pass in-process")
+        return False
+    return True
+
+
+_queued_quality_v2_refresh_lock_skip_logged = False
+
+
+def _run_quality_v2_refresh_tick(log, abandoned_status=None, abandoned_info=None,
+                                  rl_cooldown_active=None, rl_cooldown_until=None,
+                                  log_error=None):
+    """One tick's worth of "is there a queued Quality v2 refresh
+    request, and if so should THIS tick start it" - called from
+    _loop() every tick, same shape as _run_queued_rescan_tick() above
+    (see that function's own docstring for the full incident/design
+    writeup this mirrors). Uses its OWN "quality_v2_refresh" job lock
+    - deliberately NOT the "nightly" lock a scan/rescan/catch-up/
+    reprice holds - so an owner can queue a refresh without waiting
+    for a full nightly cycle to finish first; instead, this tick
+    explicitly skips (and retries next tick) whenever the "nightly"
+    lock is CURRENTLY held, so the refresh's own scan_store writes
+    (one universe's "rows" replaced wholesale, see scan_store.apply_
+    quality_v2_refresh()'s own docstring) never race a real scan's
+    save_scan()/reprice_scan() write to that SAME universe's file."""
+    log_error = log_error or log
+    global _queued_quality_v2_refresh_lock_skip_logged
+    request = _load_state().get("quality_v2_refresh_request")
+    if not request:
+        _queued_quality_v2_refresh_lock_skip_logged = False
+        return
+    if abandoned_status == "alive":
+        log(f"[scheduler] quality v2 refresh skipping - abandoned scan worker "
+            f"still running (pid {abandoned_info['pid']}, "
+            f"started {abandoned_info['started']})")
+        return
+    if rl_cooldown_active:
+        log(f"[scheduler] quality v2 refresh skipped - rate-limit cool-down "
+            f"active until {rl_cooldown_until}")
+        return
+    if _read_lock_payload(_lock_path("nightly")) is not None:
+        log("[scheduler] quality v2 refresh skipped this tick - a scan/reprice "
+            "currently holds the nightly lock, retrying next tick")
+        return
+    if not _acquire_job_lock("quality_v2_refresh", log):
+        if not _queued_quality_v2_refresh_lock_skip_logged:
+            _log_at_info(log, "[scheduler] quality v2 refresh skipped - another "
+                               "process already holds the lock")
+            _queued_quality_v2_refresh_lock_skip_logged = True
+        return
+    _queued_quality_v2_refresh_lock_skip_logged = False
+    cancel_event = threading.Event()
+    timed_out = False
+    try:
+        state = _load_state()
+        state["quality_v2_refresh_request"] = {
+            **request, "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_state(state)
+        log(f"[scheduler] starting queued quality v2 refresh, requested by "
+            f"{request.get('requested_by') or 'owner'} at {request.get('requested_at')}")
+
+        def _run(lg):
+            if not _run_quality_v2_refresh_pass_in_child(lg):
+                import nightly_scan
+                nightly_scan.run_quality_v2_refresh_pass(log=lg)
+
+        _record_job(
+            "quality_v2_refresh", log, _run,
+            cancel_event=cancel_event, log_error=log_error,
+        )
+    except TimeoutError:
+        timed_out = True
+        raise
+    finally:
+        if not timed_out:
+            _release_job_lock("quality_v2_refresh")
+            done_state = _load_state()
+            done_state["quality_v2_refresh_last_run"] = {
+                **request, "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+            done_state.pop("quality_v2_refresh_request", None)
+            _save_state(done_state)
 
 
 def _run_nightly(cfg, log, run_night=None, cancel_event=None):
@@ -2663,6 +2876,15 @@ _JOB_HARD_TIMEOUT_SECONDS = {
     "top100_poll": 5 * 60,
     "earnings_refresh": 15 * 60,
     "digest": 15 * 60,
+    # TASK 56 (13 Nov 2026): a one-off pass over EVERY stored row in
+    # EVERY stored universe (private included) - genuinely larger than
+    # any single night's due-scan set ("nightly" above only ever covers
+    # the universes due THAT night). Generous on purpose, same
+    # reasoning as "nightly"'s own comment - this should never need
+    # more than a few hours even cold-cache, but a stuck run must still
+    # release the lock eventually rather than block every future
+    # refresh attempt forever.
+    "quality_v2_refresh": 6 * 3600,
 }
 _JOB_HARD_TIMEOUT_DEFAULT_SECONDS = 15 * 60
 
@@ -4162,6 +4384,17 @@ def _loop(log):
                 _run_queued_rescan_tick(
                     cfg, log, _rl_cooldown_active, _rl_cooldown_until,
                     _abandoned_status, _abandoned_info, log_error=_log_error,
+                )
+
+                # TASK 56 (13 Nov 2026) - queued Quality v2 refresh, same
+                # "pick it up on the next tick" shape as Rescan now just
+                # above - see _run_quality_v2_refresh_tick()'s own
+                # docstring for why this uses its own lock rather than
+                # "nightly"'s.
+                _run_quality_v2_refresh_tick(
+                    log, abandoned_status=_abandoned_status, abandoned_info=_abandoned_info,
+                    rl_cooldown_active=_rl_cooldown_active, rl_cooldown_until=_rl_cooldown_until,
+                    log_error=_log_error,
                 )
 
                 # AI-readiness roadmap Phase 5: nightly (every day, unlike

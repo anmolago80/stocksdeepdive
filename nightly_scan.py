@@ -205,10 +205,12 @@ def _attach_dividend_payout(row, ticker, log=print):
 # actually move these specific names' own Quality v2 without having to
 # open the admin "Quality v2 preview" panel by hand. Never read by
 # anything else - log only, no stored/scored effect of its own.
+# TASK 56 (13 Nov 2026) added "CTGO" per the Director's own refreshed
+# watchlist for this task.
 QUALITY_V2_DIAGNOSTIC_WATCHLIST = frozenset({
     "AAL", "HCA", "MTCH", "CCI", "INSE", "KSPI", "MO", "HPQ", "FICO", "LII",
-    "DPZ", "ORC", "NREF", "SOI.L", "CSL.AX", "OCL.AX", "NU", "ADBE", "COKE",
-    "INTU", "CPRT", "WDAY", "ZM",
+    "DPZ", "ORC", "NREF", "SOI.L", "CTGO", "CSL.AX", "OCL.AX", "NU", "ADBE",
+    "COKE", "INTU", "CPRT", "WDAY", "ZM",
 })
 
 
@@ -258,6 +260,12 @@ def _attach_quality_v2(row, ticker, log=print):
     try:
         bundle = fundamentals_data.get_bundle(ticker)
         if not bundle:
+            # TASK 56 (13 Nov 2026, Director-directed): previously silent -
+            # run_quality_v2_refresh_pass() below needs a "why" for every
+            # skip it counts, and this was the one failure mode with no
+            # log line of its own at all (the except Exception branch
+            # below already logs every OTHER failure).
+            log(f"[nightly_scan] {ticker}: quality_v2_engine skipped - no fundamentals bundle available")
             return
         score, meta = quality_v2_engine.get_quality_score_v2(ticker, bundle)
         row["Quality V2"] = score
@@ -265,6 +273,147 @@ def _attach_quality_v2(row, ticker, log=print):
         _log_quality_v2_diagnostic(row, ticker, meta, log)
     except Exception as e:
         log(f"[nightly_scan] {ticker}: quality_v2_engine failed: {e}")
+
+
+def run_quality_v2_refresh_pass(log=print):
+    """TASK 56 (Director-directed, 13 Nov 2026, "go-live preview"): a
+    ONE-OFF, owner-triggered refresh of "Quality V2" for every row of
+    every STORED scan on disk - not part of the nightly pipeline, never
+    scheduled, only ever run via scheduler_engine's own queued-request
+    pickup (see that module's own _run_quality_v2_refresh_tick()
+    docstring for the admin-button/background-job wiring; this function
+    is the pure compute loop it runs, same split as _run_nightly() vs
+    the scheduler's own job-lock/heartbeat/child-process wrapper around
+    it).
+
+    Reuses _attach_quality_v2(row, ticker, log=log) UNCHANGED for every
+    single row - the EXACT function the live nightly scan already calls,
+    so a refreshed row's "Quality V2" is provably the same value a fresh
+    nightly scan of that ticker would produce, never a second,
+    independently-maintained computation. That also means this pays the
+    SAME fundamentals_data.get_bundle() cost per ticker a nightly scan
+    does (cached 24h, so a ticker already scanned today - e.g. tonight's
+    due universes - is a cheap cache hit; a ticker whose universe hasn't
+    been due in days pays a real fetch) - "cached statement bundles
+    first, no network where possible" is exactly get_bundle()'s own
+    existing contract, not a new mechanism built here.
+
+    Chunked by UNIVERSE (the natural boundary: this module's own rows
+    for one universe are already held in memory as a single list by
+    load_scan_raw(), and nothing here accumulates across universes) -
+    one universe is fully refreshed and persisted before the next one
+    starts, same memory-safety shape as scheduler_engine's own nightly
+    reprice pass (_reprice_universes_loop()). Every stored universe,
+    including private ones (scan_store.list_saved_universes(
+    include_private=True)) - a universe with no saved scan at all is
+    simply absent from that list, nothing to refresh.
+
+    A row is counted "updated" only when _attach_quality_v2() actually
+    set a NEW "Quality V2"/"Quality V2 Meta" pair on it this pass - the
+    row's PRE-EXISTING Quality V2 is saved and restored unchanged on any
+    skip (a malformed row with no Ticker, no fundamentals bundle
+    available, or get_quality_score_v2() raising), so a transient
+    failure here can never leave a ticker WORSE off (silently wiped)
+    than before this ran. The per-ticker "why" for every skip is
+    whatever _attach_quality_v2() itself already logs ("...skipped - no
+    fundamentals bundle available" or "...failed: <exception>") - this
+    function's own per-universe and final summary lines report counts
+    only, pointing at those lines rather than re-deriving/duplicating
+    the reason text a second time.
+
+    Logs "[quality_v2_refresh] <universe>: N updated, M skipped - in
+    Xs" after each universe, then one final "[quality_v2_refresh]
+    SUMMARY: ..." line with the grand totals and the whole pass's own
+    duration - then, per the Director's own explicit ask, a FRESH,
+    GROUPED "[quality_v2_diag]" block for QUALITY_V2_DIAGNOSTIC_
+    WATCHLIST, so the watchlist state is visible as one clean block
+    AFTER the refresh, not merely scattered among the per-universe
+    lines above it.
+
+    That block is built from rows captured DURING the main loop above,
+    not a second read via scan_store.find_ticker_row() - that function
+    goes through load_scan() (Director-directed Stage 1b/load_scan_raw
+    docstring), which applies the normal 72h "generated_at" staleness
+    cutoff. The entire reason this task exists is that most universes
+    have NOT been freshly scanned recently (that is exactly the stale-
+    preview problem it fixes) - a watchlist ticker sitting in one of
+    those universes would read back as "not found" through that
+    freshness gate even though this pass just wrote a brand new Quality
+    V2 value for it on disk. Capturing the row in-loop (where it is
+    read via load_scan_raw(), the same freshness-independent read this
+    whole pass already uses to find it in the first place) reports the
+    watchlist's real post-refresh state regardless of how old that
+    universe's own last full scan is.
+
+    Never touches live selection: top100_engine.select_top100_pool()/
+    quality_on_sale_candidates() and every public page read "Quality V2"
+    straight off whatever's already stored at render/selection time
+    (same shadow-field convention as every call site this module's own
+    docstring on _attach_quality_v2() already documents) - this pass
+    only ever updates THAT stored value in place, through the exact
+    same scan_store file each one already reads, never a new field, new
+    store, or new selection rule of its own."""
+    start = time.time()
+    universes = scan_store.list_saved_universes(include_private=True)
+    total_updated = 0
+    total_skipped = 0
+    per_universe = []
+    watchlist_rows = {}
+    for universe in universes:
+        _u_start = time.time()
+        payload = scan_store.load_scan_raw(universe, allow_private=True)
+        if not payload or not payload.get("rows"):
+            continue
+        rows = payload["rows"]
+        u_updated = 0
+        u_skipped = 0
+        for row in rows:
+            ticker = row.get("Ticker")
+            if not ticker:
+                u_skipped += 1
+                log(f"[nightly_scan] (unnamed row in {universe}): quality_v2_refresh "
+                    f"skipped - no Ticker field on this row")
+                continue
+            _old_v2 = row.pop("Quality V2", None)
+            _old_meta = row.pop("Quality V2 Meta", None)
+            _attach_quality_v2(row, ticker, log=log)
+            if "Quality V2" in row:
+                u_updated += 1
+            else:
+                u_skipped += 1
+                if _old_v2 is not None:
+                    row["Quality V2"] = _old_v2
+                if _old_meta is not None:
+                    row["Quality V2 Meta"] = _old_meta
+            if ticker in QUALITY_V2_DIAGNOSTIC_WATCHLIST and ticker not in watchlist_rows:
+                watchlist_rows[ticker] = row
+        scan_store.apply_quality_v2_refresh(
+            universe, rows, updated_count=u_updated, skipped_count=u_skipped)
+        total_updated += u_updated
+        total_skipped += u_skipped
+        per_universe.append((universe, u_updated, u_skipped))
+        log(f"[quality_v2_refresh] {universe}: {u_updated} updated, {u_skipped} skipped "
+            f"- in {time.time() - _u_start:.0f}s")
+
+    elapsed = time.time() - start
+    mins, secs = divmod(int(elapsed), 60)
+    log(f"[quality_v2_refresh] SUMMARY: {len(per_universe)} universe(s), "
+        f"{total_updated} row(s) updated, {total_skipped} row(s) skipped, "
+        f"in {mins}m {secs}s")
+
+    log("[quality_v2_refresh] watchlist state after refresh:")
+    for ticker in sorted(QUALITY_V2_DIAGNOSTIC_WATCHLIST):
+        row = watchlist_rows.get(ticker)
+        if row is None:
+            log(f"[quality_v2_diag] {ticker}: not found in any stored universe")
+            continue
+        meta = row.get("Quality V2 Meta") or {}
+        _log_quality_v2_diagnostic(row, ticker, meta, log)
+
+    return {
+        "universes": len(per_universe), "updated": total_updated,
+        "skipped": total_skipped, "elapsed_seconds": elapsed,
+    }
 
 
 # URGENT Commit 2 (24 Sep 2026, owner-reported): scans have produced

@@ -32828,6 +32828,120 @@ def _render_rescan_now_control():
         _handle_rescan_now_click(_rescan_selected)
 
 
+def _is_owner_for_quality_v2_refresh():
+    """Deferred, FAIL-CLOSED owner check for the Quality v2 refresh
+    control (TASK 56, 13 Nov 2026, Director-directed) - same shape and
+    same reasoning as _is_owner_for_rescan() above. ANY exception here
+    resolves to "not owner", never the other way around."""
+    try:
+        return bool(ai_gate.is_owner(paywall_engine.current_user_email()))
+    except Exception:
+        return False
+
+
+def _handle_quality_v2_refresh_click():
+    """TASK 56 (13 Nov 2026, Director-directed) click handler for the
+    "Recompute Quality v2 for all stored rows" button - kept separate
+    from the button's `if st.button(...):` block and independently
+    re-checks ownership server-side, same reasoning as
+    _handle_rescan_now_click() above: does not trust having already
+    been gated by _render_quality_v2_refresh_control()'s own render-time
+    check.
+
+    Queues the request (scheduler_engine._queue_quality_v2_refresh_
+    request()) rather than running the refresh here - this is a
+    one-off, all-stored-rows pass that can run for a long time; running
+    it synchronously in this Streamlit request thread would have the
+    exact same abandoned-worker/stale-heartbeat problem _handle_rescan_
+    now_click() already documents for Rescan now. The scheduler loop
+    picks the request up on its next tick and runs it through its own
+    dedicated "quality_v2_refresh" job lock (not "nightly"'s - see
+    scheduler_engine._run_quality_v2_refresh_tick()'s own docstring for
+    why), with the same heartbeat/hard-timeout/abandoned-worker handling
+    every other scheduled job gets via _record_job()."""
+    if not _is_owner_for_quality_v2_refresh():
+        st.error("This action isn't available.")
+        return
+    import scheduler_engine
+    _owner_email = None
+    try:
+        _owner_email = paywall_engine.current_user_email()
+    except Exception:
+        pass
+    _ok, _reason = scheduler_engine._queue_quality_v2_refresh_request(
+        requested_by=_owner_email, log=print)
+    if _ok:
+        st.success(
+            "Queued: the scheduler will recompute Quality v2 for every "
+            "stored row within a minute."
+        )
+    else:
+        (st.info if _reason and "already" in _reason else st.warning)(
+            _reason or "Could not queue the refresh - check the server logs."
+        )
+
+
+def _render_quality_v2_refresh_control():
+    """Owner-only "Recompute Quality v2 for all stored rows" control
+    (TASK 56, 13 Nov 2026, Director-directed) - a one-off refresh that
+    re-runs quality_v2_engine on every row of every stored universe,
+    using nightly_scan._attach_quality_v2()'s own cached-bundle-first
+    logic unchanged (so a refreshed row's Quality V2 is provably
+    identical to what a fresh nightly scan of that ticker would
+    produce), and writes the result back via scan_store.apply_quality_
+    v2_refresh(). Queued and run on the scheduler's own next tick, same
+    shape as Rescan now above (see _handle_quality_v2_refresh_click()'s
+    own docstring for why this is queued rather than run here directly)
+    - two independent owner checks (this render-time one, plus the
+    click handler's own) so no visitor-reachable path can reach the
+    refresh without passing both.
+
+    Also shows the current request's status (queued/running) and the
+    most recent completed run, straight from scheduler_engine._quality_
+    v2_refresh_request_status() - so the owner isn't left guessing
+    whether their click landed once this page next reruns. This never
+    changes which rows are selected for display anywhere - it only
+    overwrites the "Quality V2"/"Quality V2 Meta" fields already stored
+    on each row in place."""
+    if not _is_owner_for_quality_v2_refresh():
+        return
+    import scheduler_engine
+    st.markdown("### Recompute Quality v2 for all stored rows (owner)")
+    st.caption(
+        "One-off refresh: re-runs the Quality v2 scoring engine on every "
+        "row of every stored universe, using cached fundamentals bundles "
+        "first (no network where a cached bundle is still fresh) and "
+        "writes the new score back onto the stored row. Does not change "
+        "any live selection, ranking, or which tickers are shown anywhere "
+        "- only the stored 'Quality V2' field on each row. Queues the "
+        "request for the scheduler loop to pick up within a minute and "
+        "run through its own dedicated job lock, independent of the "
+        "nightly scan lock."
+    )
+    try:
+        _status = scheduler_engine._quality_v2_refresh_request_status()
+    except Exception:
+        _status = {"pending": None, "last_run": None}
+    _pending = _status.get("pending")
+    if _pending:
+        st.info(
+            f"Request {_pending.get('status', 'queued')} - requested "
+            f"{_pending.get('requested_at', '-')}"
+            + (f", started {_pending['started_at']}" if _pending.get("started_at") else "")
+        )
+    _last_run = _status.get("last_run")
+    if _last_run and not _pending:
+        st.caption(
+            f"Last run: requested {_last_run.get('requested_at', '-')}, "
+            f"finished {_last_run.get('finished_at', '-')}"
+        )
+    if st.button(
+        "Recompute Quality v2 for all stored rows",
+        key="admin_quality_v2_refresh_btn", disabled=bool(_pending),
+    ):
+        _handle_quality_v2_refresh_click()
+
+
 def _is_owner_for_data_audit():
     """Deferred, FAIL-CLOSED owner check for the Data audit checks panel -
     same shape/reasoning as _is_owner_for_rescan() above."""
@@ -36480,6 +36594,14 @@ def page_admin_dashboard():
     # "Universe scan sizes" table above, which already shows exactly
     # which universes need this.
     _render_rescan_now_control()
+
+    # --- RECOMPUTE QUALITY V2 FOR ALL STORED ROWS (TASK 56, 13 Nov 2026,
+    # Director-directed) - one-off refresh so the go-live preview no
+    # longer shows stale pre-TASK-51 Quality v2 values for universes not
+    # yet rescanned since that fix. Placed right after Rescan now: both
+    # are owner-only, on-demand tools that queue work for the scheduler's
+    # next tick rather than running in this request thread.
+    _render_quality_v2_refresh_control()
 
     # --- DATA AUDIT CHECKS (data-correctness audit item 5, 27 Sep 2026,
     # owner-directed) - see _render_data_audit_checks_panel()'s own

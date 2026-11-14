@@ -549,6 +549,40 @@ def apply_attention_topup(universe, rows, topped_up_count=None):
     return payload
 
 
+def apply_quality_v2_refresh(universe, rows, updated_count=None, skipped_count=None):
+    """TASK 56 (Director-directed, 13 Nov 2026): persists `rows` after
+    nightly_scan.run_quality_v2_refresh_pass() has recomputed "Quality
+    V2"/"Quality V2 Meta" in place for this universe's stored rows.
+    Same carry-over convention as reprice_scan()/apply_attention_
+    topup() above: `rows` replaces the stored rows, everything else
+    about the payload (`generated_at` - the last full fundamentals
+    scan - `source`, `attention_lite`, `degraded`) is carried over
+    unchanged - this is a one-off field-level refresh of rows already
+    scanned, not a new full scan, so `generated_at` must never move for
+    it (the admin scan calendar / staleness checks both key off it
+    meaning "last full scan"). Returns None (writes nothing) if there's
+    no prior scan on disk for `universe` - the refresh pass only ever
+    calls this for a universe load_scan_raw() just handed it rows for,
+    so this should never actually happen in practice."""
+    existing = load_scan_raw(universe, allow_private=True)
+    if existing is None:
+        return None
+    payload = dict(existing)
+    payload["rows"] = rows
+    payload["quality_v2_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+    if updated_count is not None:
+        payload["quality_v2_refresh_updated_count"] = updated_count
+    if skipped_count is not None:
+        payload["quality_v2_refresh_skipped_count"] = skipped_count
+    for _k in ("generated_at_label", "age_hours", "repriced_at_label"):
+        payload.pop(_k, None)
+    tmp = _path(universe) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, _path(universe))
+    return payload
+
+
 def invalidate(universe):
     """Deletes the stored scan for `universe`, if any - the file-based
     equivalent of "mark this universe's scan stale so the scheduler

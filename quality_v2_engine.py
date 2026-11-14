@@ -140,6 +140,26 @@ DEBT_PENALTY_RATE = 0.05
 DEBT_PENALTY_CAP = 15
 DEBT_EQUITY_MAX_RATIO = DEBT_PENALTY_CAP / DEBT_PENALTY_RATE
 
+# TASK 56 (Director-directed, 13 Nov 2026, CTGO root-cause finding):
+# net_margin was the one input of the 7 with NO plausibility guard at
+# all - unlike roe/roic (clamped/filtered to +-100%, TASK 45) and
+# debt_to_equity (TASK 51). A normalized-income-per-FY read with a
+# small revenue base and a large non-operating one-off gain that the
+# data provider's own "Total Unusual Items" row doesn't classify as
+# unusual (common for gains on sale of a mineral property/royalty
+# interest - not every provider tags every one-off the same way) can
+# produce ni/revenue many multiples of 100% for that one fiscal year.
+# With as few as 1-2 usable fiscal years, _median_of_available() has
+# nothing to average that single distorted year against - it passes
+# straight through, worth up to +/-15 points here (margin * 100 *
+# 0.15), easily enough on its own to swamp every other input and hit
+# the 100 ceiling. Same "treat as unavailable, never a clamp that
+# keeps a distorted number in the mix" rule TASK 45/51 already applied
+# to roe/debt_to_equity - same +-100% ceiling, reused for consistency,
+# not independently re-derived (a genuinely operating business cannot
+# sustain net income exceeding its own revenue).
+NET_MARGIN_PLAUSIBLE_MAX = 1.0
+
 
 def _median_of_available(values):
     vals = [v for v in values if v is not None]
@@ -166,6 +186,27 @@ def _plausible_roe(value):
     except (TypeError, ValueError):
         return None
     if abs(value) > ROE_PLAUSIBLE_MAX:
+        return None
+    return value
+
+
+def _plausible_margin(value):
+    """None if `value` is missing, non-numeric, or its magnitude
+    exceeds NET_MARGIN_PLAUSIBLE_MAX (>100%) - same shape and reasoning
+    as _plausible_roe() above (TASK 56): applied to BOTH the per-
+    fiscal-year statement-derived margin AND the .info["profitMargins"]
+    fallback, since net income exceeding revenue is implausible for a
+    genuinely operating business regardless of which source reported
+    it. Treating it as unavailable flows it through this module's own
+    existing per-input fallback/median machinery exactly like any
+    other missing value."""
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(value) > NET_MARGIN_PLAUSIBLE_MAX:
         return None
     return value
 
@@ -389,14 +430,27 @@ def _get_quality_score_v2(ticker, bundle, info):
         fallback_fields.append("roic")
 
     # Net margin: normalized income / revenue, per FY, medianed.
+    # TASK 56 (Director-directed, 13 Nov 2026, CTGO root-cause fix): a
+    # FY whose ratio is implausible (> +-100%, e.g. a tiny revenue base
+    # plus a large non-excluded one-off gain) is dropped via
+    # _plausible_margin() rather than feeding the median, same "treat
+    # as unavailable" rule TASK 45/51 already apply to roe/debt_to_
+    # equity above - see NET_MARGIN_PLAUSIBLE_MAX's own comment.
     margin_vals = [
-        (ni_by_fy.get(fy) / revenue_by_fy[fy])
-        for fy in fy_dates
-        if ni_by_fy.get(fy) is not None and revenue_by_fy.get(fy)
+        m for m in (
+            _plausible_margin(ni_by_fy.get(fy) / revenue_by_fy[fy])
+            for fy in fy_dates
+            if ni_by_fy.get(fy) is not None and revenue_by_fy.get(fy)
+        )
+        if m is not None
     ]
     net_margin = _median_of_available(margin_vals)
     if net_margin is None:
-        net_margin = info.get("profitMargins", 0) or 0
+        # Same guard on the .info fallback (TASK 56): Yahoo's own
+        # reported profitMargins can in principle be just as distorted
+        # by a one-off gain included in TTM net income - never assumed
+        # sane just because it came from .info rather than a statement.
+        net_margin = _plausible_margin(info.get("profitMargins")) or 0
         fallback_fields.append("net_margin")
 
     # Revenue growth / earnings growth: CAGR (fallback to mean YoY) over
