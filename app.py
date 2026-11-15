@@ -15054,9 +15054,35 @@ def page_scanner():
     # Australia + ASX 200 - picked so the very first script run has a
     # concrete universe to look up an overnight scan for, before any
     # picker widget below has been touched or even instantiated.
+    #
+    # TASK 63 (Director-directed, 15 Nov 2026, owner screenshot - the
+    # ASX 200 default landed a signed-out visitor straight on a wall-
+    # blocked universe while SIGNIN_WALL_LIVE is on): a signed-out,
+    # non-owner visitor's FIRST-EVER load (st.session_state.setdefault()
+    # itself only fires once, before any ?universe= deep link below has
+    # had a chance to override it - "nothing chosen yet" is exactly this
+    # condition) defaults to "S&P 500" instead - the one universe that
+    # stays public while the wall is live (signin_wall.PUBLIC_SCANNER_
+    # UNIVERSE), so that visitor's very first screen is a universe they
+    # can actually see, never the sign-in prompt. Signed-in visitors, the
+    # owner, and every visitor at all while the wall is off keep today's
+    # ASX 200 default, unchanged. Deliberately checked once, directly
+    # (ai_gate.is_owner()/paywall_engine.is_logged_in(), the same two
+    # checks _signin_wall_blocked() itself makes) rather than computing
+    # _is_scanner_picker_owner early - that variable's own real job
+    # starts a few lines down and this is the only place above it that
+    # needs an owner/signed-in read at all.
+    _scanner_wall_default_public = (
+        signin_wall.wall_live()
+        and not ai_gate.is_owner(paywall_engine.current_user_email())
+        and not paywall_engine.is_logged_in()
+    )
     st.session_state.setdefault("scanner_country_au", True)
     st.session_state.setdefault("scanner_country_us", False)
-    st.session_state.setdefault("scanner_universe", "ASX 200")
+    st.session_state.setdefault(
+        "scanner_universe",
+        signin_wall.PUBLIC_SCANNER_UNIVERSE if _scanner_wall_default_public else "ASX 200",
+    )
 
     # ---- Part 37: ?universe= deep link, read BEFORE the picker draws so
     # a pill click (a real navigation now, not a rerun - see
@@ -15188,6 +15214,16 @@ def page_scanner():
     # state some other way (the TASK 1 bug's own lesson: check every
     # path that can set the active universe, at the point it's used -
     # not just the path that happened to set it this run).
+    # TASK 63 (Director-directed, 15 Nov 2026, owner screenshot): this
+    # used to be set ONLY inside the else-branch below - a signed-out,
+    # non-owner visitor hitting a wall-blocked universe took the if-
+    # branch instead (the sign-in prompt), left _overnight_top
+    # completely unassigned, and crashed with UnboundLocalError the
+    # moment the "change universe" expander a few lines down read it.
+    # Initialised here, before the branch, so BOTH branches always
+    # leave it a real value - None (falsy, same as "no scan at all"
+    # already was) on the wall-blocked path.
+    _overnight_top = None
     if not signin_wall.scanner_universe_is_public(_top_universe) and _signin_wall_blocked(
             "scanner", _top_universe):
         _render_signin_wall_prompt(_scan_lang, "scanner_overnight")
