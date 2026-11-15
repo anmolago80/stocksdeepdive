@@ -552,6 +552,26 @@ def _conn():
             cumulative_cost_usd REAL NOT NULL DEFAULT 0
         )"""
     )
+    # TASK 61 (Director-directed, 15 Nov 2026): the Quality on sale
+    # tab's own "Recently added" badge needs ITS OWN streak history -
+    # quality_on_sale_candidates() (top100_engine.py) is computed LIVE
+    # on every render, with no stored history at all, so before this
+    # the tab's badge had nothing of its own to read and fell back to
+    # Top 200 POOL membership dates instead (the exact bug this task
+    # fixes - a company can be on Quality on sale for days while only
+    # just joining the Top 200 pool, or vice versa). One row per
+    # (as_of, ticker): just enough to replay current_streak_start_
+    # dates()'s own walk-the-stored-snapshots logic below against THIS
+    # list instead of top100_pool - no rich columns needed since this
+    # table is never read for display, only for "was this ticker on
+    # the list that night".
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_qos_pool (
+            as_of TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            PRIMARY KEY (as_of, ticker)
+        )"""
+    )
     return conn
 
 
@@ -812,6 +832,106 @@ def current_streak_start_dates(tickers, limit=POOL_SNAPSHOT_RETENTION):
         rows = conn.execute(
             f"SELECT as_of, ticker FROM top100_pool WHERE as_of IN ({placeholders_dates}) "
             "AND backfill_set_aside = 0",
+            dates,
+        ).fetchall()
+    membership_by_date = {}
+    for as_of, ticker in rows:
+        if ticker in wanted:
+            membership_by_date.setdefault(as_of, set()).add(ticker)
+
+    starts = {}
+    latest = dates[0]
+    for ticker in wanted:
+        if ticker not in membership_by_date.get(latest, ()):
+            continue
+        start = latest
+        for as_of in dates[1:]:
+            if ticker in membership_by_date.get(as_of, ()):
+                start = as_of
+            else:
+                break
+        starts[ticker] = start
+    return starts
+
+
+# -----------------------------------------------------------------
+# Quality on sale (TASK 61, Director-directed, 15 Nov 2026) - its own
+# "Recently added" streak history, separate from the Top 200 pool
+# above. quality_on_sale_candidates() (top100_engine.py) is computed
+# LIVE on every render with no stored history of its own, so before
+# this task the Quality on sale tab's badge fell back to TOP 200 POOL
+# membership dates - wrong whenever a company's Quality-on-sale
+# streak and its Top 200 membership don't move together (the
+# Director's own INTU example: on Quality on sale for days, only
+# just joined the Top 200 that night).
+# -----------------------------------------------------------------
+
+def save_quality_on_sale_pool(tickers, as_of):
+    """Upserts tonight's Quality on sale candidate list - called right
+    after top100_engine.select_top100_pool()'s own save_pool() call,
+    same `as_of` as that night's Top 200 snapshot, with the SAME
+    tickers quality_on_sale_candidates() capped `candidates` list
+    shows on the tab (never a second, independently-filtered list).
+    Same POOL_SNAPSHOT_RETENTION retention as the Top 200 pool
+    snapshots - pruned in this same call so callers never have to
+    remember to prune separately, same convention as save_pool()."""
+    if tickers:
+        with _conn() as conn:
+            conn.executemany(
+                "INSERT INTO top100_qos_pool (as_of, ticker) VALUES (?, ?) "
+                "ON CONFLICT(as_of, ticker) DO NOTHING",
+                [(as_of, t) for t in tickers],
+            )
+    _prune_old_qos_snapshots()
+
+
+def _prune_old_qos_snapshots(keep=POOL_SNAPSHOT_RETENTION):
+    with _conn() as conn:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT as_of FROM top100_qos_pool ORDER BY as_of DESC"
+        ).fetchall()]
+        stale = dates[keep:]
+        if stale:
+            conn.executemany("DELETE FROM top100_qos_pool WHERE as_of = ?", [(d,) for d in stale])
+
+
+def _distinct_qos_as_of_dates(limit=POOL_SNAPSHOT_RETENTION):
+    with _conn() as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT as_of FROM top100_qos_pool ORDER BY as_of DESC LIMIT ?", (limit,)
+        ).fetchall()]
+
+
+def current_qos_streak_start_dates(tickers, limit=POOL_SNAPSHOT_RETENTION):
+    """{ticker: as_of} - same walk-backward-through-stored-snapshots
+    logic as current_streak_start_dates() above, against THIS store's
+    own top100_qos_pool table instead of top100_pool. A ticker absent
+    from the latest saved snapshot is skipped, same contract as the
+    Top 200 version.
+
+    Baseline rule (Director's own explicit instruction, TASK 61): when
+    only ONE snapshot has EVER been saved (the very first night this
+    store has ever recorded anything), every ticker on it is a
+    baseline member whose real join date genuinely can't be known yet
+    - {} is returned for everyone that night, never a date that would
+    misleadingly look like "just joined". From the SECOND recorded
+    night on, this is byte-identical to the Top 200 version's own
+    logic: a genuine new entrant (present tonight, absent the night
+    before) gets its own real start date; a baseline member whose
+    streak walks all the way back to night one still gets that
+    night's date (truthful - it HAS been there continuously since
+    then), exactly as current_streak_start_dates() already does for
+    the Top 200 pool."""
+    if not tickers:
+        return {}
+    dates = _distinct_qos_as_of_dates(limit=limit)
+    if not dates or len(dates) == 1:
+        return {}
+    wanted = set(tickers)
+    with _conn() as conn:
+        placeholders_dates = ",".join("?" * len(dates))
+        rows = conn.execute(
+            f"SELECT as_of, ticker FROM top100_qos_pool WHERE as_of IN ({placeholders_dates})",
             dates,
         ).fetchall()
     membership_by_date = {}

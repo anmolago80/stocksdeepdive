@@ -1004,6 +1004,34 @@ def recent_badge_map(tickers, lang):
     return out
 
 
+def qos_recent_badge_map(tickers, lang):
+    """TASK 61 (Director-directed, 15 Nov 2026): recent_badge_map()'s own
+    exact shape, but against top100_store.current_qos_streak_start_
+    dates() - the Quality on sale tab's OWN streak history - instead of
+    current_streak_start_dates()'s Top 200 pool membership. The Director's
+    own example (INTU: on Quality on sale for days, only just joined the
+    Top 200 that night) is exactly why these two maps must stay separate;
+    every other tab keeps using recent_badge_map() above, unchanged. Same
+    gate (TOP200_RECENT_BADGE_LIVE / owner) and same _RECENT_BADGE_WINDOW_
+    DAYS window as the Top 200 badge - the Director's own instruction was
+    "same window, same gate", a new gate would be an un-asked-for change."""
+    if not tickers:
+        return {}
+    if not (_recent_badge_live() or _is_owner_for_refresh()):
+        return {}
+    starts = top100_store.current_qos_streak_start_dates(list(tickers))
+    cutoff = _today_brisbane() - _dt.timedelta(days=_RECENT_BADGE_WINDOW_DAYS - 1)
+    out = {}
+    for ticker, as_of_str in starts.items():
+        try:
+            as_of_date = _dt.datetime.strptime(as_of_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if as_of_date >= cutoff:
+            out[ticker] = _recent_added_badge_html(as_of_str, lang)
+    return out
+
+
 # -----------------------------------------------------------------
 # Director's TASK 7, final version (14 Oct 2026): one "Top 20" tab
 # per new market in the public Top 200, built from the pool only - no
@@ -3137,6 +3165,7 @@ def render_top100_page(lang="en"):
     _qos_result = None
     _qos_rank_map = {}
     _top200_rank_map = {}
+    _qos_badges = {}
     if _show_quality_on_sale_tab:
         _top200_rank_map = _global_value_score_ranks(enriched)
         try:
@@ -3144,6 +3173,14 @@ def render_top100_page(lang="en"):
             _qos_rank_map = {
                 c["ticker"]: i for i, c in enumerate(_qos_result.get("candidates") or [], start=1)
             }
+            # TASK 61 (Director-directed, 15 Nov 2026): the Quality on
+            # sale tab's OWN "Recently added" badge, from its OWN streak
+            # history (top100_store.current_qos_streak_start_dates()) -
+            # never _recent_badges (Top 200 pool membership) above. Only
+            # this one tab ever reads _qos_badges; every other tab below
+            # keeps passing _recent_badges, unchanged.
+            _qos_badges = qos_recent_badge_map(
+                [c["ticker"] for c in (_qos_result.get("candidates") or [])], lang)
         except Exception as e:
             print(f"[quality_on_sale] render_top100_page: cross-list rank map failed: {e}")
 
@@ -3174,6 +3211,7 @@ def render_top100_page(lang="en"):
     # what the tab actually displays.
     _quality_moat_map = {}
     _streak_start_map = {}
+    _qos_streak_start_map = {}
     _qos_by_ticker = {}
     _ncu_by_ticker = {}
     if _is_owner_for_refresh():
@@ -3190,17 +3228,27 @@ def render_top100_page(lang="en"):
             _streak_start_map = top100_store.current_streak_start_dates(list(_export_tickers))
         except Exception as e:
             print(f"[top200_export] streak-start lookup failed: {e}")
+        # TASK 61 (Director-directed, 15 Nov 2026): the Quality on sale
+        # tab's own Excel export "added" column uses its OWN streak
+        # history, never the Top 200 one above - same split as the
+        # on-page badge (_qos_badges vs. _recent_badges).
+        if _qos_result:
+            try:
+                _qos_streak_start_map = top100_store.current_qos_streak_start_dates(
+                    [c["ticker"] for c in (_qos_result.get("candidates") or [])])
+            except Exception as e:
+                print(f"[top200_export] quality-on-sale streak-start lookup failed: {e}")
         if _qos_result:
             _qos_by_ticker = _quality_on_sale_candidate_rows(_qos_result.get("candidates") or [])
         if _ncu_result:
             _ncu_by_ticker = _near_cutoff_candidate_rows(_ncu_result.get("candidates") or [])
 
-    def _export_button(tab_key, ranked_fn, gap_map=None, extra_column=None):
+    def _export_button(tab_key, ranked_fn, gap_map=None, extra_column=None, streak_start_map=None):
         return lambda: _render_top200_export_button(
             tab_key, ranked_fn, quality_moat_map=_quality_moat_map,
             top200_rank_map=_top200_rank_map, qos_rank_map=_qos_rank_map,
-            streak_start_map=_streak_start_map, gap_map=gap_map,
-            extra_column=extra_column, lang=lang)
+            streak_start_map=streak_start_map if streak_start_map is not None else _streak_start_map,
+            gap_map=gap_map, extra_column=extra_column, lang=lang)
 
     # TASK 49 (Director-directed, 12 Nov 2026) - the tab order is now:
     # Mixed | Quality on sale | Australia | USA | Foreign US-listed |
@@ -3230,9 +3278,10 @@ def render_top100_page(lang="en"):
         _tab_specs.append((
             _t("tab_quality_on_sale", lang),
             _export_button("quality_on_sale", lambda: _candidate_tab_export_rows(
-                (_qos_result or {}).get("candidates") or [], _qos_by_ticker)),
+                (_qos_result or {}).get("candidates") or [], _qos_by_ticker),
+                streak_start_map=_qos_streak_start_map),
             lambda: _render_quality_on_sale_tab(
-                lang, finer_industry, sort_mode, recent_badge_map=_recent_badges,
+                lang, finer_industry, sort_mode, recent_badge_map=_qos_badges,
                 top_200_rank_map=_top200_rank_map, candidates_result=_qos_result),
         ))
 

@@ -2732,6 +2732,20 @@ def select_top100_pool(log=print, scan_day=None):
     _fill_missing_sectors(pool + extension + _set_aside_rows, log=log)
     top100_store.save_pool(pool + extension + _set_aside_rows, as_of)
 
+    # TASK 61 (Director-directed, 15 Nov 2026): Quality on sale gets its
+    # own "Recently added" streak history, separate from Top 200 pool
+    # membership above - same as_of as tonight's pool snapshot, same
+    # capped ticker list the tab itself shows (quality_on_sale_
+    # candidates() is already ranked + capped to QUALITY_ON_SALE_MAX_
+    # CANDIDATES, so no second filter/cap is applied here).
+    try:
+        _qos_result = quality_on_sale_candidates(log=log)
+        top100_store.save_quality_on_sale_pool(
+            [c["ticker"] for c in _qos_result.get("candidates", [])], as_of
+        )
+    except Exception as _qos_exc:
+        log(f"TASK 61: Quality on sale snapshot save failed (non-fatal): {_qos_exc}")
+
     if _pool_expansion_pending:
         # Pool expansion one-off persistence seed (1 Oct 2026, owner
         # decision, Commit 5): every ticker in TONIGHT's selection that
