@@ -51,6 +51,8 @@ import announce_engine
 import compare_config
 import compare_lists_store
 import compare_notes_store
+import signin_wall
+import share_link_store
 import admin_data_audit
 import capm_engine
 import fcf_valuation_engine
@@ -7875,6 +7877,11 @@ def _render_cp_section(ticker, section_label, data):
 
 def page_research():
     _render_header(compact=True, page_label="Rational Compounder Analysis", current="research")
+    _research_lang = st.session_state.get("lang", "en")
+    if _signin_wall_blocked("research"):
+        _render_signin_wall_prompt(_research_lang, "research")
+        return
+    _render_create_share_link_control("research", None, "/research", _research_lang, "research")
 
     # Article-arrival welcome banner: shown only to visitors who arrived
     # via a src= link (an article) and haven't dismissed it yet this
@@ -10939,6 +10946,26 @@ def page_deep_dive():
     # one-shot "dd_qp_tried" flag stops a ticker that errors from being
     # re-analyzed on every rerun.
     _qp_ticker = (st.query_params.get("ticker") or "").strip().upper()
+
+    # TASK 60 (15 Nov 2026): Deep Dive is sign-in-required site-wide.
+    # Gated here, BEFORE the (potentially expensive) analyze() call
+    # below, on whichever ticker this run is actually about - the
+    # incoming ?ticker=, or an already-analyzed result sitting in
+    # session state - so a share link scoped to one ticker (?share=...
+    # minted for THAT ticker) still lets a blocked visitor straight
+    # through to it, exactly as TASK 60 section 3 describes ("opens
+    # THAT page/ticker for anyone without signing in").
+    _dd_lang = st.session_state.get("lang", "en")
+    _dd_gate_ticker = _qp_ticker or (_dd.get("ticker") if _dd else None)
+    if _signin_wall_blocked("deep_dive", _dd_gate_ticker):
+        _render_signin_wall_prompt(_dd_lang, "deep_dive")
+        return
+    if _dd_gate_ticker:
+        _render_create_share_link_control(
+            "deep_dive", _dd_gate_ticker, f"/deep-dive?ticker={_dd_gate_ticker}",
+            _dd_lang, "deep_dive",
+        )
+
     if _qp_ticker and (_dd is None or _dd.get("ticker") != _qp_ticker):
         if st.session_state.get("dd_qp_tried") != _qp_ticker:
             st.session_state["dd_qp_tried"] = _qp_ticker
@@ -15137,9 +15164,22 @@ def page_scanner():
     # check the deep-link fix above already computed, never on
     # anything session-based that a non-owner could spoof.
     _top_universe = st.session_state.get("scanner_universe", "ASX 200")
-    _overnight_top = scan_store.load_scan(_top_universe, allow_private=_is_scanner_picker_owner)
-    if _overnight_top:
-        _render_overnight_scan_table(_top_universe, _overnight_top, show_market_pulse=True)
+    # TASK 60 (15 Nov 2026): the ONE universe that stays public while
+    # the sign-in wall is live is S&P 500 - every other universe (AU,
+    # USA non-S&P500, and every other market) shows the sign-in prompt
+    # here instead of its overnight scan. Checked on the DISPLAY name
+    # actually about to render, not at the ?universe= deep-link read
+    # above, so this also covers a universe that landed in session
+    # state some other way (the TASK 1 bug's own lesson: check every
+    # path that can set the active universe, at the point it's used -
+    # not just the path that happened to set it this run).
+    if not signin_wall.scanner_universe_is_public(_top_universe) and _signin_wall_blocked(
+            "scanner", _top_universe):
+        _render_signin_wall_prompt(_scan_lang, "scanner_overnight")
+    else:
+        _overnight_top = scan_store.load_scan(_top_universe, allow_private=_is_scanner_picker_owner)
+        if _overnight_top:
+            _render_overnight_scan_table(_top_universe, _overnight_top, show_market_pulse=True)
 
     # ---- NL-screening box: now BELOW the results table (Part 6), so it
     # never delays a first-time visitor's first ranked table. ----
@@ -15293,11 +15333,24 @@ def page_scanner():
             # lingers on a screen the visitor just chose by hand instead.
             st.session_state.pop("nl_screen_last_result", None)
 
-    _render_scan_results(
-        page_label="Scanner",
-        state_prefix="scan",
-        empty_message=i18n.t("scanner.empty_message", _scan_lang),
-    )
+    # TASK 60 (15 Nov 2026): the SECOND of Scanner's two render sites -
+    # the "instant results" table a manual Run Scan populates. Checked
+    # at RENDER time against the persisted "scan_universe_name" session
+    # key (set only by the Run Scan button above), never just at click
+    # time - this is the exact TASK 1 bug lesson (9 Oct 2026) again:
+    # checking only the path that SETS the state, not every later
+    # rerun that RENDERS it, is how a universe leaked through before.
+    _scan_results_universe = st.session_state.get("scan_universe_name")
+    if (_scan_results_universe is not None
+            and not signin_wall.scanner_universe_is_public(_scan_results_universe)
+            and _signin_wall_blocked("scanner", _scan_results_universe)):
+        _render_signin_wall_prompt(_scan_lang, "scanner_results")
+    else:
+        _render_scan_results(
+            page_label="Scanner",
+            state_prefix="scan",
+            empty_message=i18n.t("scanner.empty_message", _scan_lang),
+        )
 
 
 def _my_calendar_tickers(email):
@@ -15462,6 +15515,19 @@ def page_results_calendar():
     _bump_page_view("results_calendar")
     _cal_lang = st.session_state.get("lang", "en")
     _cal_score_label = "Value Score" if _factual() else "Long Score"
+
+    # TASK 60 (15 Nov 2026): the INTERACTIVE Results Calendar (this
+    # page) is sign-in-required - unlike the plain server-rendered
+    # /calendar page (calendar_render.py), which is deliberately kept
+    # public and out of scope for this task (see this task's own
+    # report for that pre-existing design tension). page_key
+    # "calendar_page" (not "calendar") keeps the two namespaced
+    # separately in share_link_store even though only this one is
+    # ever gated.
+    if _signin_wall_blocked("calendar_page"):
+        _render_signin_wall_prompt(_cal_lang, "calendar_page")
+        return
+    _render_create_share_link_control("calendar_page", None, "/results-calendar", _cal_lang, "calendar_page")
 
     _title_col, _info_col = st.columns([12, 1], vertical_alignment="top")
     with _title_col:
@@ -16382,6 +16448,25 @@ def page_comparison():
     )
     _bump_page_view("comparison")
     _cmp_lang = st.session_state.get("lang", "en")
+
+    # TASK 60 (15 Nov 2026): Comparison is sign-in-required site-wide.
+    # item_key is the tickers currently in view - the incoming
+    # ?tickers= (a share link always carries this, same as the
+    # existing shareable-URL feature below) or, if this run has no
+    # query param yet but a list is already active in session (built
+    # via the chip-entry UI), that list - so a share link minted for
+    # one matchup only lets a blocked visitor straight through to that
+    # SAME matchup, never a different one.
+    _cmp_gate_tickers = (st.query_params.get("tickers") or "").strip().upper() \
+        or ",".join(st.session_state.get("cmp_stocks") or [])
+    if _signin_wall_blocked("comparison", _cmp_gate_tickers or None):
+        _render_signin_wall_prompt(_cmp_lang, "comparison")
+        return
+    if _cmp_gate_tickers:
+        _render_create_share_link_control(
+            "comparison", _cmp_gate_tickers, f"/comparison?tickers={_cmp_gate_tickers}",
+            _cmp_lang, "comparison",
+        )
 
     # Owner-reported (28 Sep 2026): the "Imported screen (TradingView,
     # admin-only)" block used to render here (see 62117c87). Moved to
@@ -26384,7 +26469,18 @@ def page_top100():
             st.error("This page isn't available.")
             return
 
-    top100_render.render_top100_page(lang=st.session_state.get("lang", "en"))
+    _top100_lang = st.session_state.get("lang", "en")
+    # TASK 60 (15 Nov 2026): on top of the pre-existing TOP100_PUBLIC
+    # gate above (unchanged), Top 200 is sign-in-required once the
+    # wall is live. item_key is None - st.tabs() has no query-param
+    # deep link today (see this task's own report), so a share link
+    # here opens the whole page, not one specific tab.
+    if _signin_wall_blocked("top100"):
+        _render_signin_wall_prompt(_top100_lang, "top100")
+        return
+    _render_create_share_link_control("top100", None, "/top-100", _top100_lang, "top100")
+
+    top100_render.render_top100_page(lang=_top100_lang)
 
 
 def _resolve_ticker_mos_currency_live(ticker):
@@ -26480,23 +26576,30 @@ def _resolve_ticker_mos_currency_live(ticker):
 
 def page_currency_risk():
     """💱 Currency Risk tab (25 Sep 2026, owner-approved mock, "headwind_
-    and_currency_risk_mock.html", section ②): a public, free, described-
-    data page - pure Python, no AI calls, no sign-in gate (unlike the
-    Money Tools registry, which requires sign-in for every entry - this
-    is a research/analysis page, closer in kind to Top 100 than to a
-    personal-finance calculator, so it gets its own standalone page
-    rather than a TOOLS_REGISTRY tab). Rendering lives in currency_risk_
-    render.py (same "*_render.py owns markup, app.py owns the page
-    shell" split top100_render.py already established). Cross-linked
-    from the Top 100 page's own "N of these priced in USD" caption
-    (top100.currency_banner) and, as a real sixth card in the Money
-    Tools grid (_currency_risk_hub_card_html(), 25 Sep 2026 tile fix -
-    shown in both signed-in and signed-out hubs), for "nav entry under
-    Tools" discoverability, without requiring TOOLS_REGISTRY's sign-in
-    wall for a page that needs none."""
+    and_currency_risk_mock.html", section ②): a research/analysis page,
+    closer in kind to Top 100 than to a personal-finance calculator, so
+    it gets its own standalone page rather than a TOOLS_REGISTRY tab.
+    Rendering lives in currency_risk_render.py (same "*_render.py owns
+    markup, app.py owns the page shell" split top100_render.py already
+    established). Cross-linked from the Top 100 page's own "N of these
+    priced in USD" caption (top100.currency_banner) and, as a real
+    sixth card in the Money Tools grid (_currency_risk_hub_card_html(),
+    25 Sep 2026 tile fix - shown in both signed-in and signed-out hubs).
+
+    Carried NO sign-in gate at all until TASK 60 (15 Nov 2026,
+    Director-directed/owner-approved): the Director's own instruction
+    explicitly lists "Currency risk" under sign-in-required, overriding
+    this page's original "public, free" design - see the gate just
+    below _bump_page_view."""
     _content_page_shell(i18n.t("currency_risk.page_title", st.session_state.get("lang", "en")),
                          current="currency_risk")
     _bump_page_view("currency_risk")
+
+    _cr_lang = st.session_state.get("lang", "en")
+    if _signin_wall_blocked("currency_risk"):
+        _render_signin_wall_prompt(_cr_lang, "currency_risk")
+        return
+    _render_create_share_link_control("currency_risk", None, "/currency-risk", _cr_lang, "currency_risk")
 
     # SECTION B, COMMIT B3 of instruction_top200_amendments_and_
     # currency_view.md (5 Oct 2026, Director-directed): "for a signed-in
@@ -27159,6 +27262,105 @@ def _render_tools_signedout_hub(lang):
             st.markdown('<div class="sdd-tools-signin-inline">', unsafe_allow_html=True)
             paywall_engine._render_signin_control_inline(key="tools_hub_signin_inline", lang=lang)
             st.markdown('</div>', unsafe_allow_html=True)
+
+
+# -----------------------------------
+# SIGN-IN WALL (TASK 60, Director-directed/owner-approved, 15 Nov 2026) -
+# shared gate + prompt + owner share-link control, used by every page
+# gated under signin_wall.wall_live(). See signin_wall.py's own module
+# docstring for the flag's (inverted-sense) semantics.
+# -----------------------------------
+
+def _signin_wall_blocked(page_key, item_key=None):
+    """True iff this visitor must see the sign-in prompt instead of
+    page_key's real content: SIGNIN_WALL_LIVE is on AND they are none
+    of - the owner (always sees everything, every other *_LIVE gate's
+    own convention), signed in (either method - current_user_email()
+    covers both since paywall_engine.restore_email_session() now mints
+    the same sdd_auth-backed session for a Google sign-in too), or
+    holding a valid owner share token (?share=...) scoped to exactly
+    this page_key/item_key."""
+    if not signin_wall.wall_live():
+        return False
+    if ai_gate.is_owner(paywall_engine.current_user_email()):
+        return False
+    if paywall_engine.is_logged_in():
+        return False
+    _tok = (st.query_params.get("share") or "").strip()
+    if _tok and share_link_store.resolve(_tok, page_key, item_key):
+        return False
+    return True
+
+
+def _render_signin_wall_prompt(lang, key_suffix):
+    """The signed-out gate itself - same inline CTA style as the Money
+    Tools hub's own signed-out landing (_render_tools_signedout_hub,
+    "same style as the Money Tools CTA" per the Director's own
+    instruction): a real st.button flips a session-state flag and
+    reruns, the actual sign-in form (paywall_engine._render_signin_
+    control_inline - identical widgets/keys as everywhere else it's
+    used) renders right underneath once clicked. key_suffix keeps each
+    gated page's own flag/widget keys independent of every other one
+    (and of the Tools hub's own "_show_signin_inline"), so opening the
+    form on one gated page never leaves it stuck open on another."""
+    st.markdown(_TOOLS_HUB_STYLE, unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="sdd-tools-tagline">{html.escape(i18n.t("signin_wall.prompt", lang))}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(i18n.t("signin_wall.free_note", lang))
+    _flag_key = f"_show_signin_inline_wall_{key_suffix}"
+    if st.button(i18n.t("tools.hub.signin_cta", lang), key=f"signin_wall_cta_{key_suffix}"):
+        st.session_state[_flag_key] = True
+        st.rerun()
+    if st.session_state.get(_flag_key):
+        with st.container(key=f"signin_wall_inline_box_{key_suffix}"):
+            st.markdown('<div class="sdd-tools-signin-inline">', unsafe_allow_html=True)
+            paywall_engine._render_signin_control_inline(
+                key=f"signin_wall_inline_{key_suffix}", lang=lang)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _render_create_share_link_control(page_key, item_key, share_path, lang, key_suffix):
+    """Owner-only "Create share link" expander (TASK 60 section 3) -
+    rendered on a gated page ONLY for the owner (ai_gate.is_owner check
+    here is independent of signin_wall.wall_live(), so the owner can
+    create/test links even before the switch goes live). Mints the
+    token via share_link_store.create_link(), shows the raw URL ONCE
+    (it is never stored and can't be shown again - see that module's
+    own docstring), then clears itself on the next rerun so a stale
+    link doesn't linger on screen indefinitely.
+
+    share_path is the exact "/this-page?query=..." path the caller
+    already knows (same value it would put in the address bar for
+    this view) - built against SITE_ORIGIN (this module's own existing
+    "https://stocksdeepdive.com" constant, already used for other
+    shareable links, e.g. the snapshot "Source:" line) rather than
+    guessed from request headers, which Streamlit's st.context doesn't
+    expose a path on anyway."""
+    if not ai_gate.is_owner(paywall_engine.current_user_email()):
+        return
+    with st.expander("🔗 Create share link (owner only)", expanded=False):
+        _label = st.text_input("Label (optional, for your own reference)",
+                                key=f"share_link_label_{key_suffix}")
+        _expiry = st.selectbox(
+            "Expires", ["7 days", "30 days", "90 days", "Never"], index=1,
+            key=f"share_link_expiry_{key_suffix}",
+        )
+        _expiry_days = {"7 days": 7, "30 days": 30, "90 days": 90, "Never": None}[_expiry]
+        if st.button("Create link", key=f"share_link_create_{key_suffix}"):
+            _tok = share_link_store.create_link(
+                page_key, item_key=item_key, label=_label.strip() or None,
+                expiry_days=_expiry_days,
+            )
+            _sep = "&" if "?" in share_path else "?"
+            st.session_state[f"share_link_created_url_{key_suffix}"] = (
+                f"{SITE_ORIGIN}{share_path}{_sep}share={_tok}"
+            )
+        _created = st.session_state.get(f"share_link_created_url_{key_suffix}")
+        if _created:
+            st.success("Link created - copy it now (shown only this once):")
+            st.code(_created)
 
 
 def _spotlight_index(session_key, n, day_offset=0):
@@ -31508,6 +31710,13 @@ def page_model_history():
     accurate any past or future output is."""
     _content_page_shell("Model history")
     _bump_page_view("model_history")
+
+    # TASK 60 (15 Nov 2026): Model history is sign-in-required, per the
+    # Director's own explicit list.
+    _mh_lang = st.session_state.get("lang", "en")
+    if _signin_wall_blocked("model_history"):
+        _render_signin_wall_prompt(_mh_lang, "model_history")
+        return
 
     st.markdown(
         "This page is a changelog of the Rational Compounder research "
@@ -36162,6 +36371,46 @@ def _render_portfolio_health_news_v2_comparison_panel():
         )
 
 
+def _render_share_links_admin_panel():
+    """TASK 60 (15 Nov 2026) - owner-only "Share links" section of the
+    Admin Dashboard: page, created date, expiry, view count, Revoke -
+    per the Director's own spec. Read/revoke only; creation happens on
+    each gated page's own expander (_render_create_share_link_control).
+    The raw token itself is never shown here (share_link_store never
+    stores it - see that module's own docstring), only each link's
+    metadata; the owner copies the actual URL once, at creation time."""
+    st.markdown("### 🔗 Share links")
+    st.caption(
+        "Every owner-minted share link, across every gated page. No "
+        "visitor IP or identity is ever stored against one."
+    )
+    try:
+        _links = share_link_store.list_links()
+    except Exception:
+        _links = []
+    if not _links:
+        st.caption("No share links created yet.")
+        return
+    for _link in _links:
+        with st.container(border=True):
+            _lc1, _lc2 = st.columns([5, 1])
+            with _lc1:
+                _label_bit = f" — {_link['label']}" if _link.get("label") else ""
+                st.markdown(f"**{_link['page_key']}**{_label_bit}")
+                _item_bit = f" · item: `{_link['item_key']}`" if _link.get("item_key") else ""
+                _expiry_bit = _link["expires_at"] or "never"
+                st.caption(
+                    f"Created {_link['created_at']}{_item_bit} · expires {_expiry_bit} "
+                    f"· {_link['view_count']} view(s)"
+                    + (" · REVOKED" if _link["revoked"] else "")
+                )
+            with _lc2:
+                if not _link["revoked"]:
+                    if st.button("Revoke", key=f"share_link_revoke_{_link['token_hash']}"):
+                        share_link_store.revoke_link(_link["token_hash"])
+                        st.rerun()
+
+
 def page_admin_dashboard():
     """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
     owner-approved mock at mocks/admin_dashboard_mock.html. Replaces the
@@ -38285,6 +38534,16 @@ def page_admin_dashboard():
     # final section of this page" pattern as every panel above.
     st.markdown("---")
     _render_portfolio_health_news_v2_comparison_panel()
+
+    # --- SHARE LINKS (TASK 60, 15 Nov 2026, Director-directed/owner-
+    # approved) - list/Revoke for every owner-minted share link, across
+    # every gated page. Creation itself happens on each gated page's
+    # own "Create share link" expander (_render_create_share_link_
+    # control) - this section is read/revoke only, same division as
+    # the rest of this dashboard (each panel above either reports or
+    # acts, never duplicates a control that already lives elsewhere).
+    st.markdown("---")
+    _render_share_links_admin_panel()
 
 
 # -----------------------------------

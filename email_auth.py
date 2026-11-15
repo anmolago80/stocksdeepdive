@@ -329,17 +329,36 @@ def verify_code(email, code, src=None, lang=None):
                 (email,),
             )
             return None, i18n.t("email_auth.wrong_code", _msg_lang)
-        # Success: consume the code, mint a session.
+        # Success: consume the code. The session itself is minted by
+        # create_session() AFTER this `with` block commits (below) -
+        # calling it in here would open a second connection while this
+        # one's own write transaction is still uncommitted, which can
+        # self-deadlock against the timeout rather than genuinely
+        # contend with another process.
         conn.execute("DELETE FROM auth_codes WHERE email = ?", (email,))
-        token = secrets.token_hex(32)
-        now = _iso(_now())
+    token = create_session(email)
+    record_signup(email, "email", src=src, lang=lang)
+    return token, i18n.t("email_auth.signed_in", _msg_lang)
+
+
+def create_session(email):
+    """Mint a session token for `email` and store its hash, exactly the
+    tail of verify_code()'s own success path - factored out (TASK 60,
+    15 Nov 2026) so paywall_engine can mint the SAME sdd_auth cookie for
+    a Google sign-in too. Before this, only an email-code sign-in ever
+    reached this table, which left Google sign-ins with no cookie for
+    server.py/api_v1.py's _signed_in_email() to read - see paywall_
+    engine.restore_email_session()'s own call site for the fix."""
+    email = (email or "").strip().lower()
+    token = secrets.token_hex(32)
+    now = _iso(_now())
+    with _conn() as conn:
         conn.execute(
             "INSERT INTO auth_sessions (token_hash, email, created_at, last_seen) "
             "VALUES (?, ?, ?, ?)",
             (_hash(token), email, now, now),
         )
-    record_signup(email, "email", src=src, lang=lang)
-    return token, i18n.t("email_auth.signed_in", _msg_lang)
+    return token
 
 
 def session_email(token):

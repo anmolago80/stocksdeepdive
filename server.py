@@ -92,6 +92,7 @@ import scheduler_engine
 import site_content
 import top100_engine
 import top100_render
+import signin_wall
 
 # AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): the public
 # snapshot pages + read-only JSON API. See api_v1.py / snapshot_render.py.
@@ -1806,7 +1807,16 @@ def sitemap(request: Request):
     # _slug() call normalizes either before the lookup) - see this
     # commit's own verification note for the exact check.
     for _slug in universe_snapshot_render._universe_slugs():
-        if not api_v1._resolve_universe(_slug):
+        _slug_universe = api_v1._resolve_universe(_slug)
+        if not _slug_universe:
+            continue
+        # TASK 60 (15 Nov 2026): once the wall is live, /s/universe/
+        # <slug> itself redirects a signed-out visitor away from every
+        # universe but the public S&P 500 one (see universe_snapshot_
+        # page()'s own gate) - excluded from the sitemap the same way,
+        # same condition, so crawlers are never sent to a URL that no
+        # longer serves the real table for them.
+        if signin_wall.wall_live() and not signin_wall.scanner_universe_is_public(_slug_universe):
             continue
         extra += (f'\n  <url><loc>{_xml_escape(base)}/s/universe/{_slug}</loc>'
                   f'<changefreq>daily</changefreq><priority>0.5</priority></url>')
@@ -1839,14 +1849,23 @@ def sitemap(request: Request):
     # conditions must hold, same "combined gate, standalone conditional
     # block" shape as the universe-slug loop above (api_v1._resolve_
     # universe() there).
-    if top100_render.TOP100_PUBLIC and _renders_html("/top-100"):
+    #
+    # TASK 60 (15 Nov 2026): a THIRD condition, not signin_wall.
+    # wall_live() - once the wall is live, Top 200 is sign-in-required
+    # (app.py's page_top100() own new gate, on top of the pre-existing
+    # TOP100_PUBLIC check) so indexing it would send crawlers to the
+    # same sign-in prompt every other gated page now shows.
+    if (top100_render.TOP100_PUBLIC and not signin_wall.wall_live()
+            and _renders_html("/top-100")):
         extra += (f'\n  <url><loc>{_xml_escape(base)}/top-100</loc>'
                   f'<changefreq>daily</changefreq><priority>0.6</priority></url>')
     # Currency Risk (25 Sep 2026, owner-approved mock): same Streamlit-
-    # proxied/_renders_html() convention as /top-100 above - no separate
-    # visibility flag needed, this page is always public (page_currency_
-    # risk() carries no owner/sign-in gate).
-    if _renders_html("/currency-risk"):
+    # proxied/_renders_html() convention as /top-100 above. TASK 60 (15
+    # Nov 2026): this page used to carry no sign-in gate at all - now
+    # gated the same way as Top 200 once the wall is live (app.py's
+    # page_currency_risk() own new gate), so it drops out of the
+    # sitemap under the same condition.
+    if not signin_wall.wall_live() and _renders_html("/currency-risk"):
         extra += (f'\n  <url><loc>{_xml_escape(base)}/currency-risk</loc>'
                   f'<changefreq>weekly</changefreq><priority>0.5</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
@@ -2468,6 +2487,28 @@ def universe_snapshot_page(slug: str, request: Request):
     universe = universe_snapshot_render.universe_name_for_slug(slug)
     if not universe:
         return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
+    # TASK 60 (15 Nov 2026): this is a real server-rendered scan table
+    # for WHATEVER universe {slug} names - without this check it would
+    # let a signed-out visitor read any universe's overnight scan
+    # straight from a direct URL, bypassing the Scanner page's own new
+    # per-universe gate (app.py's page_scanner(), S&P 500 only while
+    # signed out) entirely. Redirected to the public /scanner landing
+    # rather than a 404 or an error - "never an error" (TASK 60 section
+    # 1) - and rather than a bespoke sign-in page here, since this
+    # route has no Streamlit page behind it to render the real inline
+    # sign-in form into; /scanner already shows that exact prompt the
+    # moment a visitor picks this same universe there.
+    # This is "sign-in required", not "owner only" - any signed-in
+    # visitor may see a non-private universe's scan, exactly like the
+    # Scanner page itself. The owner is simply a signed-in visitor who
+    # always sees everything by VIRTUE of owning the account (ai_gate.
+    # is_owner, checked elsewhere); scan_store.load_scan() below still
+    # defaults to allow_private=False, so a genuinely private universe
+    # was never served from this route regardless of sign-in state.
+    if (signin_wall.wall_live()
+            and not signin_wall.scanner_universe_is_public(universe)
+            and not _signed_in_email(request)):
+        return RedirectResponse(f"/{'es/' if lang == 'es' else ''}scanner", status_code=302)
     payload = scan_store.load_scan(universe)
     if not payload:
         return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")

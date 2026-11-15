@@ -304,6 +304,28 @@ def restore_email_session():
                 )
             except Exception:
                 pass
+            # TASK 60 (15 Nov 2026): a Google sign-in never went through
+            # verify_code(), so it never minted an sdd_auth cookie -
+            # server.py/api_v1.py's own _signed_in_email() (the ONLY
+            # thing the sign-in wall's API gate can check, since it
+            # runs in a separate FastAPI process with no view of this
+            # Streamlit session) had no way to recognize a Google-
+            # signed-in visitor at all. Minting one here, once per
+            # session (same _signup_recorded guard, since both only
+            # need to happen once per first-recognized sign-in this
+            # session), makes a Google sign-in indistinguishable from
+            # an email sign-in to everything downstream of the cookie -
+            # no change to email_auth.session_email()/revoke(), no new
+            # column, no new table. A pre-existing email_user session
+            # already minted its own cookie back in verify_code()
+            # itself, so this only ever actually runs for the Google
+            # branch (email_user set => skip, same as record_signup
+            # just above already distinguishing the two methods).
+            if not st.session_state.get("email_user"):
+                try:
+                    st.session_state["_pending_auth_cookie"] = email_auth.create_session(_em)
+                except Exception:
+                    pass
             # Part 35.1: one sign-in EVENT per browser session, for BOTH
             # auth methods (this block already runs once per session
             # regardless of which one signed the visitor in - "works for

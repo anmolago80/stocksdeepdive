@@ -1338,6 +1338,11 @@ EN = {
     # report in case the longer form is wanted here too.
     "tools.signin_prompt": "Five free calculators — free account, no card, no spam.",
     "tools.registry_stat": "{count} tool &middot; more coming",
+    # TASK 60 (15 Nov 2026): the sign-in wall's own prompt, shown on
+    # every gated page once SIGNIN_WALL_LIVE is on, in the same CTA
+    # style as the Money Tools hub's signed-out landing just above.
+    "signin_wall.prompt": "Sign in to see this.",
+    "signin_wall.free_note": "Sign-in is free — no card, no spam.",
     # Currency Risk hub tile (25 Sep 2026, owner-approved mock,
     # "currency_tile_mock_1.html"): the sixth Money Tools card - built
     # separately from TOOLS_REGISTRY's own _TOOLS_HUB_CARD_COPY dict
@@ -5639,6 +5644,10 @@ ES = {
     # block's own comment above this same key.
     "tools.signin_prompt": "Cinco calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
+    # TASK 60 (15 Nov 2026): ES DRAFT, not professionally reviewed (same
+    # convention as every other ES string in this block).
+    "signin_wall.prompt": "Inicia sesión para ver esto.",
+    "signin_wall.free_note": "Iniciar sesión es gratis — sin tarjeta, sin spam.",
     # Currency Risk hub tile - ES DRAFT, not professionally reviewed (same
     # convention as every other ES batch in this file). See the EN block's
     # own comment above these same keys.

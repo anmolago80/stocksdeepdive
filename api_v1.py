@@ -44,6 +44,9 @@ import scan_store
 import scanner_engine
 import snapshot_render
 import snapshot_store
+import signin_wall
+import share_link_store
+import email_auth
 
 # Public read-only Research/Blog endpoints (added 19 Sep 2026) - reuse the
 # exact same public-view store/render functions the live pages already
@@ -99,6 +102,47 @@ def _check_rate_limit(request: Request):
             headers={"Retry-After": str(retry_after)},
         )
     q.append(now)
+
+
+# -----------------------------------
+# TASK 60 (15 Nov 2026): the sign-in wall's own API gate. api_v1.py and
+# server.py share the same ASGI process/request (server.py mounts
+# api_app at /api/v1), so this can read the SAME sdd_auth cookie
+# server.py's own _signed_in_email() already reads for /push/* -
+# nothing new there, just this module's own copy of that one-line
+# cookie read (api_v1.py has no import of server.py, nor vice versa,
+# by design - see this module's own docstring - so the read is
+# duplicated rather than shared across that boundary). A Google sign-
+# in now mints this same cookie too (paywall_engine.restore_email_
+# session(), see that call site's own comment), so this recognizes
+# both sign-in methods identically.
+# -----------------------------------
+
+def _signed_in_email(request: Request):
+    tok = request.cookies.get("sdd_auth")
+    if not tok:
+        return None
+    try:
+        return email_auth.session_email(tok)
+    except Exception:
+        return None
+
+
+def _require_signin_or_share(request: Request, page_key, item_key=None):
+    """Raises 401 unless SIGNIN_WALL_LIVE is off, the caller is signed
+    in via the sdd_auth cookie, or a valid owner share token
+    (?share=...) scoped to exactly this page_key/item_key is present -
+    the API-side twin of app.py's _signin_wall_blocked(). No separate
+    owner check: an owner IS signed in once actually signed in (same
+    reasoning as universe_snapshot_page()'s own gate in server.py)."""
+    if not signin_wall.wall_live():
+        return
+    if _signed_in_email(request):
+        return
+    tok = (request.query_params.get("share") or "").strip()
+    if tok and share_link_store.resolve(tok, page_key, item_key):
+        return
+    raise HTTPException(status_code=401, detail="Sign in required")
 
 
 # -----------------------------------
@@ -330,6 +374,7 @@ def get_deep_dive(ticker: str, request: Request):
     scan (not live on this request - see module docstring)."""
     _check_rate_limit(request)
     ticker = (ticker or "").strip().upper()
+    _require_signin_or_share(request, "deep_dive", ticker)
     snap = snapshot_store.get_snapshot(ticker)
     if not snap:
         raise HTTPException(
@@ -360,6 +405,7 @@ def get_compare(
             status_code=400,
             detail=f"Max {compare_config.COMPARE_MAX_TICKERS} tickers per request",
         )
+    _require_signin_or_share(request, "comparison", ",".join(wanted))
     base = str(request.base_url).rstrip("/")
     results, missing = [], []
     for t in wanted:
@@ -385,6 +431,12 @@ def get_scan(universe: str, request: Request):
             detail=f"Unknown universe '{universe}'. Known: "
                    + ", ".join(sorted(_SLUG_TO_UNIVERSE)),
         )
+    # TASK 60 (15 Nov 2026): the S&P 500 scan stays public (matching the
+    # public Scanner page) - every other universe needs sign-in or a
+    # share token, same page_key/item_key the Scanner page's own gate
+    # uses in app.py, so a Scanner share link also unlocks this.
+    if not signin_wall.scanner_universe_is_public(resolved):
+        _require_signin_or_share(request, "scanner", resolved)
     payload = scan_store.load_scan(resolved)
     if not payload:
         raise HTTPException(
@@ -441,6 +493,9 @@ def get_history(ticker: str, request: Request):
     do."""
     _check_rate_limit(request)
     ticker = (ticker or "").strip().upper()
+    # TASK 60 (15 Nov 2026): scoped as a Deep Dive sub-resource - a
+    # Deep Dive share link for this ticker also unlocks its history.
+    _require_signin_or_share(request, "deep_dive", ticker)
     empty = {"ticker": ticker, "currency": None, "points": [], "ma50": []}
     if not _HISTORY_TICKER_RE.match(ticker):
         return _envelope(empty)
@@ -528,6 +583,7 @@ def get_research_list(request: Request):
     hand-covered research company with public content - see
     research_snapshot_render.list_public_research()."""
     _check_rate_limit(request)
+    _require_signin_or_share(request, "research")
     data = research_snapshot_render._load_research_data()
     rows = research_snapshot_render.list_public_research(data)
     base = str(request.base_url).rstrip("/")
@@ -550,6 +606,7 @@ def get_research_detail(slug: str, request: Request):
     section) - the ES side is flagged as such via `note` rather than
     presented as an independent translation."""
     _check_rate_limit(request)
+    _require_signin_or_share(request, "research", slug)
     data = research_snapshot_render._load_research_data()
     ticker = research_snapshot_render.ticker_for_slug(slug, data)
     if not ticker:
@@ -579,6 +636,7 @@ def get_blog_list(
     limit: int = Query(None, ge=1, le=200, description="Max posts to return"),
 ):
     _check_rate_limit(request)
+    _require_signin_or_share(request, "blog")
     posts = blog_store.list_posts(include_drafts=False, limit=limit, lang=lang)
     base = str(request.base_url).rstrip("/")
     return _envelope(
@@ -595,6 +653,7 @@ def get_blog_detail(slug: str, request: Request):
     include_drafts=False, never overridden here, is what makes an
     unpublished slug 404 rather than leak)."""
     _check_rate_limit(request)
+    _require_signin_or_share(request, "blog", slug)
     post = blog_store.get_post(slug, include_drafts=False)
     if not post:
         raise HTTPException(status_code=404, detail=f"No published post at '{slug}'.")
