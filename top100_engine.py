@@ -1190,7 +1190,8 @@ def _recompute_value_score_v2_moat(row):
     return ranking_engine.recompute_value_score(row_with_quality, moat_blend=True)
 
 
-def _build_best_by_ticker(log=print, quality_exception_override=None):
+def _build_best_by_ticker(log=print, quality_exception_override=None,
+                           watch_tickers=None, watch_diag=None):
     """`quality_exception_override` (TASK 37, 6 Nov 2026, Director-
     directed): None (every existing caller, unchanged) reads the real
     env gate (top200_quality_exception_live()) - today's live
@@ -1200,6 +1201,30 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
     exception() below pass True) - no env mutation, so nothing here
     ever risks leaving TOP200_QUALITY_EXCEPTION_LIVE set from a
     preview run.
+
+    `watch_tickers`/`watch_diag` (TASK 65, Director-directed, 15 Nov
+    2026, NU case): OPTIONAL out-parameter bookkeeping for select_
+    top100_pool()'s own "[top100_watch]" diagnostic log - every
+    existing caller (None/None, unchanged) pays nothing extra beyond
+    one cheap `is not None` check per row and gets byte-identical
+    behaviour. When BOTH are given, `watch_diag` (an ordinary dict the
+    caller owns) is MUTATED in place - never returned, so this
+    function's own 2-tuple return shape every caller already unpacks
+    is completely unaffected - recording, for every ticker in
+    `watch_tickers` seen in at least one eligible row this run,
+    {"seen": True, "exclude_reason": <first reason this ticker was
+    ever skipped a row for, or None>}. A ticker that reaches best_by_
+    ticker through a DIFFERENT universe's clean row after being
+    skipped in an earlier one still ends up in the real return value
+    as normal - `exclude_reason` here is purely informational "a
+    reason this ticker got skipped at least once," read by the
+    caller's own log line ONLY for a ticker that is NOT in the final
+    best_by_ticker (a ticker that did make it never needs a reason).
+    The dedupe-removal case (a watched ticker's winning row entered
+    best_by_ticker but was then dropped by _dedupe_share_classes()/
+    _dedupe_cross_listings() below) is captured separately, right
+    after those two calls, since that's the only point a ticker can
+    disappear AFTER already being a clean, eligible candidate.
 
     The deduped, eligibility-filtered candidate pool select_top100_
     pool() builds every call - extracted into its own function (COMMIT
@@ -1281,6 +1306,23 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
     _financials_store_live = financials_classifier.is_financials_store_live()
     fallback_financials_excluded_count = 0
     fallback_financials_excluded_tickers = []
+    # TASK 65 (Director-directed, 15 Nov 2026, NU case): the watch set
+    # itself, as a real set (never re-hashed per row) - `watch_diag` is
+    # left completely untouched (not even an empty dict) when either
+    # argument is missing, so a caller's own `if watch_diag is not
+    # None:` checks downstream never need an extra guard.
+    _watch = frozenset(watch_tickers) if (watch_tickers and watch_diag is not None) else frozenset()
+
+    def _watch_seen(ticker):
+        if ticker in _watch:
+            watch_diag.setdefault(ticker, {"seen": True, "exclude_reason": None})["seen"] = True
+
+    def _watch_excluded(ticker, reason):
+        if ticker in _watch:
+            entry = watch_diag.setdefault(ticker, {"seen": True, "exclude_reason": None})
+            if entry.get("exclude_reason") is None:
+                entry["exclude_reason"] = reason
+
     for universe, payload in eligible.items():
         gen_raw = payload.get("generated_at")
         try:
@@ -1305,7 +1347,9 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                 row_long_score = row.get("Long Score")
                 if not ticker or row_long_score is None:
                     continue
+                _watch_seen(ticker)
                 if _is_flagged_stale(row):
+                    _watch_excluded(ticker, "stale")
                     continue
                 stored_unreliable = _is_dcf_unreliable(row)
                 current_unreliable = resolver_engine.dcf_looks_unreliable(
@@ -1384,16 +1428,19 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                             dcf_unreliable_by_stored_flag += 1
                         if ticker not in dcf_unreliable_excluded_tickers:
                             dcf_unreliable_excluded_tickers.append(ticker)
+                        _watch_excluded(ticker, "DCF-unreliable")
                         continue
                 if row.get("Is Fund"):
                     fund_excluded_count += 1
                     if ticker not in fund_excluded_tickers:
                         fund_excluded_tickers.append(ticker)
+                    _watch_excluded(ticker, "fund")
                     continue
                 if _financials_store_live and _financials_pool_ineligible(row):
                     fallback_financials_excluded_count += 1
                     if ticker not in fallback_financials_excluded_tickers:
                         fallback_financials_excluded_tickers.append(ticker)
+                    _watch_excluded(ticker, "fallback-financials")
                     continue
                 prev = best_candidate.get(ticker)
                 key = (gen_dt, row_long_score)
@@ -1604,8 +1651,18 @@ def _build_best_by_ticker(log=print, quality_exception_override=None):
                     "quality_exception_admitted": exception_admitted_row,
                 }
 
+    # TASK 65 (Director-directed, 15 Nov 2026): a watched ticker that
+    # made it this far (a clean, eligible candidate) can still be
+    # removed by either dedupe pass below (its own pair partner winning
+    # the slot) - the ONLY point in this function a ticker disappears
+    # AFTER already being otherwise eligible, so it's captured here by
+    # a straight before/after membership diff rather than threading a
+    # reason through either dedupe function.
+    _watch_before_dedupe = set(best_by_ticker) & _watch
     _dedupe_share_classes(best_by_ticker, log=log)
     _dedupe_cross_listings(best_by_ticker, log=log)
+    for _lost_ticker in _watch_before_dedupe - best_by_ticker.keys():
+        _watch_excluded(_lost_ticker, "dedupe")
     _report_undocumented_same_name_duplicates(best_by_ticker, log=log)
     return best_by_ticker, len(eligible)
 
@@ -2465,6 +2522,117 @@ def quality_v2_movers(rows_v2, min_delta=10, top_n=20, log=print):
     return {"moved_over_threshold": moved_over_threshold, "risers": risers, "fallers": fallers}
 
 
+def _naive_cutoff_for(merit_ordered, n):
+    """TASK 65 (Director-directed, 15 Nov 2026, NU case): the EXACT same
+    naive-cutoff formula _apply_sticky_buffer() computes internally
+    (`merit_ordered[:n][-1]`'s own score) - duplicated as a tiny, pure,
+    read-only helper rather than calling that function a second time
+    (which would also re-run/re-log its own "kept N incumbent(s)..."
+    line) purely so the "[top100_watch]" diagnostic log below can
+    always report a real naive_cutoff/buffer_floor, even on a night
+    TOP200_STICKY_BUFFER_LIVE is off and the real selection never calls
+    _apply_sticky_buffer() at all. None only when `merit_ordered` is
+    completely empty."""
+    sliced = merit_ordered[:n]
+    if not sliced:
+        return None
+    return sliced[-1]["value_score"]
+
+
+def _watch_quality_used(row):
+    """(quality_value, "v2"|"v1") - the SAME Quality V2 swap/fallback
+    _recompute_value_score() itself applies (see that function's own
+    TASK 43 docstring) when ranking_engine.top200_quality_v2_live() is
+    on, read directly off best_by_ticker's own existing "quality"/
+    "quality_v2" fields - never a second, independently-derived swap."""
+    if ranking_engine.top200_quality_v2_live():
+        v2 = row.get("quality_v2")
+        if v2 is not None:
+            return v2, "v2"
+    return row.get("quality"), "v1"
+
+
+def _log_top100_watch_row(log, ticker, row, incumbent_tickers, naive_cutoff, result):
+    """TASK 65 (Director-directed, 15 Nov 2026, NU case) - one
+    "[top100_watch]" line for a ticker that WAS a candidate tonight
+    (a row in best_by_ticker), in the Director's own exact format.
+    `naive_cutoff`/`result` are pre-resolved by the caller (select_
+    top100_pool(), which alone knows whether this ticker's candidacy
+    was evaluated against the main 200 cut or the ASX extension's own
+    cut) - this function only ever formats and logs, never decides."""
+    quality_used, quality_src = _watch_quality_used(row)
+    buffer_floor = None if naive_cutoff is None else round(naive_cutoff - STICKY_BUFFER_POINTS, 2)
+    log(
+        f"[top100_watch] {ticker} score={row.get('value_score')} "
+        f"(quality_used={quality_used} {quality_src}, mos={row.get('mos_pct')}, "
+        f"psy={row.get('psychology')}, moat={row.get('moat')}) "
+        f"row_date={row.get('generated_at')} row_universe={row.get('universe')} "
+        f"price_used={row.get('price')} "
+        f"incumbent={'yes' if ticker in incumbent_tickers else 'no'} "
+        f"naive_cutoff={naive_cutoff} buffer_floor={buffer_floor} "
+        f"result={result}"
+    )
+
+
+def _log_top100_watch_excluded(log, ticker, incumbent_tickers, watch_diag):
+    """TASK 65 - one "[top100_watch]" line for a watched ticker that was
+    NOT a candidate at all tonight (absent from best_by_ticker) - "not
+    scanned" when _build_best_by_ticker() never even saw a row for it
+    in any eligible universe, else the first per-row exclusion reason
+    it recorded (see that function's own watch_tickers/watch_diag
+    docstring): "stale" / "DCF-unreliable" / "fund" /
+    "fallback-financials" / "dedupe"."""
+    diag = (watch_diag or {}).get(ticker) or {}
+    if not diag.get("seen"):
+        log(f"[top100_watch] {ticker} incumbent={'yes' if ticker in incumbent_tickers else 'no'} "
+            f"result=not scanned")
+        return
+    reason = diag.get("exclude_reason") or "unknown"
+    log(f"[top100_watch] {ticker} incumbent={'yes' if ticker in incumbent_tickers else 'no'} "
+        f"result=excluded:{reason}")
+
+
+def _log_top100_watch(log, watch_tickers, watch_diag, best_by_ticker, pool_tickers,
+                       main_naive_cutoff, extension_tickers, au_naive_cutoff,
+                       incumbent_tickers):
+    """TASK 65 (Director-directed, 15 Nov 2026, NU case) - the full
+    per-night "[top100_watch]" report for every ticker in
+    nightly_scan.QUALITY_V2_DIAGNOSTIC_WATCHLIST, called once from
+    select_top100_pool() after the real selection (main pool + ASX
+    extension) is fully resolved. Logging only - reads the already-
+    decided `pool`/`extension`, never re-runs or influences selection.
+
+    Each watched ticker gets EXACTLY one line: evaluated against the
+    main 200 cut if it's in the main pool, or (for a .AX ticker that
+    isn't) against the ASX extension's own cut when one was computed
+    tonight - the one mechanism that actually decided its fate -
+    falling back to the main cut for a non-.AX ticker that simply
+    didn't make the pool. A ticker absent from best_by_ticker entirely
+    gets the "not a candidate" line instead (_log_top100_watch_
+    excluded())."""
+    for ticker in sorted(watch_tickers):
+        row = best_by_ticker.get(ticker)
+        if row is None:
+            _log_top100_watch_excluded(log, ticker, incumbent_tickers, watch_diag)
+            continue
+        if ticker in pool_tickers:
+            cutoff = main_naive_cutoff
+            result = (
+                "selected" if cutoff is None or row.get("value_score", 0) >= cutoff
+                else "kept by buffer"
+            )
+        elif ticker.endswith(".AX") and au_naive_cutoff is not None:
+            cutoff = au_naive_cutoff
+            if ticker in extension_tickers:
+                result = "selected" if row.get("value_score", 0) >= cutoff else "kept by buffer"
+            else:
+                result = "dropped"
+        else:
+            cutoff = main_naive_cutoff
+            result = "dropped"
+        _log_top100_watch_row(log, ticker, row, incumbent_tickers, cutoff, result)
+
+
 def select_top100_pool(log=print, scan_day=None):
     """`scan_day` (audit fix B2 / Fable finding T6, 10 Oct 2026): the
     scheduler's own logical scan night for this Top 100 run (state
@@ -2559,7 +2727,16 @@ def select_top100_pool(log=print, scan_day=None):
         {r["ticker"] for r in top100_store.current_asx_extension()}
     )
 
-    best_by_ticker, eligible_count = _build_best_by_ticker(log=log)
+    # TASK 65 (Director-directed, 15 Nov 2026, NU case) - the watch
+    # bookkeeping out-dict `_build_best_by_ticker()` mutates in place
+    # (see that function's own watch_tickers/watch_diag docstring);
+    # `_watch_tickers` is read straight off nightly_scan's own
+    # QUALITY_V2_DIAGNOSTIC_WATCHLIST so this list never needs a second,
+    # independently-maintained copy.
+    _watch_tickers = nightly_scan.QUALITY_V2_DIAGNOSTIC_WATCHLIST
+    _watch_diag = {}
+    best_by_ticker, eligible_count = _build_best_by_ticker(
+        log=log, watch_tickers=_watch_tickers, watch_diag=_watch_diag)
 
     # COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed, owner-approved for build+push-on-
@@ -2713,6 +2890,24 @@ def select_top100_pool(log=print, scan_day=None):
 
     for _row in _set_aside_rows:
         _row["asx_extension"] = False
+
+    # TASK 65 (Director-directed, 15 Nov 2026, NU case) - the full
+    # "[top100_watch]" diagnostic report, logged once pool/extension are
+    # both fully resolved. `au_naive_cutoff` is None whenever the ASX
+    # extension didn't even run tonight (au_in_pool already >=
+    # TOP20_AU_TARGET) - exactly the condition under which `_au_sorted_
+    # candidates`/`needed` themselves don't exist, so _log_top100_watch()
+    # falls every .AX watched ticker back to the main cut in that case,
+    # same as any non-.AX ticker. Logging only - never influences
+    # selection, computed entirely from values the real selection above
+    # already decided.
+    _log_top100_watch(
+        log, _watch_tickers, _watch_diag, best_by_ticker, pool_tickers,
+        _naive_cutoff_for(_merit_ordered, POOL_SIZE),
+        {r["ticker"] for r in extension},
+        _naive_cutoff_for(_au_sorted_candidates, needed) if au_in_pool < TOP20_AU_TARGET else None,
+        _incumbent_tickers,
+    )
 
     # (1 Oct 2026 owner-directed defensive assert removed 2 Oct 2026: it
     # re-derived this same dcf_looks_unreliable() check from the curated
