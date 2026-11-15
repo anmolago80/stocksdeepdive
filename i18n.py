@@ -2611,6 +2611,15 @@ EN = {
         "recommendation - the greener figure on each line is simply the "
         "higher number, nothing more."
     ),
+    # TASK 62 (Director-directed, 15 Nov 2026): the Comparison page's
+    # score row/column now always shows the steady "Top 200" figure
+    # (excludes today's live news/attention), never Long Score/Value
+    # Score's own live-attention number - this label and caption say so.
+    "comparison.h2h_score_top200": "Value Score (Top 200)",
+    "comparison.h2h_top200_caption": (
+        "Same score the Top 200 ranks on - excludes today's live "
+        "news/attention."
+    ),
 
     # Compare Commit 3 (27 Sep 2026, owner-directed): named saved
     # comparison lists, signed-in only - see compare_lists_store.py.
@@ -6783,6 +6792,11 @@ ES = {
         "Una comparación descrita de cálculos declarados, no una "
         "recomendación - la cifra en verde en cada línea es simplemente "
         "el número más alto, nada más."
+    ),
+    "comparison.h2h_score_top200": "Puntuación de valor (Top 200)",
+    "comparison.h2h_top200_caption": (
+        "La misma puntuación con la que el Top 200 clasifica - excluye "
+        "la atención/noticias en vivo de hoy."
     ),
 
     "comparison.save_button": "\U0001F4BE Guardar esta comparación",

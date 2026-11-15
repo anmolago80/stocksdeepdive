@@ -30,6 +30,7 @@ from resolver_engine import (
 from market_cap_engine import get_market_cap_bucket
 from holding_engine import get_holding_period
 from ranking_engine import calculate_long_score
+import ranking_engine
 from thesis_engine import generate_thesis
 import trade_filter_engine
 import indicators_engine
@@ -15722,6 +15723,31 @@ def _comparison_row_from_saved_scan(ticker):
         else "No"
     )
 
+    # TASK 62 (Director-directed, 15 Nov 2026): this function is ONLY
+    # ever called on Comparison (state_prefix == "cmp" - see this
+    # function's own docstring/caller), so its row needs the same
+    # "Value Score (Top 200)"/"_top200_quality" pair the live loop's own
+    # data.append({...}) carries - no live Discovery to exclude here
+    # either way (this path never had one), so the steady score is, if
+    # anything, an even more direct fit for a saved-scan row than for a
+    # live one. Fails open to None (same "- "/0/None convention every
+    # other derived field in this dict already uses on error) rather
+    # than ever breaking this fast, no-live-fetch path.
+    try:
+        _top200_moat_blend = (
+            ranking_engine.top200_moat_blend_live() and moat_engine.MOAT_IN_VALUE_SCORE
+        )
+        _top200_result = ranking_engine.top200_score_with_quality(
+            ticker,
+            row.get("Quality") if row.get("Quality") is not None else 0,
+            mos_pct if mos_pct is not None else 0.0,
+            psychology_score if psychology_score is not None else 0,
+            moat_score=row.get("Moat"), moat_blend=_top200_moat_blend,
+        )
+    except Exception as e:
+        print(f"[top200_score_diag] {ticker}: saved-scan Top 200 score lookup failed: {e}")
+        _top200_result = None
+
     return {
         "Ticker": ticker,
         # TASK 22 (Director-directed, 27 Oct 2026, "Foreign US-listed"):
@@ -15787,6 +15813,12 @@ def _comparison_row_from_saved_scan(ticker):
         "Discovery": row.get("Discovery (lite)") if row.get("Discovery (lite)") is not None else 0,
 
         "Long Score": long_score if long_score is not None else 0,
+        "Value Score (Top 200)": (
+            round(_top200_result["score"], 2) if _top200_result else None
+        ),
+        "_top200_quality": (
+            round(_top200_result["quality_used"], 2) if _top200_result else None
+        ),
 
         "Investment Signal": row.get("Signal") or "-",
         "Val Capped": val_capped,
@@ -16995,6 +17027,32 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         quality_score, margin_of_safety, psychology_score, discovery_score
                     )
 
+                # TASK 62 (Director-directed, 15 Nov 2026): Comparison's
+                # own steady "Value Score (Top 200)" - the Director's own
+                # WMS case, Comparison's live `long_score` above (today's
+                # live attention baked in, same as Deep Dive's own
+                # headline) diverging sharply from Deep Dive's "Scanner &
+                # Top 200 score" SUBLINE, which excludes it. Reuses
+                # ranking_engine.top200_score_with_quality() - the SAME
+                # Quality V2 swap/fallback + moat_blend switch + recompute
+                # _value_score() call deep_dive_engine.py's own subline
+                # already uses - never a third, independent formula. None
+                # on the Scanner (state_prefix != "cmp") - this is new
+                # DISPLAY data for Comparison only, computed nowhere else,
+                # so a Scanner row keeps exactly the same set of populated
+                # fields as before this task.
+                if state_prefix == "cmp":
+                    _top200_moat_blend = (
+                        ranking_engine.top200_moat_blend_live() and moat_engine.MOAT_IN_VALUE_SCORE
+                    )
+                    _top200_result = ranking_engine.top200_score_with_quality(
+                        ticker, quality_score, margin_of_safety, psychology_score,
+                        moat_score=_moat_cached["score"] if _moat_cached else None,
+                        moat_blend=_top200_moat_blend, info=info,
+                    )
+                else:
+                    _top200_result = None
+
                 # --- Valuation label: driven by MOS, audited ------------------------
                 # Old mapping gated UNDERVALUED behind Quality >= 60, so RYM (MOS
                 # 84.88, Quality 55) and REG (MOS 65.31) were mislabelled FAIR despite
@@ -17257,6 +17315,26 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "Discovery": round(discovery_score, 2),
 
                     "Long Score": round(long_score, 2),
+                    # TASK 62 (Director-directed, 15 Nov 2026): Comparison
+                    # page only (None on Scanner, exactly as before this
+                    # task) - the steady score/Quality _top200_result
+                    # above carries, for the main results table/Head-to-
+                    # head row/CSV download to show INSTEAD of "Long
+                    # Score"'s own live-attention figure. "Long Score"
+                    # itself is UNCHANGED above - still what sort_key,
+                    # Investment Signal, the thesis and Trade Setup all
+                    # key off, same as today.
+                    "Value Score (Top 200)": (
+                        round(_top200_result["score"], 2) if _top200_result else None
+                    ),
+                    # Underscore-prefixed (internal only, same convention
+                    # as every other "_flag_*"/"_mos_unreliable" field) -
+                    # only the Head-to-head "Quality / Moat" row (instr.
+                    # 3) needs this; it's deliberately never exported to
+                    # the CSV or shown as its own column.
+                    "_top200_quality": (
+                        round(_top200_result["quality_used"], 2) if _top200_result else None
+                    ),
 
                     # Investment Signal = business/value axis ("good to OWN?").
                     "Investment Signal": investment_signal,
@@ -17537,6 +17615,15 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             # data they can't see on screen either. ---
             try:
                 _dl_cols = [c for c in results.columns if not c.startswith("_")]
+                # TASK 62 (Director-directed, 15 Nov 2026): on Comparison,
+                # the exported score column is the steady "Value Score
+                # (Top 200)" one - "Long Score" (today's live-attention
+                # figure) is dropped from the export so the CSV never
+                # shows two competing score columns for the same stock.
+                # Scanner's own export (state_prefix != "cmp") is
+                # byte-identical to before this task.
+                if state_prefix == "cmp" and "Long Score" in _dl_cols:
+                    _dl_cols = [c for c in _dl_cols if c != "Long Score"]
                 _dl_csv = data_export_engine.table_to_csv_bytes(results[_dl_cols])
                 _dl_label = "Download comparison (CSV)" if state_prefix == "cmp" else "Download table (CSV)"
                 st.download_button(
@@ -17559,7 +17646,13 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             # preview further up, so it doesn't touch that gate's economics.
             if state_prefix == "cmp":
                 _h2h_lang = _scan_gate_lang
-                _h2h_score_label = "Value Score" if _factual() else "Long Score"
+                # TASK 62 (Director-directed, 15 Nov 2026): the Head-to-
+                # head score row always reads "Value Score (Top 200)" on
+                # Comparison now (EN/ES via i18n, replacing the old
+                # Value Score/Long Score label this row used to show),
+                # since it now shows the steady Top 200 figure, never
+                # today's live-attention one.
+                _h2h_score_label = i18n.t("comparison.h2h_score_top200", _h2h_lang)
                 _h2h_tickers = list(results["Ticker"])
 
                 def _h2h_best(nums, disps):
@@ -17600,10 +17693,16 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     + "".join(_td(d) for d in _h2h_best(_mos_nums, _mos_disps)) + "</tr>"
                 )
 
-                # Value Score (+ Valuation pill) - higher score wins.
-                _score_nums = [r["Long Score"] for _, r in results.iterrows()]
+                # Value Score (Top 200) (+ Valuation pill) - higher score
+                # wins. TASK 62 (Director-directed, 15 Nov 2026): reads
+                # "Value Score (Top 200)" (the steady score computed with
+                # no live Discovery/attention) instead of "Long Score"
+                # (today's live-attention figure) - see that column's own
+                # comment at its data.append() site above.
+                _score_nums = [r["Value Score (Top 200)"] for _, r in results.iterrows()]
                 _score_disps = [
-                    f"{r['Long Score']:.1f} {_badge_cell(r['Valuation'])}"
+                    f"{r['Value Score (Top 200)']:.1f} {_badge_cell(r['Valuation'])}"
+                    if isinstance(r["Value Score (Top 200)"], (int, float)) else "N/A"
                     for _, r in results.iterrows()
                 ]
                 _h2h_rows_html.append(
@@ -17614,9 +17713,15 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 # Quality / Moat, combined - higher reading wins. Moat stays
                 # the stored-nightly-value-only convention used everywhere
                 # else on this page (never computed live here either).
+                # TASK 62 (Director-directed, 15 Nov 2026, instruction 3):
+                # the Quality figure here is "_top200_quality" - the SAME
+                # Quality the steady score above was computed from (V2
+                # when live, v1 fallback otherwise) - so this row and the
+                # score row directly above it always agree, rather than
+                # showing the live Quality next to a non-live score.
                 _qm_nums, _qm_disps = [], []
                 for _, r in results.iterrows():
-                    _q = r["Quality"]
+                    _q = r["_top200_quality"]
                     _m = r.get("Moat")
                     # Moat is None (not "N/A") for a missing reading in the
                     # source data, but a pandas column mixing None with
@@ -17671,6 +17776,10 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     unsafe_allow_html=True,
                 )
                 st.caption(i18n.t("comparison.h2h_caption", _h2h_lang))
+                # TASK 62 (Director-directed, 15 Nov 2026): one-line
+                # caption specifically about the score row's own "Top
+                # 200" meaning, right under the existing general caption.
+                st.caption(i18n.t("comparison.h2h_top200_caption", _h2h_lang))
 
             # ---------------- Side-by-side comparison ----------------
             # One row per ticker, the columns you actually asked for. Score
@@ -17687,6 +17796,18 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
             _cmp = results.copy()
             _cmp["Trade Setup Score"] = _cmp["Ticker"].map(trade_score_lookup)
+
+            # TASK 62 (Director-directed, 15 Nov 2026): Comparison's main
+            # results table shows the steady "Value Score (Top 200)"
+            # column instead of "Long Score" (today's live-attention
+            # figure) - Scanner (state_prefix != "cmp") is byte-identical
+            # to before this task, since "Value Score (Top 200)" is None
+            # for every one of its rows and this branch is never taken.
+            _cmp_score_col = "Value Score (Top 200)" if state_prefix == "cmp" else "Long Score"
+            _cmp_score_header = (
+                i18n.t("comparison.h2h_score_top200", _scan_gate_lang) if state_prefix == "cmp"
+                else ("Value Score" if _factual() else "Long Score")
+            )
 
             # Services batch, Part 2: one batched query for the whole
             # table's "Insider net 12m" column - see _insider_cell's own
@@ -17757,7 +17878,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                          if r.get("_mos_unreliable") else
                          _bar_cell(r["MOS"], 0, 25, "%", flag=bool(r.get("_flag_intrinsic")))),
                         minw=90)
-                    + _td(_bar_cell(r["Long Score"], SIGNAL_THRESHOLDS["WATCHLIST"],
+                    + _td(_bar_cell(r[_cmp_score_col], SIGNAL_THRESHOLDS["WATCHLIST"],
                                     SIGNAL_THRESHOLDS["LONG"]), minw=90)
                     + _td(_bar_cell(r["Quality"], 40, 80,
                                     flag=bool(r.get("_flag_quality"))), minw=90)
@@ -17800,13 +17921,13 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             if _factual():
                 _cmp_headers = [
                     "Ticker", "Type", "Price", "Intrinsic Value",
-                    "MOS", "Value Score", "Quality", "Psychology", "Discovery",
+                    "MOS", _cmp_score_header, "Quality", "Psychology", "Discovery",
                     "Moat", "Insider net 12m", "Valuation", "Sentiment", "Trend",
                 ]
             else:
                 _cmp_headers = [
                     "Ticker", "Type", "Price", "Intrinsic Value", "MOS",
-                    "Long Score", "Quality Score", "Psychology", "Discovery",
+                    _cmp_score_header, "Quality Score", "Psychology", "Discovery",
                     "Moat", "Insider net 12m", "Valuation", "Sentiment", "Trend",
                     "Trade Setup", "Trade Setup Score",
                 ]

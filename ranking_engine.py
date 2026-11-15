@@ -33,6 +33,9 @@ their reported value.
 """
 import os
 
+import fundamentals_data
+import quality_v2_engine
+
 # Scoring clamps (see module docstring).
 MOS_CLAMP = 50.0
 PSY_CLAMP = 50.0
@@ -300,3 +303,57 @@ def recompute_value_score(row, moat_blend=False):
         row.get("Quality"), row.get("MOS %") or 0.0, row.get("Psychology"),
         row.get("Discovery (lite)") or 0, discovery_measured=False,
     )
+
+
+def top200_score_with_quality(ticker, quality_score, margin_of_safety, psychology_score,
+                               moat_score=None, moat_blend=False, info=None):
+    """TASK 62 (Director-directed, 15 Nov 2026) - the Comparison page's
+    own "Value Score (Top 200)": the steady score recompute_value_
+    score() above produces for a row with no live Discovery/attention
+    reading, PLUS the Quality figure it was actually computed from, for
+    a caller that needs to show both in agreement (e.g. a "Quality /
+    Moat" row sitting right next to the score).
+
+    This is a NEW shared helper - deep_dive_engine.py's own "Scanner &
+    Top 200 score" subline keeps its existing inline copy of this exact
+    logic completely untouched (the Director's own instruction: do not
+    change Deep Dive). Both now independently implement the SAME rule
+    (same Quality V2 swap/fallback, same recompute_value_score() call),
+    so neither can silently diverge from what the Top 200 itself ranks
+    on - which is the one invariant that actually matters here, not
+    which module owns the one copy of the code.
+
+    Quality V2 swap: whenever top200_quality_v2_live() is on, the
+    Quality INPUT becomes quality_v2_engine's "through-the-cycle" score
+    for this ticker, falling back to the live `quality_score` (v1) when
+    this ticker has no stored Quality V2 at all, or the lookup fails for
+    any reason - same fail-open philosophy as every other opportunistic
+    -only data source on this site, never a hard error on a Comparison
+    page a visitor is actively looking at.
+
+    `moat_blend` (bool, decided by the CALLER exactly as deep_dive_
+    engine.py's own line does: top200_moat_blend_live() AND moat_engine.
+    MOAT_IN_VALUE_SCORE) - never decided in here, so this module never
+    needs to import moat_engine just to re-derive a switch its caller
+    already has.
+
+    Returns {"score": float, "quality_used": float}."""
+    quality_used = quality_score
+    if top200_quality_v2_live():
+        try:
+            _bundle = fundamentals_data.get_bundle(ticker)
+            _quality_v2, _ = quality_v2_engine.get_quality_score_v2(ticker, _bundle, info=info)
+            if _quality_v2 is not None:
+                quality_used = _quality_v2
+        except Exception as e:
+            print(f"[quality_v2_diag] {ticker}: top200_score_with_quality() Quality V2 "
+                  f"lookup failed, falling back to live Quality: {e}")
+    _row = {
+        "Quality": quality_used, "MOS %": margin_of_safety,
+        "Psychology": psychology_score, "Discovery (lite)": 0,
+        "Moat": moat_score,
+    }
+    return {
+        "score": recompute_value_score(_row, moat_blend=moat_blend),
+        "quality_used": quality_used,
+    }
