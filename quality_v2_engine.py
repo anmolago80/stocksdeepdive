@@ -108,6 +108,22 @@ _INPUT_FIELDS = (
     "fcf_sign", "debt_to_equity",
 )
 
+# TASK 64 (Director-directed, 15 Nov 2026, PGHN.SW/TRI.TO diagnostic):
+# named, module-level weights - previously inlined as literals in the
+# score formula below. Pulled out here so nightly_scan.py's own
+# [quality_v2_diag] log line can compute each input's real score
+# CONTRIBUTION from these SAME numbers (never a second, hand-copied set
+# of weights that could silently drift from the real formula below).
+# Values are UNCHANGED from before this task - this is a pure refactor-
+# for-reuse, not a scoring change.
+ROIC_WEIGHT = 0.25
+ROE_WEIGHT = 0.20
+NET_MARGIN_WEIGHT = 0.15
+REVENUE_GROWTH_WEIGHT = 0.15
+EARNINGS_GROWTH_WEIGHT = 0.15
+FCF_POSITIVE_BONUS = 10
+FCF_NEGATIVE_PENALTY = -5
+
 # TASK 45 item 1/2 (Director-directed, 12 Nov 2026, 12 Nov live preview
 # review): ROE had no equity-sign check and no plausibility clamp at
 # all - unlike ROIC just below it, which already clamps to +-100%
@@ -376,7 +392,14 @@ def _get_quality_score_v2(ticker, bundle, info):
     # feeding the median - exactly the "treat as unavailable" rule the
     # Director asked for, never a clamp that would keep a distorted
     # number in the mix.
-    roe_vals = []
+    # TASK 64 (Director-directed, 15 Nov 2026, PGHN.SW/TRI.TO diagnostic):
+    # built as a {fy: value} dict, not a plain list - lets the returned
+    # meta's own "per_fy" block (below) report exactly which fiscal
+    # years fed this input's median, for nightly_scan.py's extended
+    # [quality_v2_diag] log line. list(roe_by_fy.values()) below feeds
+    # _median_of_available() the IDENTICAL values, in the same order,
+    # the old plain-list version did - no behavior change.
+    roe_by_fy = {}
     for fy in fy_dates:
         ni = ni_by_fy.get(fy)
         eq = equity_by_fy.get(fy)
@@ -384,8 +407,8 @@ def _get_quality_score_v2(ticker, bundle, info):
             continue
         fy_roe = _plausible_roe(ni / eq)
         if fy_roe is not None:
-            roe_vals.append(fy_roe)
-    roe = _median_of_available(roe_vals)
+            roe_by_fy[fy] = fy_roe
+    roe = _median_of_available(list(roe_by_fy.values()))
     if roe is None:
         # TASK 45 item 2 (Director-directed, 12 Nov 2026): the SAME
         # plausibility guard applies to the .info fallback value too -
@@ -406,7 +429,8 @@ def _get_quality_score_v2(ticker, bundle, info):
     # that this statement-based score has no need for once the real
     # figure is available; the fallback path below still uses v1's
     # exact proxy, since that's what "today's value" means for ROIC).
-    roic_vals = []
+    # TASK 64: {fy: value} dict - see roe_by_fy's own comment above.
+    roic_by_fy = {}
     for fy in fy_dates:
         ni = ni_by_fy.get(fy)
         eq = equity_by_fy.get(fy)
@@ -414,8 +438,8 @@ def _get_quality_score_v2(ticker, bundle, info):
             continue
         invested = eq + (debt_by_fy.get(fy) or 0.0)
         if invested > 0:
-            roic_vals.append(max(-1.0, min(ni / invested, 1.0)))
-    roic = _median_of_available(roic_vals)
+            roic_by_fy[fy] = max(-1.0, min(ni / invested, 1.0))
+    roic = _median_of_available(list(roic_by_fy.values()))
     if roic is None:
         roic = 0.0
         market_cap = info.get("marketCap", 0) or 0
@@ -436,15 +460,15 @@ def _get_quality_score_v2(ticker, bundle, info):
     # _plausible_margin() rather than feeding the median, same "treat
     # as unavailable" rule TASK 45/51 already apply to roe/debt_to_
     # equity above - see NET_MARGIN_PLAUSIBLE_MAX's own comment.
-    margin_vals = [
-        m for m in (
-            _plausible_margin(ni_by_fy.get(fy) / revenue_by_fy[fy])
-            for fy in fy_dates
-            if ni_by_fy.get(fy) is not None and revenue_by_fy.get(fy)
-        )
-        if m is not None
-    ]
-    net_margin = _median_of_available(margin_vals)
+    # TASK 64: {fy: value} dict - see roe_by_fy's own comment above.
+    net_margin_by_fy = {}
+    for fy in fy_dates:
+        if ni_by_fy.get(fy) is None or not revenue_by_fy.get(fy):
+            continue
+        m = _plausible_margin(ni_by_fy[fy] / revenue_by_fy[fy])
+        if m is not None:
+            net_margin_by_fy[fy] = m
+    net_margin = _median_of_available(list(net_margin_by_fy.values()))
     if net_margin is None:
         # Same guard on the .info fallback (TASK 56): Yahoo's own
         # reported profitMargins can in principle be just as distorted
@@ -496,19 +520,20 @@ def _get_quality_score_v2(ticker, bundle, info):
     # than the worst positive-equity case can express); equity <= 0
     # with no debt at all contributes 0 (no leverage signal either way,
     # same as a debt-free positive-equity company).
-    debt_eq_vals = []
+    # TASK 64: {fy: value} dict - see roe_by_fy's own comment above.
+    debt_to_equity_by_fy = {}
     for fy in fy_dates:
         equity = equity_by_fy.get(fy)
         debt = debt_by_fy.get(fy) or 0.0
         if equity is None:
             continue
         if equity > 0:
-            debt_eq_vals.append((debt / equity) * 100)
+            debt_to_equity_by_fy[fy] = (debt / equity) * 100
         elif debt > 0:
-            debt_eq_vals.append(DEBT_EQUITY_MAX_RATIO)
+            debt_to_equity_by_fy[fy] = DEBT_EQUITY_MAX_RATIO
         else:
-            debt_eq_vals.append(0.0)
-    debt_to_equity = _median_of_available(debt_eq_vals)
+            debt_to_equity_by_fy[fy] = 0.0
+    debt_to_equity = _median_of_available(list(debt_to_equity_by_fy.values()))
     if debt_to_equity is None:
         debt_to_equity = info.get("debtToEquity", 0) or 0
         fallback_fields.append("debt_to_equity")
@@ -523,15 +548,15 @@ def _get_quality_score_v2(ticker, bundle, info):
         fallback_fields = list(_INPUT_FIELDS)
 
     score = 50
-    score += roic * 100 * 0.25
-    score += roe * 100 * 0.20
-    score += net_margin * 100 * 0.15
-    score += revenue_growth * 100 * 0.15
-    score += earnings_growth * 100 * 0.15
+    score += roic * 100 * ROIC_WEIGHT
+    score += roe * 100 * ROE_WEIGHT
+    score += net_margin * 100 * NET_MARGIN_WEIGHT
+    score += revenue_growth * 100 * REVENUE_GROWTH_WEIGHT
+    score += earnings_growth * 100 * EARNINGS_GROWTH_WEIGHT
     if fcf_positive is True:
-        score += 10
+        score += FCF_POSITIVE_BONUS
     elif fcf_positive is False:
-        score -= 5
+        score += FCF_NEGATIVE_PENALTY
     # TASK 51 (Director-directed, 12 Nov 2026): never a negative
     # penalty (which `score -=` would otherwise turn into a bonus) -
     # belt-and-braces alongside the debt_to_equity fix above, which
@@ -558,4 +583,26 @@ def _get_quality_score_v2(ticker, bundle, info):
         "revenue_growth": revenue_growth, "earnings_growth": earnings_growth,
         "fcf_positive": fcf_positive, "debt_to_equity": debt_to_equity,
         "debt_penalty": debt_penalty,
+        # TASK 64 (Director-directed, 15 Nov 2026, PGHN.SW/TRI.TO
+        # diagnostic): the per-fiscal-year values that actually fed
+        # each input's median above - a fiscal year present in
+        # "fiscal_years_used" but ABSENT from one of these dicts is a
+        # year that input dropped (missing data, or an implausibility
+        # guard - _plausible_roe()/_plausible_margin() - rejecting it),
+        # never fed to that input's own median. Purely additive/
+        # informational - nothing here feeds back into `score` above;
+        # every value was already computed for the real formula, this
+        # just exposes it with its fiscal year attached. "normalized_
+        # income"/"revenue" are the raw per-FY bases roe/roic/net_
+        # margin/revenue_growth are all actually computed FROM (never
+        # independently re-derived), so a divestment/one-off-item
+        # distortion in either shows up here directly.
+        "per_fy": {
+            "roe": {str(d): v for d, v in roe_by_fy.items()},
+            "roic": {str(d): v for d, v in roic_by_fy.items()},
+            "net_margin": {str(d): v for d, v in net_margin_by_fy.items()},
+            "debt_to_equity": {str(d): v for d, v in debt_to_equity_by_fy.items()},
+            "normalized_income": {str(d): v for d, v in ni_by_fy.items() if v is not None},
+            "revenue": {str(d): v for d, v in revenue_by_fy.items() if v is not None},
+        },
     }

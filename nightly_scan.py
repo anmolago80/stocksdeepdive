@@ -207,10 +207,17 @@ def _attach_dividend_payout(row, ticker, log=print):
 # anything else - log only, no stored/scored effect of its own.
 # TASK 56 (13 Nov 2026) added "CTGO" per the Director's own refreshed
 # watchlist for this task.
+# TASK 64 (Director-directed, 15 Nov 2026) added "PGHN.SW" (Partners
+# Group - v1=77, v2=50 after the 14 Nov refresh, dropped it below the
+# Quality on sale threshold) and "TRI.TO" (Thomson Reuters - left
+# Quality on sale at the same time, suspected same cause, not yet
+# confirmed) - see this module's own extended [quality_v2_diag] line
+# below for the per-fiscal-year detail the Director needs to confirm
+# the real cause against tonight's log.
 QUALITY_V2_DIAGNOSTIC_WATCHLIST = frozenset({
     "AAL", "HCA", "MTCH", "CCI", "INSE", "KSPI", "MO", "HPQ", "FICO", "LII",
     "DPZ", "ORC", "NREF", "SOI.L", "CTGO", "CSL.AX", "OCL.AX", "NU", "ADBE",
-    "COKE", "INTU", "CPRT", "WDAY", "ZM",
+    "COKE", "INTU", "CPRT", "WDAY", "ZM", "PGHN.SW", "TRI.TO",
 })
 
 
@@ -227,6 +234,51 @@ def _log_quality_v2_diagnostic(row, ticker, meta, log):
         f"roic={_fmt(meta.get('roic'))} d_e={_fmt(meta.get('debt_to_equity'))} "
         f"debt_penalty={_fmt(meta.get('debt_penalty'))} "
         f"fallback={meta.get('fallback_fields')}"
+    )
+
+    # TASK 64 (Director-directed, 15 Nov 2026, PGHN.SW/TRI.TO root-cause
+    # diagnostic): a SECOND line - each input's actual SCORE
+    # CONTRIBUTION (points), computed from quality_v2_engine's own
+    # named weight constants (ROIC_WEIGHT/ROE_WEIGHT/etc. - the SAME
+    # numbers get_quality_score_v2()'s real formula uses, never a
+    # second, hand-copied set that could silently drift from it), so a
+    # watchlist ticker's drop is visible in POINTS, not just raw input
+    # values.
+    def _contrib(value, weight):
+        return None if value is None else round(value * 100 * weight, 2)
+
+    _fcf_positive = meta.get("fcf_positive")
+    _fcf_contrib = (
+        quality_v2_engine.FCF_POSITIVE_BONUS if _fcf_positive is True
+        else quality_v2_engine.FCF_NEGATIVE_PENALTY if _fcf_positive is False
+        else 0
+    )
+    log(
+        f"[quality_v2_diag] {ticker} contributions: "
+        f"roic={_fmt(_contrib(meta.get('roic'), quality_v2_engine.ROIC_WEIGHT))} "
+        f"roe={_fmt(_contrib(meta.get('roe'), quality_v2_engine.ROE_WEIGHT))} "
+        f"net_margin={_fmt(_contrib(meta.get('net_margin'), quality_v2_engine.NET_MARGIN_WEIGHT))} "
+        f"revenue_growth={_fmt(_contrib(meta.get('revenue_growth'), quality_v2_engine.REVENUE_GROWTH_WEIGHT))} "
+        f"earnings_growth={_fmt(_contrib(meta.get('earnings_growth'), quality_v2_engine.EARNINGS_GROWTH_WEIGHT))} "
+        f"fcf={_fcf_contrib} debt_penalty=-{_fmt(meta.get('debt_penalty'))}"
+    )
+
+    # TASK 64: a THIRD line - the per-fiscal-year values that actually
+    # fed each input's median (quality_v2_engine's new "per_fy" meta
+    # block). A fiscal year present in "fiscal_years_used" but ABSENT
+    # from one of these dicts is a year that input's own median
+    # dropped (missing data, or an implausibility guard - _plausible_
+    # roe()/_plausible_margin() - rejecting it) - exactly the detail
+    # needed to confirm whether a lumpy/one-off fiscal year is what's
+    # moving a watchlist ticker's median.
+    _per_fy = meta.get("per_fy") or {}
+    log(
+        f"[quality_v2_diag] {ticker} fiscal_years_used={meta.get('fiscal_years_used')} "
+        f"per_fy_roe={_per_fy.get('roe')} per_fy_roic={_per_fy.get('roic')} "
+        f"per_fy_net_margin={_per_fy.get('net_margin')} "
+        f"per_fy_debt_to_equity={_per_fy.get('debt_to_equity')} "
+        f"per_fy_normalized_income={_per_fy.get('normalized_income')} "
+        f"per_fy_revenue={_per_fy.get('revenue')}"
     )
 
 

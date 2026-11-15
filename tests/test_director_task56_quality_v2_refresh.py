@@ -321,10 +321,15 @@ check("BADTICK's PRE-EXISTING Quality V2 (33) is restored, never wiped, on a ski
 check("CTGO's Quality V2 was updated on disk (100 -> 42)", _by_ticker["CTGO"]["Quality V2"] == 42)
 
 _diag_lines = [ln for ln in _logged if ln.startswith("[quality_v2_diag] CTGO")]
+# TASK 64 (Director-directed, 15 Nov 2026, PGHN.SW/TRI.TO diagnostic):
+# _log_quality_v2_diagnostic() now logs THREE lines per ticker (the
+# original summary + a new contributions line + a new per-fiscal-year
+# line) - not a regression, a deliberate extension this task's own
+# instruction asked for; "not found" is checked across all three.
 check("the post-refresh [quality_v2_diag] block reports CTGO even though its universe's "
       "generated_at is 10 days stale - not gated by load_scan()'s 72h cutoff (the actual "
-      "bug this test catches)",
-      len(_diag_lines) == 1 and "not found" not in _diag_lines[0])
+      "bug this test catches) - now 3 lines per ticker (TASK 64)",
+      len(_diag_lines) == 3 and all("not found" not in ln for ln in _diag_lines))
 check("[quality_v2_refresh] SUMMARY line was logged with the right shape",
       any(ln.startswith("[quality_v2_refresh] SUMMARY:") for ln in _logged))
 print("[task56_check5_refresh_pass] updated/skipped counted correctly, a skip never "

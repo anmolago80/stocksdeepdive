@@ -331,26 +331,47 @@ _meta_fixture = {
 }
 _logged.clear()
 nightly_scan._log_quality_v2_diagnostic(_row_watchlisted, "AAL", _meta_fixture, _capture_log)
-check("diagnostic log fires for a watchlisted ticker (AAL)", len(_logged) == 1)
-check("diagnostic log line matches the Director's own exact format",
+# TASK 64 (Director-directed, 15 Nov 2026, PGHN.SW/TRI.TO diagnostic):
+# the diag function now logs THREE lines per watchlisted ticker - the
+# original summary line (unchanged, still checked verbatim below), a
+# new per-input score-CONTRIBUTION line, and a new per-fiscal-year-
+# values line - not a regression, a deliberate extension of this exact
+# log this task's own instruction asked for.
+check("diagnostic log fires for a watchlisted ticker (AAL) - now 3 lines "
+      "(summary + contributions + per-fiscal-year, TASK 64)", len(_logged) == 3)
+check("diagnostic log's first (summary) line matches the Director's own exact format, "
+      "unchanged by TASK 64",
       _logged[0] == "[quality_v2_diag] AAL v1=72.000 v2=55.000 roe=0.123 roic=0.099 "
                     "d_e=300.000 debt_penalty=15.000 fallback=['debt_to_equity']")
+check("diagnostic log's second line reports each input's score CONTRIBUTION "
+      "(TASK 64) - computed from quality_v2_engine's own named weights, not "
+      "hand-copied literals",
+      _logged[1] == "[quality_v2_diag] AAL contributions: roic=2.470 roe=2.470 "
+                    "net_margin=None revenue_growth=None earnings_growth=None "
+                    "fcf=0 debt_penalty=-15.000")
+check("diagnostic log's third line reports fiscal_years_used and the per-FY "
+      "'per_fy' values (TASK 64) - absent from this fixture's meta, so every "
+      "per_fy_* field reads None/empty",
+      _logged[2] == "[quality_v2_diag] AAL fiscal_years_used=None per_fy_roe=None "
+                    "per_fy_roic=None per_fy_net_margin=None "
+                    "per_fy_debt_to_equity=None per_fy_normalized_income=None "
+                    "per_fy_revenue=None")
 
 _logged.clear()
 nightly_scan._log_quality_v2_diagnostic(_row_watchlisted, "NOTWATCHLISTED", _meta_fixture, _capture_log)
 check("diagnostic log does NOT fire for a ticker outside the watchlist",
       _logged == [])
 
-# TASK 56 (13 Nov 2026) added "CTGO" to the watchlist per the Director's
-# own refreshed 24-ticker list for that task - this check's exact-set
-# comparison is updated to match rather than left asserting the earlier,
-# now-superseded 23-ticker snapshot.
+# TASK 56 (13 Nov 2026) added "CTGO"; TASK 64 (15 Nov 2026) added
+# "PGHN.SW"/"TRI.TO" per the Director's own refreshed 26-ticker list -
+# this check's exact-set comparison is updated to match rather than
+# left asserting an earlier, now-superseded snapshot.
 check("the watchlist contains every ticker the Director named (TASK 51's "
-      "original 23 plus TASK 56's own CTGO addition)",
+      "original 23, TASK 56's CTGO, and TASK 64's PGHN.SW/TRI.TO)",
       nightly_scan.QUALITY_V2_DIAGNOSTIC_WATCHLIST == frozenset({
           "AAL", "HCA", "MTCH", "CCI", "INSE", "KSPI", "MO", "HPQ", "FICO", "LII",
           "DPZ", "ORC", "NREF", "SOI.L", "CTGO", "CSL.AX", "OCL.AX", "NU", "ADBE",
-          "COKE", "INTU", "CPRT", "WDAY", "ZM",
+          "COKE", "INTU", "CPRT", "WDAY", "ZM", "PGHN.SW", "TRI.TO",
       }))
 print("[task51_check9_diagnostic_log] fires only for the watchlist, exact format, "
       "reads debt_penalty straight off meta OK")
