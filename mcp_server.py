@@ -43,6 +43,7 @@ import blog_render
 import blog_store
 import scan_store
 import scanner_engine
+import signin_wall
 import snapshot_render
 import snapshot_store
 
@@ -90,6 +91,27 @@ def _public_scan_row(row):
     return {"ticker": row.get("Ticker"), **snapshot_store.public_view(row)}
 
 
+# -----------------------------------
+# TASK 60b (15 Nov 2026): the sign-in wall's own MCP gate. MCP tool
+# calls carry no browser cookie and no interactive sign-in flow of
+# their own (unlike the website or /api/v1, an MCP client has no
+# practical way to be "signed in" here), so this is a flat block once
+# the wall is live - never a crash: raising ValueError is the SAME
+# "safe tool-level failure" idiom every other error in this file
+# already uses (FastMCP turns it into a normal isError tool result,
+# not a dropped connection). scan() is the one exception, for the
+# S&P 500 universe only, matching the public Scanner page/API.
+# -----------------------------------
+
+def _require_signin():
+    if signin_wall.wall_live():
+        raise ValueError(
+            "Sign in required at stocksdeepdive.com - this tool's data "
+            "is only available to signed-in visitors while the site's "
+            "sign-in wall is on. Sign-in is free."
+        )
+
+
 _KNOWN_UNIVERSES = scanner_engine.AUSTRALIA_UNIVERSES + scanner_engine.USA_UNIVERSES
 
 
@@ -114,18 +136,21 @@ def _resolve_universe(raw):
 mcp = FastMCP(
     name=SITE_NAME,
     instructions=(
-        f"Read-only, public data from {SITE_NAME} (stocksdeepdive.com): "
+        f"Read-only data from {SITE_NAME} (stocksdeepdive.com): "
         "computed value/quality/psychology/discovery/moat scores for "
         "stocks the site's nightly scan covers, plus any research notes "
-        "written about a company. No authentication needed, and nothing "
-        "here is user data - every value returned is already public on "
-        "the site. Every tool result includes an 'attribution', "
-        "'disclaimer' and 'link' field; when you show this data to a "
-        "person, attribute it and include the link. Nothing returned "
-        "here is financial advice - see the 'disclaimer' field in every "
-        "result. A ticker only has data once it has been through a "
-        "nightly scan; call scan() first if you're not sure a ticker is "
-        "covered."
+        "written about a company. Nothing here is user data - every "
+        "value returned is already public on the site, though a tool "
+        "may return a 'Sign in required at stocksdeepdive.com' error "
+        "instead of data while the site's sign-in wall is active (an "
+        "MCP client has no way to be signed in) - scan() for S&P 500 "
+        "always stays available. Every tool result includes an "
+        "'attribution', 'disclaimer' and 'link' field; when you show "
+        "this data to a person, attribute it and include the link. "
+        "Nothing returned here is financial advice - see the "
+        "'disclaimer' field in every result. A ticker only has data "
+        "once it has been through a nightly scan; call scan() first if "
+        "you're not sure a ticker is covered."
     ),
     streamable_http_path="/",
     stateless_http=True,
@@ -174,6 +199,7 @@ def deep_dive(ticker: str) -> dict[str, object]:
     public Deep Dive and /s/<ticker> snapshot page show. Raises if the
     ticker hasn't been scanned yet (it may not be in a covered universe -
     call scan() to see what's covered)."""
+    _require_signin()
     ticker = (ticker or "").strip().upper()
     snap = snapshot_store.get_snapshot(ticker)
     if not snap:
@@ -194,6 +220,7 @@ def compare(tickers: list[str]) -> dict[str, object]:
     """Computed scores for several stocks side by side (max 10 tickers).
     Tickers not yet scanned are listed separately under 'not_found'
     rather than raising, so a partial comparison still returns."""
+    _require_signin()
     wanted = [(t or "").strip().upper() for t in (tickers or []) if (t or "").strip()]
     if not wanted:
         raise ValueError("Pass at least one ticker.")
@@ -226,6 +253,10 @@ def scan(universe: str, top_n: int = 25) -> dict[str, object]:
             f"Unknown universe '{universe}'. Known: "
             + ", ".join(_KNOWN_UNIVERSES)
         )
+    # TASK 60b: the one tool exception - S&P 500 stays public, matching
+    # the public Scanner page/API scan endpoint.
+    if not signin_wall.scanner_universe_is_public(resolved):
+        _require_signin()
     payload = scan_store.load_scan(resolved)
     if not payload:
         raise ValueError(
@@ -252,6 +283,7 @@ def moat(ticker: str) -> dict[str, object]:
     computing one live - open its Deep Dive page on the site first, or
     call deep_dive() which returns whatever Moat the nightly scan already
     attached."""
+    _require_signin()
     ticker = (ticker or "").strip().upper()
     if not ticker:
         raise ValueError("Pass a ticker.")
@@ -276,6 +308,7 @@ def research_notes(ticker: str) -> dict[str, object]:
     specifically about this company, newest first - title, summary,
     publish date and a link to the full post. Empty list if none exist
     yet; that's not an error, most tickers won't have a dedicated post."""
+    _require_signin()
     ticker = (ticker or "").strip().upper()
     if not ticker:
         raise ValueError("Pass a ticker.")

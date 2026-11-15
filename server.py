@@ -93,6 +93,7 @@ import site_content
 import top100_engine
 import top100_render
 import signin_wall
+import share_link_store
 
 # AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): the public
 # snapshot pages + read-only JSON API. See api_v1.py / snapshot_render.py.
@@ -1260,9 +1261,11 @@ async def auth_clear_cookie(request: Request):
     return resp
 
 
-def _html(content, status=200, cache="public, max-age=300"):
-    return HTMLResponse(content, status_code=status,
-                        headers={"Cache-Control": cache})
+def _html(content, status=200, cache="public, max-age=300", extra_headers=None):
+    headers = {"Cache-Control": cache}
+    if extra_headers:
+        headers.update(extra_headers)
+    return HTMLResponse(content, status_code=status, headers=headers)
 
 
 # -----------------------------------
@@ -1829,8 +1832,12 @@ def sitemap(request: Request):
     # not-yet-built compounder_data.json (this dev environment; a fresh
     # Railway volume before its first admin rebuild) yields an empty
     # slug list, not an error.
+    # TASK 60b (15 Nov 2026): /s/research/<slug> is gated like the
+    # Research page once the wall is live (research_snapshot_page()'s
+    # own gate in server.py) - dropped from the sitemap under the same
+    # condition, same pattern as Top 200/Currency Risk above.
     _research_data = research_snapshot_render._load_research_data()
-    if _research_data:
+    if _research_data and not signin_wall.wall_live():
         for _slug in research_snapshot_render.slug_map(_research_data):
             extra += (f'\n  <url><loc>{_xml_escape(base)}/s/research/{_slug}</loc>'
                       f'<changefreq>weekly</changefreq><priority>0.5</priority></url>')
@@ -2543,10 +2550,30 @@ def research_snapshot_page(slug: str, request: Request):
     ticker = research_snapshot_render.ticker_for_slug(slug, data)
     if not ticker:
         return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
+    # TASK 60b (15 Nov 2026): gated like the Research page once the wall
+    # is live - a signed-out visitor is redirected to the interactive
+    # /research?ticker=<ticker> page (never an error; that page shows
+    # its own sign-in prompt - app.py's page_research() gate), unless a
+    # valid share token for this exact write-up is present. page_key
+    # "research_snapshot" (distinct from app.py's own "research" scope)
+    # since this is a different surface with its own per-ticker share
+    # link - see page_research()'s own new "Create share link for this
+    # write-up" control.
+    if signin_wall.wall_live():
+        _share_tok = (request.query_params.get("share") or "").strip()
+        _authorized = bool(_signed_in_email(request)) or (
+            bool(_share_tok)
+            and share_link_store.resolve(_share_tok, "research_snapshot", ticker)
+        )
+        if not _authorized:
+            _redirect_qs = f"ticker={ticker}" + ("&lang=es" if lang == "es" else "")
+            return RedirectResponse(f"/research?{_redirect_qs}", status_code=302)
     _count_view(f"research_snapshot_{slug}", lang=lang)
+    _extra_headers = {"X-Robots-Tag": "noindex"} if signin_wall.wall_live() else None
     return _html(
         research_snapshot_render.render_research_snapshot(ticker, data, base, lang=lang),
-        cache="public, max-age=1800")
+        cache="public, max-age=1800" if not signin_wall.wall_live() else "no-store",
+        extra_headers=_extra_headers)
 
 
 # -----------------------------------

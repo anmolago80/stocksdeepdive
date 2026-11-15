@@ -278,8 +278,10 @@ _at_nonowner = AppTest.from_string(
     default_timeout=60,
 )
 _at_nonowner.run()
-check("D11: a non-owner sees NO 'Create share link' expander at all",
-      len(_at_nonowner.get("expander")) == 0)
+check("D11: a non-owner sees NO 'Create share link' expander at all "
+      "(checked by label, not by total expander count - importing app.py also runs its "
+      "default Home page as a side effect, which can render its own unrelated expanders)",
+      not any(e.label == "🔗 Create share link (owner only)" for e in _at_nonowner.get("expander")))
 
 _at_owner = AppTest.from_string(
     _create_link_script(_OWNER, "deep_dive", repr("CSL.AX"), "/deep-dive?ticker=CSL.AX"),
@@ -287,7 +289,7 @@ _at_owner = AppTest.from_string(
 )
 _at_owner.run()
 check("D12: the owner DOES see the 'Create share link' expander",
-      len(_at_owner.get("expander")) == 1)
+      any(e.label == "🔗 Create share link (owner only)" for e in _at_owner.get("expander")))
 _at_owner.button(key="share_link_create_cl_test").click().run()
 check("D13: clicking Create link actually mints a new row in share_link_store",
       len(share_link_store.list_links()) == _before + 1)
@@ -411,10 +413,14 @@ check("G6: wall ON, signed out - research list is 401",
       client.get("/research").status_code == 401)
 check("G7: wall ON, signed out - research detail is 401",
       client.get("/research/some-slug").status_code == 401)
-check("G8: wall ON, signed out - blog list is 401",
-      client.get("/blog").status_code == 401)
-check("G9: wall ON, signed out - blog detail is 401",
-      client.get("/blog/some-slug").status_code == 401)
+# TASK 60b (15 Nov 2026, deliberate follow-up change, not a regression):
+# the Director's own gap report made /api/v1/blog* PUBLIC regardless of
+# the wall, to match the public website blog - see tests/test_director_
+# task60b_mcp_research_gaps.py's own Section B for the full behavior.
+check("G8: wall ON, signed out - blog list is PUBLIC (TASK 60b carve-out, never 401)",
+      client.get("/blog").status_code != 401)
+check("G9: wall ON, signed out - blog detail is PUBLIC (TASK 60b carve-out, never 401)",
+      client.get("/blog/some-slug").status_code != 401)
 check("G10: wall ON, signed out - S&P 500 scan STAYS PUBLIC (never 401)",
       client.get("/scan/sp-500").status_code != 401)
 check("G11: wall ON, signed out - every OTHER universe's scan IS gated",

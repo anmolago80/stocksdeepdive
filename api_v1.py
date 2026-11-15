@@ -635,8 +635,13 @@ def get_blog_list(
     lang: str = Query(None, description="Filter by post language, 'en' or 'es'"),
     limit: int = Query(None, ge=1, le=200, description="Max posts to return"),
 ):
+    """TASK 60b (15 Nov 2026): PUBLIC regardless of SIGNIN_WALL_LIVE -
+    TASK 60's own blanket "every other data endpoint" gate caught this
+    one too, but the Director's own follow-up made it explicit: this
+    stays public to match the public website blog (/blog, /blog/<slug>)
+    - a visitor reading blog posts on the site itself was never asked
+    to sign in, so the API shouldn't ask either."""
     _check_rate_limit(request)
-    _require_signin_or_share(request, "blog")
     posts = blog_store.list_posts(include_drafts=False, limit=limit, lang=lang)
     base = str(request.base_url).rstrip("/")
     return _envelope(
@@ -651,9 +656,11 @@ def get_blog_detail(slug: str, request: Request):
     """title/date/lang/sections for one published post - never a draft
     or a post pending review (blog_store.get_post()'s default
     include_drafts=False, never overridden here, is what makes an
-    unpublished slug 404 rather than leak)."""
+    unpublished slug 404 rather than leak).
+
+    TASK 60b (15 Nov 2026): PUBLIC regardless of SIGNIN_WALL_LIVE - see
+    get_blog_list()'s own comment just above."""
     _check_rate_limit(request)
-    _require_signin_or_share(request, "blog", slug)
     post = blog_store.get_post(slug, include_drafts=False)
     if not post:
         raise HTTPException(status_code=404, detail=f"No published post at '{slug}'.")

@@ -53,6 +53,7 @@ import compare_lists_store
 import compare_notes_store
 import signin_wall
 import share_link_store
+import research_snapshot_render
 import admin_data_audit
 import capm_engine
 import fcf_valuation_engine
@@ -7983,6 +7984,19 @@ def page_research():
         return
 
     _bump_page_view("research", ticker=ticker)
+
+    # TASK 60b (15 Nov 2026): owner-only "Create share link" for THIS
+    # one write-up's own static SEO page (/s/research/<slug> - server.
+    # py's research_snapshot_page(), gated the same task). Separate
+    # page_key ("research_snapshot") from this page's own whole-shelf
+    # "research" share link (TASK 60, rendered unconditionally earlier
+    # in this function) - a token minted here unlocks ONLY that one
+    # static page, never the interactive shelf.
+    _render_create_share_link_control(
+        "research_snapshot", ticker,
+        f"/s/research/{research_snapshot_render.slug_for_ticker(ticker)}",
+        _research_lang, "research_snapshot",
+    )
 
     # --- Conversion pass, Part 7c: Reddit-arrival byline (reuses Part 5's
     # shared helper - same wording/handle as the Deep Dive and blog). ---
