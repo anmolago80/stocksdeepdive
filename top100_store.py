@@ -402,6 +402,22 @@ def _conn():
         conn.execute("ALTER TABLE top100_scores ADD COLUMN schema_mode TEXT")
     except sqlite3.OperationalError:
         pass
+    # TASK 66 (Director-directed, owner-approved, 16 Nov 2026) - whether
+    # THIS row's own current_headwind answer was built from a "Recent
+    # news" block (top100_engine._fetch_recent_news_for_entrant() found
+    # at least one relevant, recent headline) or not. Same purely-
+    # additive/nullable pattern as every prior column above - see
+    # top100_engine.RUBRIC_VERSION's own comment for why this is a flag
+    # on each row rather than a rubric_version bump (which would force
+    # every already-current row to re-score tonight). 1/0 on a row
+    # top100_engine saved after this column existed, NULL/unknown on
+    # every pre-existing row - the Admin Dashboard's own cost/coverage
+    # panel treats NULL the same as 0 ("no news context") rather than
+    # guessing.
+    try:
+        conn.execute("ALTER TABLE top100_scores ADD COLUMN headwind_news INTEGER")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_batch_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -489,6 +505,24 @@ def _conn():
     # panel has real, persisted figures to sum rather than re-deriving
     # anything from the scheduler's own log lines. See top100_engine.
     # poll_and_ingest_batch()'s own docstring for what writes this.
+    # TASK 66 (Director-directed, owner-approved, 16 Nov 2026) - a tiny,
+    # generic "rescore this ticker in the very next nightly batch
+    # regardless of its own normal eligibility" queue, so a one-off
+    # directive (e.g. "queue OCL.AX") never requires a bespoke,
+    # ticker-hardcoded selection path in top100_engine.py. Claimed (read
+    # + cleared) atomically by pop_oneoff_queue() below, the same
+    # "claim before acting" convention top100_engine._claim_fetch()
+    # (portfolio_news_engine.py) and the submitting-marker table already
+    # use - a ticker is queued by exactly one call to queue_oneoff_
+    # rescore() and consumed by exactly the one submit_nightly_batch()
+    # call that pops it, never resubmitted again just because a crash
+    # left it sitting in the queue.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_oneoff_queue (
+            ticker TEXT PRIMARY KEY,
+            queued_at TEXT NOT NULL
+        )"""
+    )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_ingest_log (
             batch_id TEXT PRIMARY KEY,
@@ -963,7 +997,8 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                 current_headwind=None, market_structure=None, market_structure_comment=None,
                 one_foot_hurdle=None, one_foot_comment=None, most_recent_quarter=None,
                 munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None,
-                degenerate_accepted=False, matched_by=None, schema_mode=None):
+                degenerate_accepted=False, matched_by=None, schema_mode=None,
+                headwind_news=None):
     """Upserts one ticker's AI score for (quarter, model,
     rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
     part of the cache key/PK (see _migrate_scores_schema_v2()'s own
@@ -1040,7 +1075,13 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     poll_and_ingest_batch()'s own docstring for why). None for a caller
     that doesn't pass it; every pre-existing row reads NULL here, and
     the display layer treats NULL/None the same as "legacy" (the task's
-    own "existing rows are not rewritten and count as legacy" rule)."""
+    own "existing rows are not rewritten and count as legacy" rule).
+    `headwind_news` (TASK 66, 16 Nov 2026): True/False/None - whether
+    top100_engine._fetch_recent_news_for_entrant() found at least one
+    relevant, recent headline for this ticker AT SUBMISSION time (so
+    current_headwind had a Recent news block to ground its answer in).
+    None for a caller that doesn't pass it; every pre-existing row
+    reads NULL here (see this column's own ALTER TABLE comment above)."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores
@@ -1049,8 +1090,9 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                   market_structure, market_structure_comment,
                   one_foot_hurdle, one_foot_comment, most_recent_quarter,
                   munger_quality, munger_comment, big_wave, big_wave_comment,
-                  degenerate_accepted, matched_by, schema_mode, prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  degenerate_accepted, matched_by, schema_mode, headwind_news,
+                  prompt, raw_response, scored_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
@@ -1069,6 +1111,7 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                  degenerate_accepted = excluded.degenerate_accepted,
                  matched_by = excluded.matched_by,
                  schema_mode = excluded.schema_mode,
+                 headwind_news = excluded.headwind_news,
                  prompt = excluded.prompt,
                  raw_response = excluded.raw_response,
                  scored_at = excluded.scored_at""",
@@ -1076,7 +1119,9 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
              inversion_scenario, inversion_severity, current_headwind,
              market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment,
              most_recent_quarter, munger_quality, munger_comment, big_wave, big_wave_comment,
-             int(bool(degenerate_accepted)), matched_by, schema_mode, prompt, raw_response,
+             int(bool(degenerate_accepted)), matched_by, schema_mode,
+             None if headwind_news is None else int(bool(headwind_news)),
+             prompt, raw_response,
              datetime.now(timezone.utc).isoformat()),
         )
 
@@ -1468,6 +1513,40 @@ def get_daily_submission_state(utc_date):
     if not row:
         return {"batches": 0, "entrants": 0}
     return {"batches": row["batches"], "entrants": row["entrants"]}
+
+
+# -----------------------------------------------------------------
+# TASK 66 (Director-directed, owner-approved, 16 Nov 2026) - the
+# generic one-off rescore queue (see top100_oneoff_queue's own CREATE
+# TABLE comment above). A ticker queued here is picked up by the very
+# next submit_nightly_batch() call REGARDLESS of whether that ticker
+# would otherwise be "unscored" tonight (see that function's own "one-
+# off queue" block for exactly how it's injected into entrants).
+# -----------------------------------------------------------------
+
+def queue_oneoff_rescore(ticker):
+    """Queues `ticker` to be force-rescored in the next nightly batch.
+    Idempotent - queuing an already-queued ticker again just refreshes
+    its queued_at timestamp, never creates a second row."""
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO top100_oneoff_queue (ticker, queued_at) VALUES (?, ?) "
+            "ON CONFLICT(ticker) DO UPDATE SET queued_at = excluded.queued_at",
+            (ticker.upper(), datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def pop_oneoff_queue():
+    """Atomically reads and clears the WHOLE one-off rescore queue -
+    returns the queued tickers (oldest-queued first, possibly empty)
+    and leaves the table empty, so each ticker is claimed by exactly
+    the one submit_nightly_batch() call that acts on it."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT ticker FROM top100_oneoff_queue ORDER BY queued_at"
+        ).fetchall()
+        conn.execute("DELETE FROM top100_oneoff_queue")
+    return [r[0] for r in rows]
 
 
 # -----------------------------------------------------------------

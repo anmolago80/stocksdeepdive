@@ -3256,6 +3256,28 @@ NOT_RATED_MIN_NULLS = 3
 # earlier) rows stay preserved under their own key untouched.
 RUBRIC_VERSION = "v6"
 
+# TASK 66 (Director-directed, owner-approved, 16 Nov 2026): NOT bumped
+# for the Recent-news-block / current_headwind prompt change. Unlike
+# the v2-v6 bumps above, this one changes the TEXT the model is shown
+# (a per-company "Recent news" block, plus one added sentence in
+# CURRENT HEADWIND's own instructions) without changing the response
+# SCHEMA at all - current_headwind is already a plain string field, no
+# new property, no vocabulary change. Bumping rubric_version here would
+# mark every one of tonight's ~200 already-current-rubric rows
+# "unscored" again (the same mechanism v2->v6 deliberately used to
+# force a full re-score each time), which the task's own instruction
+# explicitly forbids ("if a bump would trigger rescoring of the whole
+# pool tonight, DON'T bump"). Instead, top100_scores gets a new,
+# purely-additive `headwind_news` column (see top100_store.save_score()
+# -> _migrate_scores_schema_v2()'s own ALTER TABLE comment) recording
+# whether THIS row's own current_headwind answer had a Recent news
+# block to work from - every existing row simply reads NULL/unknown,
+# and every ticker picks up the news-grounded prompt the next time it's
+# naturally rescored anyway (a new entrant, a new reported period, or
+# the 200-day age ceiling - see _unscored_tickers()'s own docstring),
+# exactly the gradual rollout the task asked for.
+
+
 # v6 packed requests (1 Oct 2026, owner-directed): how many companies'
 # worth of scoring one Batches API request now carries. Before this,
 # every request's own ~10k-token system+schema prefix was paid once PER
@@ -3496,7 +3518,7 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
 
 INVERSION SYNTHESIS - after scoring all ten dimensions, write ONE sentence naming the single most plausible scenario that could seriously damage this company, plus a severity from 1 (minor) to 5 (plausibly breaks the company). This is a separate analytical synthesis, not a dimension score - it has ZERO effect on any of the ten scores above, on this company's ranking, or on its Top-20 eligibility. If three or more of your ten dimension scores are 0 (this company will be marked NOT RATED), output the sentinel values instead - an empty string "" for the inversion scenario and 0 for its severity - do not invent a damaging scenario for a company you don't know well enough to score in the first place.
 
-CURRENT HEADWIND - a separate field from the inversion above, and easy to confuse with it, so read this carefully: the inversion is HYPOTHETICAL (the worst plausible future scenario); the headwind is ACTUAL and PRESENT (why the market is discounting this company right now, as of your knowledge). In at most 40 words, state the actual, present reason the market is discounting this company - the standing headwind (demand, margins, competition, regulation, sentiment), as of your knowledge. This is what IS weighing on the stock, distinct from the inversion's hypothetical worst case. If no clearly identifiable headwind exists, output an empty string "" - never invent one. Same honesty rule as everywhere else in this prompt: a company you don't know a specific, current headwind for gets the empty-string sentinel, not a guessed one. NOT RATED companies (three or more null dimensions) get the empty-string sentinel here too, same as the inversion fields.
+CURRENT HEADWIND - a separate field from the inversion above, and easy to confuse with it, so read this carefully: the inversion is HYPOTHETICAL (the worst plausible future scenario); the headwind is ACTUAL and PRESENT (why the market is discounting this company right now, as of your knowledge). In at most 40 words, state the actual, present reason the market is discounting this company - the standing headwind (demand, margins, competition, regulation, sentiment), as of your knowledge. This is what IS weighing on the stock, distinct from the inversion's hypothetical worst case. Base this on the Recent news block below this company's own entry where it explains the share price fall; cite the specific event (e.g. downgrade, contract loss, guidance cut). If the news doesn't explain it and you don't know, output an empty string "" - never invent one. Same honesty rule as everywhere else in this prompt: a company you don't know a specific, current headwind for gets the empty-string sentinel, not a guessed one. NOT RATED companies (three or more null dimensions) get the empty-string sentinel here too, same as the inversion fields. The Recent news block is context ONLY for this field - it must never change any of the ten dimension scores above or any other field's own rules.
 
 MARKET STRUCTURE (RUBRIC_VERSION v4) - classify the competitive structure of this company's PRIMARY PROFIT POOL: the specific market segment that actually generates the bulk of its profit, NOT the broadest possible industry definition (e.g. a payments network's primary profit pool is card-network processing, not "financial services" broadly). Output exactly one of "monopoly", "duopoly", "oligopoly", "competitive". If you don't have confident, specific knowledge of the competitive landscape, output the sentinel empty string "" - never guess a label you can't justify. Then, in at most 25 words, name the actual competitors/players that justify the label (empty string "" if you declined the label itself).
 
@@ -3507,15 +3529,153 @@ MUNGER-QUALITY BUSINESS (RUBRIC_VERSION v5) - would Charlie Munger classify this
 BIG WAVE TO RIDE (RUBRIC_VERSION v5) - Munger's "big wave to ride": is there a SECULAR, multi-year trend in the company's primary market that carries the business regardless of its own execution? Output exactly "tailwind" for a structural trend (penetration still early, a demographic or regulatory shift, technology adoption) that should keep growing the market for 5+ years; "headwind" when the market or channel is structurally shrinking or being rerouted (substitution, disintermediation, regulation) - not a cyclical dip; "flat" for a mature, stable market with neither. Judge the market, not the company's share of it - a share gainer in a shrinking market is "headwind". The sentinel empty string "" if you cannot judge - never guess. Then, in at most 25 words, name the specific trend, or its absence (empty string "" if you declined the verdict itself)."""
 
 
+# TASK 66 (Director-directed, owner-approved, 16 Nov 2026,
+# instruction_current_headwind_news.md): "Current headwind" uses recent
+# news. PROBLEM: the batch scoring prompt built by _user_prompt() below
+# gave the model NO news/web context at all - current_headwind's own
+# honesty rule correctly returns "" whenever the model has no confident
+# knowledge of a specific present-day reason for a fall, and a recent,
+# sharp fall (OCL.AX: -69% from its Aug 2025 peak, the fall itself
+# happening ~Aug 2026 - after this model's training knowledge for a
+# small/mid cap) is exactly the case that rule was designed to decline
+# honestly rather than guess at. FIX: fetch each company's own recent
+# headlines (reusing portfolio_news_engine.analyze_holding_news() - the
+# SAME News Intelligence feeds/cache the Deep Dive News tab's own
+# compounder_ui._news_tab_fetch() already reads, called directly here
+# rather than through that function's @st.cache_data wrapper, which
+# needs a Streamlit script-run context this batch-submission code never
+# has - no new provider) and hand the model a short "Recent news" block
+# per company, used ONLY to ground current_headwind - see _SYSTEM_
+# PROMPT's own CURRENT HEADWIND paragraph for the exact added
+# instruction. Every other field, every other dimension's rules, and
+# the de-circularisation principle are completely untouched by this.
+_HEADWIND_NEWS_WINDOW_DAYS = 90
+_HEADWIND_NEWS_MAX_HEADLINES = 15
+# ~600 added tokens/company (the task's own cap) - enforced in
+# _format_news_block() below by DROPPING the oldest (last, since
+# headlines arrive newest-first) headlines once the budget's spent,
+# never by truncating a kept headline's own text mid-sentence.
+_HEADWIND_NEWS_MAX_TOKENS_PER_COMPANY = 600
+
+
+def _fetch_recent_news_for_entrant(ticker, name=None, now=None):
+    """Up to _HEADWIND_NEWS_MAX_HEADLINES headlines for `ticker`, newest
+    first, restricted to headlines portfolio_news_engine.analyze_
+    holding_news() judged RELEVANT to this company and dated within the
+    last _HEADWIND_NEWS_WINDOW_DAYS days - same relevance classifier,
+    same shared SQLite fetch+cache (REFETCH_STALE_HOURS=6, keyed on
+    ticker alone, so a ticker already fetched today via the News tab or
+    Portfolio Health for ANY user is a cache hit here too) the Deep
+    Dive News tab reads, just called directly (no Streamlit cache
+    layer, no Streamlit context required - this runs from the nightly
+    scheduler, never from a page render).
+
+    Returns [{"date" (a naive datetime or None), "title", "publisher"},
+    ...]. Never raises - any failure (missing dependency, feed error,
+    bad data) returns [], which _format_news_block() below renders as
+    the honest "Recent news: none found" line (fix #5) rather than
+    breaking a night's submission over one ticker's news fetch."""
+    try:
+        import portfolio_news_engine
+    except Exception:
+        return []
+    now = now or datetime.utcnow()
+    buy_date = (now - timedelta(days=_HEADWIND_NEWS_WINDOW_DAYS + 3)).strftime("%Y-%m-%d")
+    try:
+        result = portfolio_news_engine.analyze_holding_news(
+            ticker, name=name, buy_date=buy_date, now=now,
+        )
+    except Exception:
+        return []
+    events = (result or {}).get("timeline") or []
+    cutoff = now - timedelta(days=_HEADWIND_NEWS_WINDOW_DAYS)
+    out = []
+    for e in events:
+        if not e.get("relevant"):
+            continue
+        d = e.get("date")
+        if d is not None and d < cutoff:
+            continue
+        out.append({
+            "date": d, "title": (e.get("title") or "").strip(),
+            "publisher": e.get("publisher") or e.get("source") or "",
+        })
+    out.sort(key=lambda e: e["date"] or datetime.min, reverse=True)
+    return out[:_HEADWIND_NEWS_MAX_HEADLINES]
+
+
+def _format_news_block(headlines):
+    """Formats up to _HEADWIND_NEWS_MAX_HEADLINES headlines (as
+    _fetch_recent_news_for_entrant() returns them) into the "Recent
+    news" text appended under one company's own entry in the user
+    prompt - date + source + title only, no article bodies, no
+    internal severity label (an implementation detail the model
+    doesn't need). Caps the block at _HEADWIND_NEWS_MAX_TOKENS_PER_
+    COMPANY estimated tokens (the same chars/_CHARS_PER_TOKEN_ESTIMATE
+    rule _estimate_request_tokens() uses elsewhere in this module) by
+    dropping the OLDEST remaining headlines first (headlines arrive
+    newest-first, so this keeps the most current ones) - a kept
+    headline's own text is never truncated mid-sentence, since a cut
+    title could reverse its meaning. Returns the literal "Recent news:
+    none found" (fix #5 of the task) when `headlines` is empty - the
+    honest, explicit case current_headwind's own prompt instruction
+    below treats identically to "news exists but doesn't explain the
+    fall"."""
+    if not headlines:
+        return "  Recent news: none found"
+    header = f"  Recent news (last {_HEADWIND_NEWS_WINDOW_DAYS} days):"
+    lines = [header]
+    budget_chars = _HEADWIND_NEWS_MAX_TOKENS_PER_COMPANY * _CHARS_PER_TOKEN_ESTIMATE
+    used_chars = len(header)
+    for h in headlines:
+        date_label = h["date"].strftime("%Y-%m-%d") if h.get("date") else "undated"
+        publisher = h.get("publisher") or "unknown source"
+        title = h.get("title") or ""
+        line = f"  - {date_label} ({publisher}): {title}"
+        if len(lines) > 1 and used_chars + len(line) + 1 > budget_chars:
+            break
+        lines.append(line)
+        used_chars += len(line) + 1
+    return "\n".join(lines)
+
+
+def _news_fields_for_entrant(ticker, company_name=None, now=None):
+    """One call doing every part of the news-context lookup for one
+    entrant - the formatted "Recent news" block text to splice into its
+    own entry in the user prompt, whether any news was actually found
+    (the `headwind_news` flag persisted on its score row - see
+    top100_store.save_score()'s own docstring for why this is a plain
+    per-row flag rather than a RUBRIC_VERSION bump), and how many
+    headlines made it into the block (submit_nightly_batch()'s own
+    per-batch news/cost log line - fix #6 of the task). Both call sites
+    that build an entrant for _request_params() (submit_nightly_
+    batch()'s packing loop, run_single_test_call()) call this once per
+    entrant and reuse all three, rather than re-deriving any of them.
+
+    Returns (news_block, headwind_news, headline_count)."""
+    headlines = _fetch_recent_news_for_entrant(ticker, name=company_name, now=now)
+    return _format_news_block(headlines), bool(headlines), len(headlines)
+
+
 def _user_prompt(entrants):
     """v6 packed requests (1 Oct 2026, owner-directed): one user message
     listing every entrant in this request (up to TOP100_COMPANIES_PER_
     REQUEST, usually fewer for the night's last, partial group) by
     ticker/company name/sector, instead of the old one-company-per-
-    message form. `entrants`: [{"ticker", "company_name", "sector"},
-    ...] - run_single_test_call() passes a single-item list so the one
-    request/response/parse path is shared by every caller, batched or
-    not."""
+    message form. `entrants`: [{"ticker", "company_name", "sector",
+    "news_block"}, ...] - run_single_test_call() passes a single-item
+    list so the one request/response/parse path is shared by every
+    caller, batched or not.
+
+    TASK 66 (16 Nov 2026): `news_block` is the already-formatted
+    "Recent news" text for this entrant (see _news_fields_for_entrant()
+    above) - fetched ONCE by the caller (so the same text that was
+    counted toward the pre-submission cost estimate is exactly what's
+    sent, and so the caller can also record whether news was found for
+    the headwind_news flag) rather than fetched here. Missing entirely
+    (a caller that hasn't been updated) reads as "Recent news: none
+    found", same as a real empty result - this function never fetches
+    news itself."""
     lines = [
         f"Score EACH of the following {len(entrants)} companies "
         "independently - judge each purely on its own facts, never let "
@@ -3529,13 +3689,18 @@ def _user_prompt(entrants):
         "(plus a short comment naming the deciding criterion), and the "
         "big-wave-to-ride verdict (plus a short comment naming the trend "
         "or its absence). Echo each company's own ticker back in your "
-        "response so results can be matched regardless of order.\n",
+        "response so results can be matched regardless of order. Each "
+        "company's own \"Recent news\" block (TASK 66, 16 Nov 2026) is "
+        "context ONLY for the current_headwind field below - it never "
+        "changes any of the ten dimension scores or any other field's "
+        "own rules.\n",
     ]
     for e in entrants:
         ticker = e["ticker"]
         name = e.get("company_name") or ticker
         sector = (e.get("sector") or "").strip() or "unknown sector"
         lines.append(f"- {ticker}: {name} ({sector})")
+        lines.append(e.get("news_block") or "  Recent news: none found")
     return "\n".join(lines)
 
 
@@ -5153,6 +5318,7 @@ def poll_and_ingest_batch(log=print):
                     matched_by=_matched_by.get(ticker),
                     prompt=json.dumps(prompt_params), raw_response=text,
                     schema_mode=pack_schema_mode,
+                    headwind_news=entrant_info.get("headwind_news"),
                 )
                 top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
                 saved += 1
@@ -5838,6 +6004,40 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         if _reentered_tickers:
             log(f"[top100] re-entry: {len(_reentered_tickers)} previously exhausted "
                 f"ticker(s) eligible again, attempts reset: {', '.join(_reentered_tickers)}")
+    # TASK 66 (Director-directed, owner-approved, 16 Nov 2026): one-off
+    # queued rescores (top100_store.queue_oneoff_rescore()) - a ticker
+    # explicitly queued for tonight's batch regardless of its own
+    # normal/age/rubric eligibility (e.g. OCL.AX, queued so the owner
+    # can check its headwind-news-grounded result tomorrow - see
+    # queue_ocl_ax_oneoff_rescore_once() below). Injected here, AFTER
+    # the normal/force selection above and BEFORE the "nothing to
+    # submit" early-return just below, so a queue-only night still
+    # submits. Reuses the SAME `pool` rows (this function's own default
+    # or an explicit caller-supplied pool) for ticker/sector/company_
+    # name - a queued ticker outside tonight's pool is logged and
+    # dropped rather than guessed at from any other source. A ticker
+    # already present in `entrants` for its own normal reason is left
+    # alone (not duplicated, not reason-overwritten) - the queue's only
+    # job is to ADD a ticker that wouldn't otherwise be picked. The
+    # queue is popped (claimed + cleared) unconditionally, even on a
+    # force=True refresh, so a stale queued ticker never lingers across
+    # nights once this function has had a chance to act on it.
+    _oneoff_tickers = top100_store.pop_oneoff_queue()
+    if _oneoff_tickers:
+        _pool_by_ticker = {row["ticker"]: row for row in pool}
+        _already_entrant_tickers = {row["ticker"] for row, _reason in entrants}
+        _oneoff_added = []
+        for _ticker in _oneoff_tickers:
+            if _ticker in _already_entrant_tickers:
+                continue
+            _row = _pool_by_ticker.get(_ticker)
+            if _row is None:
+                log(f"[top100] one-off queue: {_ticker} not in tonight's pool - skipped")
+                continue
+            entrants.append((_row, "oneoff_queued"))
+            _oneoff_added.append(_ticker)
+        if _oneoff_added:
+            log(f"[top100] one-off queue: {', '.join(_oneoff_added)} added to tonight's batch")
     if not entrants:
         log(f"[top100] every pooled company already scored under the current rubric for {model} "
             "- nothing to submit")
@@ -5852,8 +6052,15 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         return None
 
     if not force:
+        # TASK 66 (16 Nov 2026): counts.setdefault() rather than a fixed
+        # 3-key dict, since `entrants` can now also carry an
+        # "oneoff_queued" reason (the one-off queue block above) that
+        # this breakdown was never meant to need its own bucket for -
+        # it's folded into neither re-score nor newcomers below, just
+        # counted toward the total.
         counts = {"new_or_rubric": 0, "new_results": 0, "age": 0}
         for _, reason in entrants:
+            counts.setdefault(reason, 0)
             counts[reason] += 1
         # Newcomer persistence filter (1 Oct 2026, owner decision): the
         # deferred count is computed separately from `entrants` itself -
@@ -6036,6 +6243,15 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         + [False] * len(quality_on_sale_packs) + [True] * len(near_cutoff_packs)
     )
 
+    # TASK 66 (16 Nov 2026): per-batch news stats for the log line below
+    # (fix #6) - every entrant across EVERY pack category (normal,
+    # prescore, quality-on-sale, near-cut-off) is counted here, once,
+    # as its own news lookup actually happens in the loop below.
+    _news_entrants_total = 0
+    _news_entrants_with_news = 0
+    _news_headlines_total = 0
+    _news_extra_chars_total = 0
+
     custom_id_map = {}
     requests = []
     for i, pack in enumerate(all_packs):
@@ -6045,12 +6261,29 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         for row, reason in pack:
             ticker = row["ticker"]
             score_key = _natural_score_key(row, today) if force else _score_key_for_entrant(row, reason, today)
+            # TASK 66 (Director-directed, owner-approved, 16 Nov 2026):
+            # fetched HERE, at batch-submission time (the task's own
+            # explicit instruction #1) - once per entrant, reused for
+            # both the prompt text (news_block, below) and the
+            # headwind_news flag persisted on this entrant's eventual
+            # score row (carried through custom_id_map to poll_and_
+            # ingest_batch(), same way score_key/most_recent_quarter
+            # already travel - see that function's own docstring).
+            _news_block, _headwind_news, _headline_count = _news_fields_for_entrant(
+                ticker, company_name=row.get("company_name"))
+            _news_entrants_total += 1
+            if _headwind_news:
+                _news_entrants_with_news += 1
+                _news_headlines_total += _headline_count
+                _news_extra_chars_total += len(_news_block)
             pack_entrants_meta[ticker] = {
                 "score_key": score_key,
                 "most_recent_quarter": row.get("most_recent_quarter"),
+                "headwind_news": _headwind_news,
             }
             pack_request_entrants.append({
                 "ticker": ticker, "company_name": row.get("company_name"), "sector": row.get("sector"),
+                "news_block": _news_block,
             })
         custom_id_map[custom_id] = {
             "entrants": pack_entrants_meta, "schema_mode": schema_mode,
@@ -6063,6 +6296,25 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
             params=MessageCreateParamsNonStreaming(
                 **_request_params(pack_request_entrants, schema_mode=schema_mode)),
         ))
+
+    # TASK 66 fix #6: how many companies had news, average headlines per
+    # company (across only the companies that had any - "average
+    # headlines per company" over the whole batch would be misleading
+    # when most nights most companies have none), and a rough extra-
+    # cost estimate from the actual news text added (same batch-priced,
+    # input-only accounting _estimate_request_tokens()'s own caller
+    # uses elsewhere in this function - the news block is pure input,
+    # it doesn't change the model's own output length budget).
+    if _news_entrants_total:
+        _news_avg_headlines = (
+            _news_headlines_total / _news_entrants_with_news if _news_entrants_with_news else 0.0
+        )
+        _news_extra_tokens = _news_extra_chars_total // _CHARS_PER_TOKEN_ESTIMATE
+        _news_extra_cost = estimate_batch_cost_usd(_news_extra_tokens, 0)
+        log(f"[top100] headwind news: {_news_entrants_with_news}/{_news_entrants_total} "
+            f"compan{'y' if _news_entrants_total == 1 else 'ies'} had news "
+            f"({_news_avg_headlines:.1f} headlines/company avg among those), "
+            f"~${_news_extra_cost:.4f} extra est. cost")
 
     # Audit fix B1 / Fable finding T4 (10 Oct 2026): batches.create()
     # is NOT idempotent - if the request reaches the server and a real
@@ -6185,6 +6437,48 @@ def diagnose_batch_01xa_once(log=print):
             f.write(datetime.now(timezone.utc).isoformat())
     except OSError as e:
         log(f"[top100] one-off diagnostic: could not write marker file: {e}")
+
+
+_OCL_AX_ONEOFF_QUEUE_TICKER = "OCL.AX"
+
+
+def _ocl_ax_oneoff_queue_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_task66_ocl_ax_oneoff_queued_once")
+
+
+def queue_ocl_ax_oneoff_rescore_once(log=print):
+    """One-off, marker-guarded boot action (TASK 66, Director-directed,
+    owner-approved, 16 Nov 2026): queues OCL.AX (top100_store.queue_
+    oneoff_rescore()) exactly once, on the first boot after this
+    deploy, so the very next submit_nightly_batch() call picks it up
+    regardless of its own normal eligibility (see that function's own
+    "one-off queue" block) - the owner's whole reason for this task:
+    OCL.AX's -69% fall showed no "Current headwind" because the
+    scoring prompt carried no news context at all (see _fetch_recent_
+    news_for_entrant()'s own docstring), and the owner wants to check
+    tomorrow whether a news-grounded rescore now identifies one. Same
+    marker-guarded, read-the-marker-first, "never allowed to stop the
+    site serving" pattern as diagnose_batch_01xa_once() just above -
+    queuing happens at most once across this deploy, so a redeploy or
+    worker restart later tonight never re-queues OCL.AX a second time
+    just because its own marker file lives on ephemeral/volume
+    storage."""
+    marker = _ocl_ax_oneoff_queue_marker_path()
+    if os.path.exists(marker):
+        return
+    try:
+        top100_store.queue_oneoff_rescore(_OCL_AX_ONEOFF_QUEUE_TICKER)
+        log(f"[top100] TASK 66 one-off: {_OCL_AX_ONEOFF_QUEUE_TICKER} queued for "
+            "tonight's batch")
+    except Exception as e:
+        log(f"[top100] TASK 66 one-off queue for {_OCL_AX_ONEOFF_QUEUE_TICKER} failed: {e}")
+
+    try:
+        with open(marker, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log(f"[top100] TASK 66 one-off queue: could not write marker file: {e}")
 
 
 _BATCH_INSPECTOR_EXCERPT_CHARS = 600
@@ -6564,10 +6858,19 @@ def run_single_test_call(ticker, company_name=None):
          if r["ticker"] == ticker),
         None,
     )
+    _entrant_company_name = company_name or (pool_row.get("company_name") if pool_row else None)
+    # TASK 66 (16 Nov 2026): same per-entrant news lookup submit_
+    # nightly_batch() does - this diagnostic call shares the exact same
+    # _request_params()/_user_prompt() path, so it must carry the same
+    # Recent news block (and the same headwind_news flag on save) for
+    # its own result to be a faithful preview of what tonight's real
+    # batch would produce for this ticker.
+    _news_block, _headwind_news, _ = _news_fields_for_entrant(ticker, company_name=_entrant_company_name)
     entrants = [{
         "ticker": ticker,
-        "company_name": company_name or (pool_row.get("company_name") if pool_row else None),
+        "company_name": _entrant_company_name,
         "sector": pool_row.get("sector") if pool_row else None,
+        "news_block": _news_block,
     }]
     params = _request_params(entrants)
     resp = client.messages.create(**params)
@@ -6598,6 +6901,7 @@ def run_single_test_call(ticker, company_name=None):
         big_wave=big_wave, big_wave_comment=big_wave_comment,
         matched_by=_matched_by.get(ticker),
         prompt=json.dumps(params), raw_response=text,
+        headwind_news=_headwind_news,
     )
     return {
         "ticker": ticker, "dims": dims, "not_rated": not_rated,
@@ -6608,6 +6912,7 @@ def run_single_test_call(ticker, company_name=None):
         "munger_quality": munger_quality, "munger_comment": munger_comment,
         "big_wave": big_wave, "big_wave_comment": big_wave_comment,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost,
+        "headwind_news": _headwind_news,
     }
 
 

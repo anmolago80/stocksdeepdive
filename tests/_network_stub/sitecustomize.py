@@ -43,3 +43,49 @@ except Exception:
     # the sweep just runs at its old (slower, real-network-attempting)
     # speed instead.
     pass
+
+# TASK 66 (16 Nov 2026): top100_engine.submit_nightly_batch()/run_
+# single_test_call() now call portfolio_news_engine.analyze_holding_
+# news() directly (the "Recent news" headwind block) for every entrant
+# that hasn't been news-fetched in the last REFETCH_STALE_HOURS - a
+# brand-new synthetic ticker (as every pre-existing fixture pool uses,
+# e.g. test_audit_c1_no_resubmit_cap.py's own 80-ticker big_pool) has
+# never been fetched, so _claim_fetch() returns True and the real
+# _fetch_all_feeds() runs: yfinance news, ASX announcements, GDELT,
+# Google News and NewsAPI, each failing gracefully but paying its own
+# real network round-trip - multiplied across every entrant in every
+# affected test's own pool, this is the SAME class of incidental,
+# gracefully-failing network cost the yfinance cookie/crumb stub above
+# already exists to cut, just one level up the call stack. Stubbed at
+# _fetch_all_feeds() specifically (not analyze_holding_news() itself)
+# so a test that mocks _claim_fetch()/seeds _load_events() directly
+# (test_part_b_step1_news_v2.py and friends, which exercise the real
+# classification logic against pre-seeded fixture events) is completely
+# unaffected - those never reach _fetch_all_feeds() at all, mocked
+# _claim_fetch()=False or not, same as in production.
+try:
+    import os
+    import sys
+
+    # Unlike yfinance (a site-packages dependency, always importable),
+    # portfolio_news_engine.py lives at the REPO ROOT - at this point in
+    # interpreter startup (site processing, before any test script's own
+    # `sys.path.insert(0, repo_root)` line has run) the repo root is NOT
+    # yet on sys.path, so a bare `import portfolio_news_engine` here
+    # raises ModuleNotFoundError. Add it explicitly (this file's own
+    # grandparent directory) - the exact same path every test script
+    # adds a moment later anyway, just done a little earlier here.
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+
+    import portfolio_news_engine
+
+    def _no_network_fetch_all_feeds(ticker, name, start_dt, end_dt=None):
+        return []
+
+    portfolio_news_engine._fetch_all_feeds = _no_network_fetch_all_feeds
+except Exception:
+    # Same "never fail test collection over this" rule as the yfinance
+    # stub above - the sweep just runs at its old, slower speed.
+    pass

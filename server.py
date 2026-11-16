@@ -384,6 +384,14 @@ async def lifespan(app: FastAPI):
     # as every other one-off cleanup above.
     with suppress(Exception):
         top100_engine.diagnose_batch_01xa_once()
+    # TASK 66 (Director-directed, owner-approved, 16 Nov 2026): one-off,
+    # marker-guarded queuing of OCL.AX into tonight's Top 100 batch, so
+    # the owner can check tomorrow whether the new Recent-news-grounded
+    # current_headwind now identifies one - see top100_engine.queue_
+    # ocl_ax_oneoff_rescore_once()'s own docstring. Same "never allowed
+    # to stop the site serving" rule as every other one-off above.
+    with suppress(Exception):
+        top100_engine.queue_ocl_ax_oneoff_rescore_once()
     # Newcomer persistence filter (1 Oct 2026, owner decision, v6 cost
     # task): one-off, marker-guarded seeding of pool_presence for the
     # first night the filter is active - see top100_engine.seed_pool_

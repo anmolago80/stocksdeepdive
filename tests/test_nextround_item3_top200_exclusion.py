@@ -183,7 +183,12 @@ FIXTURE_ENTRANTS = [
     {"ticker": "RY_FIXTURE.TO", "company_name": "RY-shaped", "sector": "Financials"},
     {"ticker": "7203_FIXTURE.T", "company_name": "Toyota-shaped", "sector": "Consumer Discretionary"},
 ]
-EXPECTED_FINGERPRINT = "f00c69f5392af5e2ca435fb4c8a314393c14b4c0dc498cc4293a59d1276e5196"
+# TASK 66 (16 Nov 2026, Director-directed): bumped - _user_prompt() now
+# appends a per-company "Recent news" block (these fixture entrants carry
+# no "news_block" key, so each renders as "Recent news: none found" - a
+# real, deliberate, byte-level change to every request this fixture
+# represents, not a regression. Recomputed against the real code.
+EXPECTED_FINGERPRINT = "e3083cdc3719ff2a727c62fd496e1692a72070213c879ae2ac39c794b8387ca9"
 _params = te._request_params(FIXTURE_ENTRANTS)
 _fp = hashlib.sha256(json.dumps(_params, sort_keys=True).encode()).hexdigest()
 check("scoring-request fingerprint unchanged by this item 3 diff "
