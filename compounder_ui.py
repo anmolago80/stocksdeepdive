@@ -427,7 +427,12 @@ def _cp_share_price_growth_chart(ticker, share_price_growth):
     """Share Price Growth by year, same green/red convention as EPS Growth
     by Year on the Earnings Trends tab. A dashed reference line marks the
     average growth across the plotted years (same add_hline convention as
-    the 10y-average price chart and the valuation-methods average)."""
+    the 10y-average price chart and the valuation-methods average) -
+    including the current, still-in-progress year, same as every other
+    year (TASK 67, 17 Nov 2026, owner decision - see _share_price_growth_
+    entry()'s own docstring). That still-open year's own x-axis label
+    already carries " (to date)" (baked into `entry["years"]` by that
+    same function) - no separate caption needed here."""
     entry = share_price_growth.get(ticker)
     if not entry or not entry.get("years"):
         return None
@@ -1301,18 +1306,6 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
 
     if share_price_growth_fig:
         sdd_plotly_chart(share_price_growth_fig, config={"displayModeBar": False})
-        _spg_entry = section.get("share_price_growth", {}).get(ticker) or {}
-        _ytd_year = _spg_entry.get("ytd_year")
-        if _ytd_year:
-            st.caption(
-                f"{_ytd_year} is still in progress, so that bar is a plain "
-                f"start-of-year vs latest-price return - every other bar is "
-                f"that year's average price vs the year before's, the "
-                f"workbook's own convention. The two aren't computed the "
-                f"same way; a still-open year averaged against a closed one "
-                f"can otherwise look far more extreme than the stock's "
-                f"actual year-to-date move."
-            )
 
 
 # -----------------------------------

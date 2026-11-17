@@ -1860,24 +1860,36 @@ def _price_history_entry(prices_10y):
 
 
 def _share_price_growth_entry(prices_10y):
-    """{"years": [...], "values": [...], "ytd_year": str|None} - each
-    COMPLETED year's bar is (avg price that year - avg price the year
-    before) / avg price the year before, matching the hand-built
+    """{"years": [...], "values": [...]} - EVERY year's bar, including
+    the current/latest one, is (avg price that year - avg price the
+    year before) / avg price the year before, matching the hand-built
     workbook's own convention exactly (confirmed against real workbook
     output - AUB.AX/CSL.AX/RMD.AX all show this same average-vs-average
     shape, including a large swing on their own still-in-progress year).
+    When the latest year is still in progress (fewer than 12 monthly
+    points), its own average is simply the average of whichever monthly
+    closes have occurred so far that year - no different a calculation
+    from a completed year, just fewer points feeding the same average -
+    and its label in `years` gets " (to date)" appended (e.g.
+    "2026 (to date)") so the chart makes clear that bar isn't a full
+    year yet.
 
-    The one exception is the LATEST year when it's still in progress
-    (fewer than 12 monthly points): averaging a partial year against a
-    full prior year lets whichever months happened to occur so far
-    (e.g. an early-year slump) dominate the whole bar, even while the
-    stock has since recovered - confirmed on CPU.AX, whose 2026 bar read
-    -7.7% (average-vs-average, dragged down by a Jan-Mar trough) while
-    the actual price was +17-22% since the 2025 close/2026 open by
-    August. For that one open year only, use a plain start-of-year-close
-    vs latest-close return instead - a real YTD number, not blended
-    against last year's now-closed average. Every completed year is
-    untouched."""
+    Owner decision (17 Nov 2026, TASK 67 Part A, Director-directed):
+    REPLACES an earlier (Aug 2026) CPU.AX-driven exception that is now
+    removed. That exception used a plain start-of-year-close vs latest-
+    close return for the one still-open year instead - added because
+    averaging a partial year against a full prior year let whichever
+    months happened to occur so far (e.g. an early-year slump) dominate
+    the whole bar even while the stock had since recovered (CPU.AX's
+    2026 bar read -7.7% average-vs-average, dragged down by a Jan-Mar
+    trough, while the actual price was +17-22% since the 2025 close/
+    2026 open by August). The owner's own explicit call, after seeing
+    that exception live, is that CONSISTENCY matters more here than
+    smoothing out one ticker's mid-year dip: every year, including the
+    current one, uses the same average-vs-average formula - no more
+    second calculation method, no more "ytd_year" field (the chart's
+    own "(to date)" label on the current year's bar is now the only
+    thing marking it as partial)."""
     dates, prices = prices_10y.get("dates") or [], prices_10y.get("prices") or []
     if len(dates) < 24:
         return None
@@ -1888,25 +1900,19 @@ def _share_price_growth_entry(prices_10y):
     avgs = {y: sum(v) / len(v) for y, v in by_year.items()}
     latest_year = years_sorted[-1]
     latest_is_partial = len(by_year[latest_year]) < 12
-    out_years, out_values, ytd_year = [], [], None
+    out_years, out_values = [], []
     for i in range(1, len(years_sorted)):
         y0, y1 = years_sorted[i - 1], years_sorted[i]
-        if y1 == latest_year and latest_is_partial:
-            year_prices = by_year[y1]
-            if year_prices[0]:
-                out_years.append(y1)
-                out_values.append((year_prices[-1] - year_prices[0]) / year_prices[0])
-                ytd_year = y1
+        if not avgs[y0]:
             continue
-        if avgs[y0]:
-            out_years.append(y1)
-            out_values.append((avgs[y1] - avgs[y0]) / avgs[y0])
+        label = f"{y1} (to date)" if (y1 == latest_year and latest_is_partial) else y1
+        out_years.append(label)
+        out_values.append((avgs[y1] - avgs[y0]) / avgs[y0])
     if not out_years:
         return None
     return {
         "years": list(reversed(out_years)),
         "values": list(reversed(out_values)),
-        "ytd_year": ytd_year,
     }
 
 
