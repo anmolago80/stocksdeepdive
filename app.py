@@ -11410,6 +11410,22 @@ def page_deep_dive():
                         pct=f"{_dd_retain_pct:.0f}", g=f"{_dd_g:.1f}", roe=f"{_dd_roe * 100:.1f}",
                     ))
 
+            # TASK 70 (Director-directed, owner-approved, 20 Nov 2026):
+            # the DCF's own starting free cash flow - shown first, since
+            # every input below (growth/discount/perpetual) compounds
+            # FROM this figure, not the other way round. deep_dive_
+            # engine.py's dcf_starting_fcf/dcf_starting_fcf_breakdown
+            # keys are resolver_engine.dcf_starting_fcf_lines()'s own
+            # return value - the SAME function the Fair Value tab's
+            # matching "Starting FCF"/"FCF Build" rows call, so the two
+            # screens always show the same figure/wording for a given
+            # ticker. Plain hardcoded English, same no-i18n-layer reason
+            # as every other caption in this block.
+            if _dd.get("dcf_starting_fcf"):
+                st.caption(f"Starting FCF: {_dd['dcf_starting_fcf']}")
+                if _dd.get("dcf_starting_fcf_breakdown"):
+                    st.caption(_dd["dcf_starting_fcf_breakdown"])
+
             # Growth-path option E (owner-directed follow-up to 0d7ee0b,
             # 28 Sep 2026): growth is flat for years 1-5, then fades to a
             # market-cap-tiered end rate (floored at the currency perpetual

@@ -4335,7 +4335,7 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     )
 
 
-def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
+def _dcf_valuation_and_inputs(info, price, canonical_dcf_result, ticker=None):
     """The Fair Value tab's "dcf" row - value plus every input shown
     alongside it (perpetual/discount/growth/tier/source/capex basis/
     sanity flag) - factored out of _build_fair_value() (28 Sep 2026,
@@ -4459,7 +4459,21 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
         elif _yahoo_status == "non_positive":
             _growth_source_display = f"{_growth_source_display} (Yahoo estimate was non-positive)"
 
-    dcf_inputs = [
+    dcf_inputs = []
+    # TASK 70 (Director-directed, owner-approved, 20 Nov 2026): the DCF's
+    # actual starting FCF, plus how it was built - shown first, since
+    # growth/discount/perpetual below all compound FROM this figure.
+    # resolver_engine.dcf_starting_fcf_lines() is the SAME function Deep
+    # Dive's own explanation calls (deep_dive_engine.py), so the two
+    # screens never drift onto different wording for the same ticker.
+    _dcf_starting_fcf, _dcf_starting_fcf_breakdown = resolver_engine.dcf_starting_fcf_lines(
+        canonical_dcf_result, ticker=ticker
+    )
+    if _dcf_starting_fcf:
+        dcf_inputs.append({"label": "Starting FCF", "value": _dcf_starting_fcf, "format": "raw"})
+    if _dcf_starting_fcf_breakdown:
+        dcf_inputs.append({"label": "FCF Build", "value": _dcf_starting_fcf_breakdown, "format": "raw"})
+    dcf_inputs += [
         {"label": _perp_label, "value": canonical_dcf_result.get("perpetual_rate"), "format": "pct"},
         {
             "label": "Discount Rate", "value": canonical_dcf_result.get("discount_rate"), "format": "pct",
@@ -4639,7 +4653,7 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         pe_trailing_value = None
     else:
         pe_trailing_value = _neps_value * avg_pe
-    dcf_value, dcf_inputs = _dcf_valuation_and_inputs(info, price, canonical_dcf_result)
+    dcf_value, dcf_inputs = _dcf_valuation_and_inputs(info, price, canonical_dcf_result, ticker=ticker)
 
     equity_10y_result = _safe(_equity_10y_method, bundle, g_earn, normalized_eps)
     (equity_10y_value, equity_growth, equity_discount, equity_growth_capped, equity_10y_reason,
@@ -4863,7 +4877,7 @@ def _refresh_live_dcf_in_cached_sections(cached, ticker, discount_rate, perpetua
         growth_rate=growth_rate, manual_fcf=manual_fcf,
     )
     b = _basics(bundle)
-    dcf_value, dcf_inputs = _dcf_valuation_and_inputs(b["info"], b["price"], canonical_dcf_result)
+    dcf_value, dcf_inputs = _dcf_valuation_and_inputs(b["info"], b["price"], canonical_dcf_result, ticker=ticker)
 
     fair_value = cached.setdefault("Fair Value", {"metrics": []})
     ticker_methods = fair_value.setdefault("valuation_methods", {}).setdefault(ticker, {})

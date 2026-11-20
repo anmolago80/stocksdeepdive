@@ -40,7 +40,7 @@ import pandas as pd
 
 from resolver_engine import (
     resolve_quality_score, resolve_intrinsic_value, resolve_stock_type,
-    dcf_looks_unreliable,
+    dcf_looks_unreliable, dcf_starting_fcf_lines,
 )
 import ranking_engine
 from ranking_engine import calculate_long_score, MOS_CLAMP, PSY_CLAMP, DISCOVERY_CAP
@@ -726,6 +726,12 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         trade_result, psychology_score, discovery_score, ma50, current_price,
     )
 
+    # TASK 70 (Director-directed, owner-approved, 20 Nov 2026) - see this
+    # function's own "dcf_starting_fcf"/"dcf_starting_fcf_breakdown"
+    # comment below for why this calls the same shared helper the Fair
+    # Value tab does.
+    _dcf_starting_fcf, _dcf_starting_fcf_breakdown = dcf_starting_fcf_lines(iv_meta, ticker=ticker)
+
     return {
         "error": None,
         "ticker": ticker,
@@ -772,6 +778,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "dcf_fcf_distorted_years": iv_meta.get("fcf_distorted_years") or [],
         "dcf_fcf_base_raw_per_share": iv_meta.get("fcf_base_raw_per_share"),
         "dcf_fcf_per_share_used": iv_meta.get("fcf_per_share_used"),
+        # TASK 70 (Director-directed, owner-approved, 20 Nov 2026): the
+        # DCF's own starting FCF ("$X.XXM") plus a one-line method
+        # breakdown - resolver_engine.dcf_starting_fcf_lines() is the
+        # SAME function auto_compounder_engine._dcf_valuation_and_
+        # inputs() calls for the Fair Value tab's matching row, so this
+        # page and that one always show the same figure/wording for a
+        # given ticker. Both None when no DCF ever produced a base FCF.
+        "dcf_starting_fcf": _dcf_starting_fcf,
+        "dcf_starting_fcf_breakdown": _dcf_starting_fcf_breakdown,
         # Step 4 uplift safety valve (2 Oct 2026, owner decision) - same
         # pure passthrough pattern as the four fields just above.
         "dcf_fcf_base_capped_by_uplift": bool(iv_meta.get("fcf_base_capped_by_uplift")),

@@ -26,6 +26,7 @@ from auto_intrinsic_value_engine import get_intrinsic_value as _auto_intrinsic
 from auto_stock_type_engine import get_stock_type as _auto_stock_type
 from fcf_valuation_engine import dcf_intrinsic_value, GROWTH_FLOOR, GROWTH_CEIL, trading_currency_for
 import capm_engine
+import currency_format
 
 
 def resolve_quality_score(ticker, info=None):
@@ -414,6 +415,109 @@ def dcf_looks_unreliable(intrinsic_value, current_price, symmetric=False):
     if symmetric and intrinsic_value < current_price / DCF_SANITY_MULTIPLE:
         return True
     return False
+
+
+def _dcf_money_m(value, ticker):
+    """"$X.XXM"-style money string for a DCF dollar figure (TASK 70,
+    20 Nov 2026) - currency_format.format_money()'s own ticker-aware
+    symbol lookup, just applied to the value already divided into
+    millions, since every figure this is used for (a DCF's starting
+    FCF, the OCF/capex it was built from) is reported at that scale."""
+    if value is None:
+        return None
+    return f"{currency_format.format_money(value / 1_000_000.0, ticker, decimals=2)}M"
+
+
+def dcf_starting_fcf_lines(meta, ticker=None):
+    """TASK 70 (Director-directed, owner-approved, 20 Nov 2026) - the
+    DCF's starting free cash flow, as a (formatted "$X.XXM" figure, one-
+    line method breakdown) pair, for display only (next to the DCF's
+    growth/discount/perpetual/size-premium inputs). Neither string is
+    prefixed with a label - each caller builds its own "Starting FCF:
+    {fcf}"-shaped line in whatever form its own screen already renders
+    inputs in (a "label: value" row on the Fair Value tab, a plain
+    st.caption() sentence on Deep Dive), so the two screens show
+    identical wording/numbers without this function assuming either
+    one's own rendering convention. `meta` is the dict
+    fcf_valuation_engine.dcf_intrinsic_value() returns (passed straight
+    through by resolve_intrinsic_value() above as its own 4th return
+    value) - the SAME dict both auto_compounder_engine.py's Fair Value
+    tab and deep_dive_engine.py's Deep Dive context already read every
+    other "dcf_*" input from, so calling this one function from both
+    places is what keeps the two screens showing the same figure/
+    wording, rather than two independently-written captions drifting
+    apart over time.
+
+    Returns (None, None) when no DCF ever produced a base FCF at all
+    (meta["fcf_used"] unset) - the caller should simply omit both lines,
+    same as every other DCF input row already does when its value is
+    None.
+
+    Priority mirrors fcf_valuation_engine.normalized_base_and_series()'s
+    own docstring on how these sources can combine: Step 4's one-off
+    clean-year/EBITDA-bridge substitution (meta["fcf_base_source"])
+    supersedes Task 10's own 3-year-median outlier swap (meta["fcf_base_
+    normalized"]), which in turn supersedes the plain per-source
+    breakdown - all three read EXISTING meta fields (fcf_base_raw/fcf_
+    distorted_years/fcf_base_capped_by_uplift), already disclosed
+    elsewhere on both screens, just not previously paired with the
+    actual Starting FCF dollar figure. The plain "ocf-normcapex"/"ocf_
+    fallback_financials" breakdown is the one case needing NEW meta
+    fields (fcf_base_ocf_used/fcf_base_capex_used/fcf_base_capex_years) -
+    see normalized_base_and_series()'s own oneoff_meta comment - since
+    the existing meta never exposed the raw OCF/capex components, only
+    the final base figure."""
+    fcf_used = meta.get("fcf_used")
+    if fcf_used is None:
+        return None, None
+    fcf_money = _dcf_money_m(fcf_used, ticker)
+
+    fcf_base_source = meta.get("fcf_base_source")
+    fcf_source = meta.get("fcf_source")
+    breakdown = None
+
+    if fcf_base_source in ("median5_clean", "ebitda_bridge"):
+        _method_label = "clean-year" if fcf_base_source == "median5_clean" else "EBITDA-bridge"
+        _n = len(meta.get("fcf_distorted_years") or [])
+        _raw_txt = _dcf_money_m(meta.get("fcf_base_raw"), ticker) or "n/a"
+        breakdown = (
+            f"= {_method_label} base (one-off year{'s' if _n != 1 else ''} excluded; "
+            f"raw latest {_raw_txt})"
+        )
+        if meta.get("fcf_base_capped_by_uplift"):
+            breakdown += " - capped at 3× raw"
+    elif meta.get("fcf_base_normalized"):
+        # Task 10's own 3-year-median outlier swap - distinct from Step
+        # 4's one-off mechanism above (the two are mutually exclusive per
+        # ticker). Same wording as app.py's existing Deep Dive caption
+        # for this case (dcf_base_normalized).
+        _raw_txt = _dcf_money_m(meta.get("fcf_base_raw"), ticker) or "n/a"
+        breakdown = f"= 3-year-median base (outlier year excluded; raw latest {_raw_txt})"
+    elif fcf_base_source == "fcf-median" or fcf_source == "fcf-median":
+        _n = meta.get("fcf_base_median_years") or 3
+        breakdown = f"= reported FCF, median of last {_n} year{'s' if _n != 1 else ''}"
+    elif fcf_base_source == "net_income_financials":
+        breakdown = "Financials mode: net income used in place of FCF"
+    elif (
+        fcf_base_source in ("ocf-normcapex", "ocf_fallback_financials")
+        or fcf_source in ("ocf-normcapex", "ocf_fallback_financials")
+    ) and meta.get("fcf_base_ocf_used") is not None:
+        _ocf_txt = _dcf_money_m(meta["fcf_base_ocf_used"], ticker)
+        _capex_txt = _dcf_money_m(meta.get("fcf_base_capex_used"), ticker)
+        _years = meta.get("fcf_base_capex_years")
+        _years_txt = f"{_years}-yr " if _years else ""
+        breakdown = f"= operating cash flow {_ocf_txt} − {_years_txt}average capex {_capex_txt}"
+    elif fcf_source == "info":
+        breakdown = "= Yahoo reported free cash flow (no cash-flow statement available)"
+    elif fcf_source == "manual":
+        breakdown = "= manually overridden free cash flow"
+
+    if breakdown and meta.get("fx_converted"):
+        _fin_ccy = str(meta["fx_converted"]).split("->")[0].strip()
+        if _fin_ccy:
+            breakdown += f" (converted from {_fin_ccy})"
+
+    return fcf_money, breakdown
 
 
 def resolve_stock_type(ticker, info=None):

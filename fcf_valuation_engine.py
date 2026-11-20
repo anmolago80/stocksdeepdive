@@ -1164,6 +1164,18 @@ def _ocf_based_base_and_series(cashflow_df, info=None, income_df=None):
         oneoff_meta = {
             "fcf_base_source": "ocf-normcapex", "fcf_distorted_years": [],
             "fcf_base_raw": None, "fcf_base_capped_by_uplift": False,
+            # TASK 70 (Director-directed, owner-approved, 20 Nov 2026):
+            # the raw OCF/capex components the "ocf-normcapex" base is
+            # actually built from (ocf[0], base_capex above, and how many
+            # years' capex went into whichever of "average"/"midpoint
+            # (capex rising)" capex_basis was used) - purely additive,
+            # exposing locals this function already computed, so a caller
+            # can show "Starting FCF" as an actual OCF-minus-capex
+            # breakdown instead of just the method name. None for every
+            # other fcf_source (fcf-median/info/none/manual/financials),
+            # which have no per-year OCF/capex split to show.
+            "fcf_base_ocf_used": ocf[0], "fcf_base_capex_used": abs(base_capex),
+            "fcf_base_capex_years": len(capex),
         }
         if income_df is not None:
             metric_series, secondary_series, _metric_tier = _oneoff_metric_series(income_df)
@@ -1241,6 +1253,10 @@ def _ocf_based_base_and_series(cashflow_df, info=None, income_df=None):
         return base, fcf, "fcf-median", False, None, {
             "fcf_base_source": "fcf-median", "fcf_distorted_years": [], "fcf_base_raw": None,
             "fcf_base_capped_by_uplift": False,
+            # TASK 70 (20 Nov 2026): how many years actually went into the
+            # median above (up to 3 - see `recent` just above), so a
+            # caller can say "median of last N years" with the real N.
+            "fcf_base_median_years": len(recent),
         }
 
     info_fcf = info.get("freeCashflow", 0) or 0
@@ -2203,6 +2219,16 @@ def dcf_intrinsic_value(
         # Step 4 uplift safety valve (2 Oct 2026, owner decision) - see
         # normalized_base_and_series()'s own docstring.
         "fcf_base_capped_by_uplift": False,
+        # TASK 70 (Director-directed, owner-approved, 20 Nov 2026) - see
+        # normalized_base_and_series()'s own oneoff_meta comment: the raw
+        # OCF/avg-capex components behind an "ocf-normcapex"/"ocf_
+        # fallback_financials" base, and how many years' data each
+        # method actually used. None whenever the base came from a
+        # different source, or no DCF ran at all.
+        "fcf_base_ocf_used": None,
+        "fcf_base_capex_used": None,
+        "fcf_base_capex_years": None,
+        "fcf_base_median_years": None,
         "fcf_used": None,
         "fcf_per_share_used": None,
         "discount_floored": False,
@@ -2333,6 +2359,16 @@ def dcf_intrinsic_value(
             fcf = norm_base
             meta["fcf_source"] = base_src
             meta["capex_basis"] = capex_basis
+            # TASK 70 (20 Nov 2026): pure passthrough of oneoff_meta's own
+            # new fields above - None whenever this particular base/
+            # source didn't set them (e.g. a "fcf-median" base has no
+            # OCF/capex split; an "ocf-normcapex" base has no median-
+            # years count), same "always has one field to check" pattern
+            # as fcf_base_source/fcf_distorted_years just below.
+            meta["fcf_base_ocf_used"] = oneoff_meta.get("fcf_base_ocf_used")
+            meta["fcf_base_capex_used"] = oneoff_meta.get("fcf_base_capex_used")
+            meta["fcf_base_capex_years"] = oneoff_meta.get("fcf_base_capex_years")
+            meta["fcf_base_median_years"] = oneoff_meta.get("fcf_base_median_years")
             if base_normalized:
                 meta["fcf_base_normalized"] = True
                 meta["fcf_base_raw"] = round(fcf_series[0], 2) if fcf_series else None
