@@ -14,6 +14,8 @@ get_bundle(ticker) -> {
     "income": DataFrame,               # annual income statement, newest column first
     "balance": DataFrame,              # annual balance sheet, newest column first
     "cashflow": DataFrame,             # annual cash flow statement, newest column first
+    "income_q": DataFrame,             # quarterly income statement, yfinance-only, newest first
+    "cashflow_q": DataFrame,           # quarterly cash flow statement, yfinance-only, newest first
     "prices_10y": {"dates": [...], "prices": [...]},       # ~10y monthly closes
     "dividends": {"dates": [...], "amounts": [...]},       # full dividend history
     "spx_prices_10y": {"dates": [...], "prices": [...]},   # S&P 500, same shape - for the
@@ -130,7 +132,17 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # whose conversion silently partially failed - bumped so every such
 # cached bundle rebuilds under the honest flag immediately, rather than
 # waiting up to 24h for its own cache TTL.
-BUNDLE_VERSION = 10
+# 10->11 (TASK 68, Director-directed, owner-approved, 20 Nov 2026): the
+# bundle now carries cashflow_q (quarterly cash-flow statement, same
+# fetch/cache/currency-conversion treatment as income_q) so auto_
+# compounder_engine._fcf_ttm() can sum a genuine trailing-12-month Free
+# Cash Flow from real quarters instead of relabeling the latest fiscal
+# year's FCF as "TTM" - see that function's own docstring for the full
+# WMS-driven root cause. Bumped so every cached bundle refetches with
+# the new field present, rather than silently reading cashflow_q as
+# permanently empty (and therefore permanently falling back to the old
+# latest-FY convention) for up to 24h.
+BUNDLE_VERSION = 11
 
 
 def _data_dir():
@@ -190,6 +202,7 @@ def _bundle_to_cache(bundle):
         "balance": _df_to_json(bundle.get("balance")),
         "cashflow": _df_to_json(bundle.get("cashflow")),
         "income_q": _df_to_json(bundle.get("income_q")),
+        "cashflow_q": _df_to_json(bundle.get("cashflow_q")),
         "prices_10y": bundle.get("prices_10y"),
         "dividends": bundle.get("dividends"),
         "spx_prices_10y": bundle.get("spx_prices_10y"),
@@ -203,11 +216,13 @@ def _bundle_from_cache(obj):
         "income": _df_from_json(obj.get("income")),
         "balance": _df_from_json(obj.get("balance")),
         "cashflow": _df_from_json(obj.get("cashflow")),
-        # income_q is a newer field than some still-live cache entries -
-        # .get(...) already tolerates that (None -> empty DataFrame via
-        # _df_from_json), but BUNDLE_VERSION is bumped alongside this
-        # anyway so old entries miss the cache and refetch with it present.
+        # income_q/cashflow_q are newer fields than some still-live cache
+        # entries - .get(...) already tolerates that (None -> empty
+        # DataFrame via _df_from_json), but BUNDLE_VERSION is bumped
+        # alongside each anyway so old entries miss the cache and
+        # refetch with it present.
         "income_q": _df_from_json(obj.get("income_q")),
+        "cashflow_q": _df_from_json(obj.get("cashflow_q")),
         "prices_10y": obj.get("prices_10y") or {"dates": [], "prices": []},
         "dividends": obj.get("dividends") or {"dates": [], "amounts": []},
         "spx_prices_10y": obj.get("spx_prices_10y") or {"dates": [], "prices": []},
@@ -527,6 +542,27 @@ def _fetch_yfinance_quarterly_income(tk):
     this is intentionally narrow, not a wholesale TTM redefinition."""
     try:
         q = tk.quarterly_income_stmt
+        return q if isinstance(q, pd.DataFrame) else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_yfinance_quarterly_cashflow(tk):
+    """Quarterly cash-flow statement, same shape/convention as
+    _fetch_yfinance_quarterly_income() above (columns = quarter-end
+    dates, newest first) - added for TASK 68 (Director-directed, owner-
+    approved, 20 Nov 2026) so auto_compounder_engine._fcf_ttm() can sum
+    a genuine trailing-twelve-month Free Cash Flow from the last 4 real
+    quarters, instead of relabeling the latest FISCAL YEAR's FCF as
+    "TTM" (confirmed wrong live on WMS: FY Mar-2026 and the old "TTM"
+    point both read 9.82x, while the owner's workbook's real TTM FCF
+    gives 7.4x). yfinance-only, same as income_q - EODHD (the fallback
+    annual source) has no quarterly endpoint this module uses, so a
+    ticker on that source simply gets no real TTM here and falls back
+    to the existing latest-FY convention, same as income_q's own
+    EODHD-ticker behaviour today."""
+    try:
+        q = tk.quarterly_cashflow
         return q if isinstance(q, pd.DataFrame) else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
@@ -1905,6 +1941,15 @@ def get_bundle(ticker, force_refresh=False):
     if income_q.empty:
         flags.append("quarterly_income_unavailable")
 
+    # cashflow_q: quarterly cash-flow statement - TASK 68 (Director-
+    # directed, owner-approved, 20 Nov 2026). Same "yfinance-only,
+    # best-effort, an empty result just degrades back to the existing
+    # latest-FY convention" treatment as income_q just above - see
+    # _fetch_yfinance_quarterly_cashflow()'s own docstring.
+    cashflow_q = _fetch_yfinance_quarterly_cashflow(tk)
+    if cashflow_q.empty:
+        flags.append("quarterly_cashflow_unavailable")
+
     # Currency fix: statement line items (the income/balance/cashflow/
     # income_q DataFrames) are reported in the company's financialCurrency,
     # but price/market-cap-derived figures elsewhere in the app are in its
@@ -1979,7 +2024,8 @@ def get_bundle(ticker, force_refresh=False):
             balance, _balance_ok = _convert_statement_currency(balance, fin_ccy, list_ccy)
             cashflow, _cashflow_ok = _convert_statement_currency(cashflow, fin_ccy, list_ccy)
             income_q, _income_q_ok = _convert_statement_currency(income_q, fin_ccy, list_ccy)
-            if _income_ok and _balance_ok and _cashflow_ok and _income_q_ok:
+            cashflow_q, _cashflow_q_ok = _convert_statement_currency(cashflow_q, fin_ccy, list_ccy)
+            if _income_ok and _balance_ok and _cashflow_ok and _income_q_ok and _cashflow_q_ok:
                 flags.append("currency_converted")
             else:
                 flags.append("currency_conversion_partial")
@@ -2081,6 +2127,7 @@ def get_bundle(ticker, force_refresh=False):
         "balance": balance,
         "cashflow": cashflow,
         "income_q": income_q,
+        "cashflow_q": cashflow_q,
         "prices_10y": prices_10y,
         "dividends": dividends,
         "spx_prices_10y": spx_prices_10y,

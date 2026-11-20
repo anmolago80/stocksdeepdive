@@ -1840,6 +1840,61 @@ def _interest_expense_ttm(bundle):
     return value, (candidate_flagged or estimated), estimated
 
 
+def _fcf_ttm(bundle):
+    """(value, is_real_ttm). TASK 68 (Director-directed, owner-approved,
+    20 Nov 2026): a genuine trailing-twelve-month Free Cash Flow - the
+    sum of the last 4 real quarterly columns (the statement's own "Free
+    Cash Flow" row, or OCF minus CapEx per quarter when no such row
+    exists) - used wherever this app shows a figure labeled "TTM" that
+    used to simply relabel the latest FISCAL YEAR's own FCF as "TTM".
+    Confirmed wrong live on WMS: FY Mar-2026 and the old "TTM" point on
+    the IV/BV chart both read 9.82x, while the owner's workbook's real
+    TTM FCF (US$529.95M, vs the FY's own $569.29M) gives 7.4x.
+
+    Real TTM is used only when BOTH:
+      1) all 4 of the newest quarterly columns have a usable FCF figure
+         (a partial sum would silently understate a trailing-twelve-
+         month total - the same "all or nothing" rule _sum_q_row()
+         already enforces for every other quarterly TTM sum in this
+         module), and
+      2) the newest quarterly column's own period-end date is STRICTLY
+         NEWER than the latest annual column's own period-end date -
+         otherwise the 4 quarters on file are simply last fiscal year's
+         own 4 quarters already baked into that latest annual figure,
+         not a rolling window past it (the guard against silently
+         double-counting a fiscal year that hasn't actually rolled
+         forward since the last annual report).
+    Falls back to the existing "latest annual column's FCF, or OCF
+    minus CapEx when no FCF row" convention otherwise, with is_real_ttm
+    False - every caller uses that to label/flag the figure as "really
+    just latest FY" rather than silently presenting it as equivalent to
+    a genuine trailing-twelve-month number."""
+    cashflow = bundle["cashflow"]
+    cashflow_q = bundle.get("cashflow_q")
+    if cashflow_q is not None and not cashflow_q.empty:
+        q_cols = _statement_col_dates(cashflow_q)
+        fy_cols = _statement_col_dates(cashflow)
+        newest_fy_end = fy_cols[0][1] if fy_cols else None
+        if len(q_cols) >= 4 and (newest_fy_end is None or q_cols[0][1] > newest_fy_end):
+            take = q_cols[:4]
+            fcf_ttm = _sum_q_row(cashflow_q, "free_cash_flow", take)
+            if fcf_ttm is None:
+                ocf_qs = [_q_row_value(cashflow_q, "operating_cash_flow", c) for c, _ in take]
+                capex_qs = [_q_row_value(cashflow_q, "capex", c) for c, _ in take]
+                if all(v is not None for v in ocf_qs) and all(v is not None for v in capex_qs):
+                    fcf_ttm = sum(o - abs(c) for o, c in zip(ocf_qs, capex_qs))
+            if fcf_ttm is not None:
+                return fcf_ttm, True
+
+    fcf = _latest(cashflow, "free_cash_flow")
+    if fcf is None:
+        ocf = _latest(cashflow, "operating_cash_flow")
+        capex = _latest(cashflow, "capex")
+        if ocf is not None and capex is not None:
+            fcf = ocf - abs(capex)
+    return fcf, False
+
+
 def _dividends_per_share_by_year(dividends):
     out = {}
     for d, a in zip(dividends.get("dates") or [], dividends.get("amounts") or []):
@@ -2509,9 +2564,19 @@ def _build_fundamentals(bundle, ticker, ref):
 
     ocf = _latest(cashflow, "operating_cash_flow")
     capex = _latest(cashflow, "capex")
-    fcf = _latest(cashflow, "free_cash_flow")
-    if fcf is None and ocf is not None and capex is not None:
-        fcf = ocf - abs(capex)
+    # TASK 68 (Director-directed, owner-approved, 20 Nov 2026): fcf is
+    # now a genuine trailing-twelve-month figure whenever real quarterly
+    # cash-flow data supports it (see _fcf_ttm()'s own docstring) -
+    # feeds every FCF-derived metric below (EV To Free Cash Flow, Free
+    # Cash Flow Yield, EBIT to FCF Conversion, PFCF Ratio) consistently.
+    # ocf/capex themselves are UNCHANGED (still the latest annual
+    # column) - they also feed CapEx to OCF below, a ratio the task
+    # doesn't touch. None of this function's own FCF-derived metrics
+    # are literally labeled "TTM" (the one card that is, "Free Cash
+    # Flow (TTM)", lives in _build_value_vs_book below), so there's no
+    # separate fallback label/flag to carry here - only the corrected
+    # VALUE, which every metric below already shares from one variable.
+    fcf, _ = _fcf_ttm(bundle)
 
     tangible_book_value = (equity - goodwill_intangibles) if (equity is not None and goodwill_intangibles is not None) else equity
 
@@ -2910,31 +2975,40 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
             years.append(y)
             ratios.append(iv_y / bvps_y)
 
-        # TTM point: TTM FCF from the SAME source/convention as every
-        # other point on this chart AND as the "Free Cash Flow (TTM)"
-        # metric card shown right next to it - the latest statement
-        # year's FCF (or OCF-capex fallback), never info["freeCashflow"].
-        # That info-blob field was tried first here previously; for some
-        # tickers (MKTX confirmed) it disagrees badly with the statement
-        # figure - almost certainly a different convention (Yahoo's
-        # "freeCashflow" reads as a levered figure, after financing
-        # activity, vs the unlevered OCF-minus-capex convention used
-        # everywhere else in this app). Fed through this mini-DCF's 9-year
-        # growth compounding plus a Gordon terminal value, that mismatch
-        # didn't just nudge the TTM point, it produced a wildly negative
-        # "intrinsic value" for TTM alone while every FY bar (which never
-        # used info["freeCashflow"]) looked normal. MKTX's real TTM free
-        # cash flow was, per outside sources, a healthy positive figure -
-        # down sharply from the prior year, but nowhere near negative.
-        fcf_ttm = _latest(bundle["cashflow"], "free_cash_flow")
-        if fcf_ttm is None:
-            ocf_ttm = _latest(bundle["cashflow"], "operating_cash_flow")
-            capex_ttm = _latest(bundle["cashflow"], "capex")
-            if ocf_ttm is not None and capex_ttm is not None:
-                fcf_ttm = ocf_ttm - abs(capex_ttm)
+        # TTM point: TTM FCF from the SAME source/convention as the
+        # "Free Cash Flow (TTM)" metric card shown right next to it -
+        # never info["freeCashflow"]. That info-blob field was tried
+        # first here previously; for some tickers (MKTX confirmed) it
+        # disagrees badly with the statement figure - almost certainly a
+        # different convention (Yahoo's "freeCashflow" reads as a
+        # levered figure, after financing activity, vs the unlevered
+        # OCF-minus-capex convention used everywhere else in this app).
+        # Fed through this mini-DCF's 9-year growth compounding plus a
+        # Gordon terminal value, that mismatch didn't just nudge the TTM
+        # point, it produced a wildly negative "intrinsic value" for TTM
+        # alone while every FY bar (which never used info["freeCashflow"])
+        # looked normal. MKTX's real TTM free cash flow was, per outside
+        # sources, a healthy positive figure - down sharply from the
+        # prior year, but nowhere near negative.
+        #
+        # TASK 68 (Director-directed, owner-approved, 20 Nov 2026):
+        # fcf_ttm is now a GENUINE trailing-twelve-month figure (sum of
+        # the last 4 real quarters) whenever that data is available -
+        # see _fcf_ttm()'s own docstring for the full WMS-driven root
+        # cause this replaces (the old code here just relabeled the
+        # latest FISCAL YEAR's own FCF as "TTM", which is why a still-
+        # open fiscal year's own bar and the "TTM" bar were always
+        # identical). When real TTM isn't available (fewer than 4
+        # quarterly columns on file, or the latest quarter isn't newer
+        # than the latest annual column), fcf_ttm_is_real is False and
+        # the bar's own label gets " (= latest FY)" appended so it never
+        # silently duplicates a FY bar while LOOKING like a distinct,
+        # genuine TTM figure.
+        fcf_ttm, fcf_ttm_is_real = _fcf_ttm(bundle)
         iv_ttm_point = _mini_dcf_iv(fcf_ttm, g_earn, d_dcf, p, shares) if fcf_ttm else None
         if iv_ttm_point is not None and bvps_ttm:
-            years = ["TTM"] + years
+            ttm_label = "TTM" if fcf_ttm_is_real else "TTM (= latest FY)"
+            years = [ttm_label] + years
             ratios = [iv_ttm_point / bvps_ttm] + ratios
 
     if not years:
@@ -2956,19 +3030,27 @@ def _fcf_growth_entry(bundle):
     in this module (_iv_bv_series, _build_fundamentals, _build_value_vs_book).
 
     Deliberately NO TTM point here, unlike EPS Growth - tried and reverted
-    (confirmed live on HSN.AX). Unlike EPS, which has a real quarterly
-    income statement (income_q) to sum a genuine trailing-twelve-month
-    figure from, this bundle carries no quarterly cash flow statement at
-    all (see fundamentals_data.py's bundle-shape comment) - so the "TTM"
-    FCF used elsewhere on this page (the Fundamentals tab's "Free Cash
-    Flow (TTM)" card, and _iv_bv_series's own TTM point - which for the
-    exact same reason is why HSN.AX's IV/BV chart shows its 2026 and TTM
-    bars as identical, 17.73x both) is really just the latest fiscal
-    year's reported FCF relabeled "TTM", not a distinct rolling-12-month
-    sum. Growth from "latest FY" to that same number, relabeled, is
-    mathematically guaranteed to be exactly 0.0% for every ticker, every
-    time - not a real data point, so it was dropped rather than shown as
-    a misleadingly precise "+0.0%" bar."""
+    (confirmed live on HSN.AX), and still correct after TASK 68 added a
+    genuine quarterly cash-flow statement (cashflow_q) to the bundle: a
+    "growth" chart needs TWO TTM-shaped points (this TTM vs a year-ago
+    TTM) to mean anything, and this app only ever sums ONE trailing
+    window (today's), never a rolling one a year back - see _fcf_ttm()'s
+    own docstring for that function (used by _iv_bv_series/_build_
+    fundamentals/_build_value_vs_book instead, where a single TTM point
+    stands on its own rather than needing a second one to diff against).
+    Before TASK 68, this bundle carried no quarterly cash flow statement
+    at all, so the "TTM" FCF used elsewhere on this page was really just
+    the latest fiscal year's reported FCF relabeled "TTM" (confirmed live
+    on HSN.AX: its IV/BV chart showed 2026 and TTM bars as identical,
+    17.73x both) - growth from "latest FY" to that same number, relabeled,
+    was mathematically guaranteed to be exactly 0.0% for every ticker,
+    every time, so it was dropped rather than shown as a misleadingly
+    precise "+0.0%" bar. That specific 0.0%-every-time failure mode is
+    gone now that fcf_ttm can be a genuine trailing figure - but adding a
+    real TTM-vs-TTM-a-year-ago growth bar here would still need a second,
+    year-ago trailing window this module has never computed, so it
+    remains out of this task's own scope (TASK 68 instruction #6: no
+    change to the per-year bars)."""
     fcf_series = [(y, v) for y, v in _series(bundle["cashflow"], "free_cash_flow") if v is not None]
     if not fcf_series:
         ocf_s = dict(_series(bundle["cashflow"], "operating_cash_flow"))
@@ -3038,19 +3120,26 @@ def _book_value_growth_entry(bundle):
 def _build_value_vs_book(bundle, ticker, ref, dcf_result):
     b = _basics(bundle)
     price, info = b["price"], b["info"]
-    fcf = _latest(bundle["cashflow"], "free_cash_flow")
+    # TASK 68 (Director-directed, owner-approved, 20 Nov 2026): a
+    # genuine trailing-twelve-month figure whenever real quarterly
+    # cash-flow data supports it - see _fcf_ttm()'s own docstring.
+    fcf, fcf_is_real_ttm = _fcf_ttm(bundle)
 
     metrics = []
 
-    def add(label, value, fmt, flagged=False):
+    def add(label, value, fmt, flagged=False, fallback=""):
         if value is None:
             return
-        metrics.append(_metric(ref, "Value vs Book", label, ticker, value, fmt, flagged=flagged))
+        metrics.append(_metric(ref, "Value vs Book", label, ticker, value, fmt, flagged=flagged,
+                                fallback_comment=fallback))
 
     add("Share Price", price, "cur")
     add("52 Week High", info.get("fiftyTwoWeekHigh"), "cur")
     add("52 Week Low", info.get("fiftyTwoWeekLow"), "cur")
-    add("Free Cash Flow (TTM)", fcf, "cur")
+    add("Free Cash Flow (TTM)", fcf, "cur", flagged=not fcf_is_real_ttm,
+        fallback="A genuine trailing-twelve-month figure (sum of the last 4 real "
+                  "quarters) needs quarterly cash-flow data this company doesn't have "
+                  "on file - this is the latest fiscal year's own Free Cash Flow instead.")
 
     # Headline IV/BV metric stays the site DCF's own value ÷ current BVPS
     # (the site DCF is the normalised version of the same model) -

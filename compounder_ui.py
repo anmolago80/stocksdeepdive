@@ -1101,7 +1101,14 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
             # ~10, say so. Hand-built data always carries the full run,
             # so this caption never shows on the Research page.
             _ivbv_entry = section.get("iv_bv_series", {}).get(ticker) or {}
-            _ivbv_years = [y for y in (_ivbv_entry.get("years") or []) if y != "TTM"]
+            # startswith("TTM"), not == "TTM" - TASK 68 (20 Nov 2026):
+            # the TTM point's own label is "TTM (= latest FY)" whenever
+            # auto_compounder_engine._fcf_ttm() fell back to the latest
+            # fiscal year's FCF (no real trailing-twelve-month figure
+            # available) - still the TTM point, not a modelled fiscal
+            # year, so it must be excluded here exactly like a plain
+            # "TTM" label always was.
+            _ivbv_years = [y for y in (_ivbv_entry.get("years") or []) if not y.startswith("TTM")]
             if _ivbv_years and len(_ivbv_years) < 10:
                 st.caption(
                     f"IV/BV modelled for the {len(_ivbv_years)} year(s) of "
