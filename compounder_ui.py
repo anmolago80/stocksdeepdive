@@ -539,7 +539,15 @@ def _cp_iv_bv_series_chart(ticker, iv_bv_series, thresholds):
 
 def _cp_year_bar_chart(ticker, series, key, title, yaxis_title, fmt="num", color="#2dd4bf"):
     """Generic X=year bar chart for a year-series (EPS, PE Ratio, ...) - one
-    consistent shape reused per metric."""
+    consistent shape reused per metric. The only caller today is "EPS by
+    Year" (see the "Earnings Trends" section below), so the dashed Average
+    line added here (TASK 69, Director-directed, owner-approved, 20 Nov
+    2026) is in practice EPS-only, same as the Director's own instructions
+    describe it - excludes any "TTM"-labeled point (startswith, not ==,
+    matching the same TASK 68 precedent elsewhere in this file: a fallback-
+    labeled TTM variant must still be excluded), since it overlaps the
+    latest fiscal year and would double-count it, and draws nothing when
+    fewer than 2 fiscal-year values remain."""
     entry = series.get(ticker, {}).get(key)
     if not entry or not entry.get("years"):
         return None
@@ -547,6 +555,18 @@ def _cp_year_bar_chart(ticker, series, key, title, yaxis_title, fmt="num", color
     values = list(reversed(entry["values"]))
     text = [_cp_format(v, fmt, ticker=ticker) for v in values]
     fig = go.Figure(go.Bar(x=years, y=values, marker_color=color, text=text, textposition="outside"))
+    fy_values = [
+        v for y, v in zip(entry["years"], entry["values"])
+        if not y.startswith("TTM") and v is not None
+    ]
+    if len(fy_values) >= 2:
+        _avg = sum(fy_values) / len(fy_values)
+        fig.add_hline(
+            y=_avg, line_dash="dash", line_color="#e6edf5", line_width=1.5,
+            annotation_text=f"Average {_cp_format(_avg, fmt, ticker=ticker)} (FY only)",
+            annotation_position="top right",
+            annotation_font=dict(size=12, color="#e6edf5"),
+        )
     fig.update_layout(
         title=title, height=300, showlegend=False,
         margin=dict(l=10, r=10, t=40, b=10), yaxis_title=yaxis_title,
