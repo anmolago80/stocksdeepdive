@@ -2195,6 +2195,17 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
                     "flagged": True,
                     "fx_unavailable": True,
                     "fx_reason": f"no exchange rate for {_fin_ccy}",
+                    # TASK 70b (21 Nov 2026) - same None/False defaults as
+                    # every other no-value key above, for the fields
+                    # resolver_engine.dcf_starting_fcf_lines() reads (see
+                    # resolver_engine.DCF_STARTING_FCF_FIELDS) - no DCF
+                    # ran here, so dcf_starting_fcf_lines() must see
+                    # fcf_used=None and return (None, None), same as
+                    # every other "no usable DCF" case.
+                    "fcf_used": None, "fcf_source": None, "fcf_base_raw": None,
+                    "fcf_base_normalized": False, "fcf_base_median_years": None,
+                    "fcf_base_ocf_used": None, "fcf_base_capex_used": None,
+                    "fcf_base_capex_years": None, "fx_converted": None,
                 }
             _dcf_manual_fcf = manual_fcf * _fx
 
@@ -2241,9 +2252,15 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
             "fcf_per_share_used": None, "fcf_base_capped_by_uplift": False,
             "is_financials_mode": False,
             "flagged": True,
+            # TASK 70b (21 Nov 2026) - same defaults as the FX-unavailable
+            # branch just above.
+            "fcf_used": None, "fcf_source": None, "fcf_base_raw": None,
+            "fcf_base_normalized": False, "fcf_base_median_years": None,
+            "fcf_base_ocf_used": None, "fcf_base_capex_used": None,
+            "fcf_base_capex_years": None, "fx_converted": None,
         }
     value, growth_used, meta = result
-    return {
+    _dcf_result = {
         "value": value if value and value > 0 else None,
         "growth": growth_used,
         "perpetual_rate": meta.get("perpetual_rate_used"),
@@ -2296,6 +2313,24 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         "is_financials_mode": bool(meta.get("is_financials_mode")),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
     }
+    # TASK 70b (Director-directed, owner-approved, 21 Nov 2026, WMS live
+    # case): fills in whichever of resolver_engine.DCF_STARTING_FCF_
+    # FIELDS this dict doesn't already carry explicitly above (fcf_used,
+    # fcf_source, fcf_base_raw, fcf_base_normalized, fcf_base_median_
+    # years, fcf_base_ocf_used, fcf_base_capex_used, fcf_base_capex_
+    # years, fx_converted) - `if k not in _dcf_result` means this never
+    # overrides fcf_distorted_years/fcf_base_capped_by_uplift's own
+    # explicit "or []"/"False" defaults just above. TASK 70 shipped
+    # without this: dcf_starting_fcf_lines() got a dict with no
+    # "fcf_used" key at all, read it as None, and silently omitted the
+    # Fair Value tab's "Starting FCF"/"FCF Build" rows even though the
+    # function itself worked correctly - this is what actually fixes
+    # that, generically, so a future field added to that function's own
+    # needs is never again forgotten in just one of its two callers.
+    for _k in resolver_engine.DCF_STARTING_FCF_FIELDS:
+        if _k not in _dcf_result:
+            _dcf_result[_k] = meta.get(_k)
+    return _dcf_result
 
 
 def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
@@ -2431,7 +2466,7 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         f"share_source={meta.get('share_count_source')} cache_age={_dcf_diag_cache_age} "
         f"fin_ccy={_dcf_diag_fin_ccy} listing_ccy={currency} fx={meta.get('fx_rate_used')}"
     )
-    return {
+    _canonical_result = {
         "value": value,
         "growth": growth_used,
         "perpetual_rate": meta.get("perpetual_rate_used"),
@@ -2487,6 +2522,17 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         # caption for where this is displayed.
         "is_financials_mode": bool(meta.get("is_financials_mode")),
     }
+    # TASK 70b (Director-directed, owner-approved, 21 Nov 2026, WMS live
+    # case) - same generic fill-missing-fields fix as _run_dcf()'s own
+    # matching comment above: this is the result _dcf_valuation_and_
+    # inputs() actually calls resolver_engine.dcf_starting_fcf_lines()
+    # with (not _run_dcf()'s), so this is where TASK 70's own bug (the
+    # Fair Value tab's "Starting FCF"/"FCF Build" rows silently missing
+    # because fcf_used was never carried through) actually lived.
+    for _k in resolver_engine.DCF_STARTING_FCF_FIELDS:
+        if _k not in _canonical_result:
+            _canonical_result[_k] = meta.get(_k)
+    return _canonical_result
 
 
 # -----------------------------------

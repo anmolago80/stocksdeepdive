@@ -222,6 +222,23 @@ def resolve_intrinsic_value(
             # series()'s own docstring.
             "is_financials_mode": dcf_meta.get("is_financials_mode", False),
         }
+        # TASK 70b (Director-directed, owner-approved, 21 Nov 2026, WMS
+        # live case): this curated `meta` is the ACTUAL root of the bug -
+        # it already dropped fcf_base_ocf_used/fcf_base_capex_used/fcf_
+        # base_capex_years/fcf_base_median_years before auto_compounder_
+        # engine._run_canonical_dcf() ever saw them (that function calls
+        # resolve_intrinsic_value(), not dcf_intrinsic_value() directly),
+        # AND this same dict is deep_dive_engine.py's own iv_meta - so
+        # Deep Dive's "FCF Build" breakdown was ALSO silently missing for
+        # the plain ocf-normcapex/fcf-median cases, not "probably
+        # unaffected" as first assumed. Fills in whichever of DCF_
+        # STARTING_FCF_FIELDS isn't already explicit above (every field
+        # that mechanism needs beyond what this dict already carried) -
+        # never overrides fcf_distorted_years/fcf_base_capped_by_uplift's
+        # own explicit defaults just above.
+        for _k in DCF_STARTING_FCF_FIELDS:
+            if _k not in meta:
+                meta[_k] = dcf_meta.get(_k)
         return dcf_value, "dcf", growth_used, meta
 
     # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-directed,
@@ -426,6 +443,27 @@ def _dcf_money_m(value, ticker):
     if value is None:
         return None
     return f"{currency_format.format_money(value / 1_000_000.0, ticker, decimals=2)}M"
+
+
+# TASK 70b (Director-directed, owner-approved, 21 Nov 2026, WMS live
+# case): every meta key dcf_starting_fcf_lines() below reads - the
+# single source of truth for it, so a caller building its own curated
+# "dcf result" dict (auto_compounder_engine._run_dcf()/_run_canonical_
+# dcf()) can pass all of them through generically instead of hand-
+# listing each one and silently dropping a future addition, which is
+# exactly how TASK 70 shipped with the Fair Value tab's "Starting FCF"/
+# "FCF Build" rows silently missing: both curated dicts never carried
+# fcf_used (dcf_starting_fcf_lines() got None and returned (None, None))
+# even though the function itself worked correctly when given the full
+# meta dict directly (as Deep Dive's iv_meta always is). Kept in sync
+# with dcf_starting_fcf_lines()'s own body by
+# tests/test_director_task70b_fair_value_passthrough.py's static check.
+DCF_STARTING_FCF_FIELDS = (
+    "fcf_used", "fcf_source", "fcf_base_source", "fcf_distorted_years",
+    "fcf_base_raw", "fcf_base_capped_by_uplift", "fcf_base_normalized",
+    "fcf_base_median_years", "fcf_base_ocf_used", "fcf_base_capex_used",
+    "fcf_base_capex_years", "fx_converted",
+)
 
 
 def dcf_starting_fcf_lines(meta, ticker=None):
