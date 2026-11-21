@@ -2983,6 +2983,15 @@ _API_DOCS_DESC = (
     "Read-only, free, public JSON API for StocksDeepDive's computed stock "
     "scores - value, quality, psychology, discovery and moat. No API key, "
     "GET only, rate-limited, attribution requested.")
+# TASK 72 (Director-directed, owner-approved, 22 Nov 2026): the <meta
+# description> used instead of _API_DOCS_DESC above while signin_wall.
+# wall_live() is ON - see api_docs()'s own comment for why "No API key"
+# alone is no longer the whole story.
+_API_DOCS_DESC_WALL_ON = (
+    "Free JSON API for StocksDeepDive's computed stock scores - value, "
+    "quality, psychology, discovery and moat. S&P 500 scan open, no key; "
+    "other endpoints need a free account. GET only, rate-limited, "
+    "attribution requested.")
 
 
 _API_DOCS_INTRO_ES = (
@@ -3039,9 +3048,24 @@ async def api_docs(request: Request):
         "already-scanned parent universe, refreshed nightly): "
         + ", ".join(_derived) + "."
     )
+    # TASK 72 (Director-directed, owner-approved, 22 Nov 2026): with
+    # signin_wall.wall_live() ON, api_v1.py's own _require_signin_or_
+    # share() gates every endpoint here except the S&P 500 scan (see
+    # that function's own call sites) - this intro used to unconditionally
+    # say "no key, no sign-in", which is false once the wall is live and
+    # would make every one of those calls fail for an AI tool that
+    # trusted this page. Still "free" either way - sign-in costs nothing.
+    _api_intro = (
+        "StocksDeepDive's stock scores are also available as a small, free, "
+        "read-only JSON API - no key, no sign-in, GET requests only."
+        if not signin_wall.wall_live() else
+        "StocksDeepDive's stock scores are also available as a small, free "
+        "JSON API - the S&P 500 scan is open, no key, no sign-in; every "
+        "other endpoint needs a signed-in session (a free account, "
+        "sign-in takes about 30 seconds), GET requests only."
+    )
     markdown_text = f"""
-StocksDeepDive's stock scores are also available as a small, free, read-only
-JSON API - no key, no sign-in, GET requests only. Every response includes
+{_api_intro} Every response includes
 `attribution`, `disclaimer` and `as_of`/`link` fields; please attribute and
 link back to the site when you use this data.
 
@@ -3092,11 +3116,14 @@ stocksdeepdive.com. Nothing in this API is financial advice - see the
 disclaimer in every response. No user data (portfolios, watchlists, emails)
 is ever served here or ever will be.
 """
+    # TASK 72: same wall-aware swap as the intro paragraph above, for the
+    # <meta description> an AI tool may read without fetching the body.
+    _api_desc = _API_DOCS_DESC if not signin_wall.wall_live() else _API_DOCS_DESC_WALL_ON
     if lang == "es":
         return _html(blog_render.render_content_page(
             title=_API_DOCS_TITLE,
             markdown_text=markdown_text,
-            description=_API_DOCS_DESC,
+            description=_api_desc,
             path="/es/api",
             base_url=base,
             heading="API",
@@ -3111,7 +3138,7 @@ is ever served here or ever will be.
     return _html(blog_render.render_content_page(
         title=_API_DOCS_TITLE,
         markdown_text=markdown_text,
-        description=_API_DOCS_DESC,
+        description=_api_desc,
         path="/api",
         base_url=base,
         heading="API",
@@ -3135,6 +3162,17 @@ _AI_DOCS_DESC = (
     "MCP server for AI assistants: deep_dive, compare, scan, moat and "
     "research_notes tools over StocksDeepDive's public computed stock "
     "scores. No API key, no auth, Streamable HTTP at /mcp.")
+# TASK 72 (Director-directed, owner-approved, 22 Nov 2026): the <meta
+# description> used instead of _AI_DOCS_DESC above while signin_wall.
+# wall_live() is ON - mcp_server.py's own _require_signin() gates every
+# tool except scan()'s S&P 500 universe once the wall is live (see that
+# module's own FastMCP `instructions` text, which already describes this
+# dynamically) - "No API key, no auth" alone is no longer the whole story.
+_AI_DOCS_DESC_WALL_ON = (
+    "MCP server for AI assistants: deep_dive, compare, scan, moat and "
+    "research_notes tools over StocksDeepDive's public computed stock "
+    "scores. S&P 500 scan open, no key; other tools need a free account. "
+    "Streamable HTTP at /mcp.")
 
 
 _AI_DOCS_INTRO_ES = (
@@ -3159,12 +3197,24 @@ async def ai_docs(request: Request):
     base = _base_url(request)
     path = request.url.path.rstrip("/") or "/"
     lang = "es" if path == "/es/ai" else "en"
+    # TASK 72 (Director-directed, owner-approved, 22 Nov 2026): with
+    # signin_wall.wall_live() ON, mcp_server.py's own _require_signin()
+    # gates every tool here except scan()'s S&P 500 universe - this used
+    # to unconditionally say "No API key, no sign-in", which is false
+    # once the wall is live. Still free either way - sign-in costs
+    # nothing, it's just no longer "no account at all".
+    _ai_no_signin_claim = (
+        "No API key, no sign-in, nothing here is user data."
+        if not signin_wall.wall_live() else
+        "No API key - the S&P 500 scan tool stays open; every other "
+        "tool needs a signed-in session (a free account, sign-in "
+        "takes about 30 seconds). Nothing here is user data."
+    )
     markdown_text = f"""
 StocksDeepDive runs an [MCP](https://modelcontextprotocol.io) (Model Context
 Protocol) server - the same read-only, public stock-score data as
 [the JSON API]({base}/api), exposed as callable tools for AI assistants like
-Claude and ChatGPT instead of raw HTTP endpoints. No API key, no sign-in,
-nothing here is user data.
+Claude and ChatGPT instead of raw HTTP endpoints. {_ai_no_signin_claim}
 
 **Endpoint:** `{base}/mcp` (Streamable HTTP transport).
 
@@ -3211,11 +3261,14 @@ stocksdeepdive.com. Nothing served here is financial advice - see the
 disclaimer in every tool result. No user data (portfolios, watchlists,
 emails) is ever served here or ever will be.
 """
+    # TASK 72: same wall-aware swap as the intro paragraph above, for the
+    # <meta description>.
+    _ai_desc = _AI_DOCS_DESC if not signin_wall.wall_live() else _AI_DOCS_DESC_WALL_ON
     if lang == "es":
         return _html(blog_render.render_content_page(
             title=_AI_DOCS_TITLE,
             markdown_text=markdown_text,
-            description=_AI_DOCS_DESC,
+            description=_ai_desc,
             path="/es/ai",
             base_url=base,
             heading="AI / MCP",
@@ -3230,7 +3283,7 @@ emails) is ever served here or ever will be.
     return _html(blog_render.render_content_page(
         title=_AI_DOCS_TITLE,
         markdown_text=markdown_text,
-        description=_AI_DOCS_DESC,
+        description=_ai_desc,
         path="/ai",
         base_url=base,
         heading="AI / MCP",

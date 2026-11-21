@@ -30,6 +30,7 @@ from xml.sax.saxutils import escape as xml_escape
 import blog_store
 import follow_store
 import newsletter_store
+import signin_wall
 import snapshot_store
 
 SITE_NAME = "StocksDeepDive"
@@ -2922,7 +2923,47 @@ def render_llms_txt(base_url):
     can fetch instead of crawling/rendering the whole site, pointing
     straight at the pages worth reading. No AI key, no computation - a
     static list of the same URLs already in the sitemap, just curated and
-    described for a language model rather than exhaustive for a crawler."""
+    described for a language model rather than exhaustive for a crawler.
+
+    TASK 72 (Director-directed, owner-approved, 22 Nov 2026): with
+    signin_wall.wall_live() ON, Deep Dive, Comparison, research notes and
+    every API/MCP endpoint except the S&P 500 scan need a signed-in
+    (free) account - this used to unconditionally tell AI tools
+    "free and read-only"/"no key required" regardless, which is simply
+    false once the wall is live and makes every API/MCP call this text
+    encourages fail. Everything still says "free" (sign-in is free, no
+    paywall was added) - only the "no account needed" half of the claim
+    changes, and only for the parts actually gated (Snapshots/Track
+    record/Blog/About/Methodology/Terms stay on the public allowlist
+    either way, so their own lines are untouched in both branches).
+    wall_live() OFF (today's default) produces BYTE-IDENTICAL output to
+    before this task."""
+    _wall_on = signin_wall.wall_live()
+    if _wall_on:
+        _intro_tail = (
+            "All computed output is free. Company snapshots, the S&P "
+            "500 scanner, the methodology and the blog are open to "
+            "everyone; the full Deep Dive, Comparison, research notes "
+            "and the rest of the API need a free account (sign-in "
+            "takes about 30 seconds)."
+        )
+        _deep_dive_note = " - free, with a free account"
+        _comparison_note = " - free, with a free account"
+        _scanner_note = " - S&P 500 open to everyone; other indexes with a free account"
+        _api_note = (
+            "S&P 500 scan open, no key; all other endpoints need a "
+            "signed-in session (free account)"
+        )
+        _mcp_note = "S&P 500 scan open; other tools need a free account"
+        _research_note = " - free, with a free account"
+    else:
+        _intro_tail = "All computed output is free and read-only."
+        _deep_dive_note = ""
+        _comparison_note = ""
+        _scanner_note = ""
+        _api_note = "free, read-only, no key required"
+        _mcp_note = "the same data as callable tools for AI assistants"
+        _research_note = ""
     return f"""# {SITE_NAME}
 
 > Computed stock valuation, quality and psychology scores for ASX and US \
@@ -2932,17 +2973,16 @@ advice, and every number states the inputs it was computed from.
 
 StocksDeepDive publishes intrinsic value (DCF), quality, crowd-psychology \
 and discovery scores for any ASX or US stock, with every input shown, \
-plus hand-written value-investing research notes. All computed output is \
-free and read-only.
+plus hand-written value-investing research notes. {_intro_tail}
 
 ## Tools
 
 - [Stock Deep Dive]({base_url}/deep-dive): one ticker in, a full valuation, \
-quality and psychology picture out.
+quality and psychology picture out{_deep_dive_note}.
 - [Comparison]({base_url}/comparison): the same scores for two or more \
-stocks side by side.
+stocks side by side{_comparison_note}.
 - [Stock Scanner]({base_url}/scanner): the ranked overnight scan across a \
-whole index.
+whole index{_scanner_note}.
 - [How the scores work]({base_url}/methodology): the calculation behind \
 every number, in plain language.
 
@@ -2951,11 +2991,11 @@ every number, in plain language.
 - [Stock snapshots]({base_url}/s/): a plain HTML page per scanned stock, \
 updated nightly - start here to read computed scores without a browser \
 that runs JavaScript.
-- [JSON API]({base_url}/api): free, read-only, no key required - the same \
+- [JSON API]({base_url}/api): {_api_note} - the same \
 computed scores as structured data, with attribution and disclaimer \
 fields in every response.
-- [MCP server]({base_url}/ai): the same data as callable tools for AI \
-assistants (endpoint: {base_url}/mcp).
+- [MCP server]({base_url}/ai): {_mcp_note} \
+(endpoint: {base_url}/mcp).
 - [Track record]({base_url}/track-record): a dated, past-tense record of \
 what the engine computed for each stock and what its price did \
 afterwards - not a claim about recommendation accuracy or investment \
@@ -2964,7 +3004,7 @@ performance, see the page itself.
 ## Research and writing
 
 - [Rational Compounder research]({base_url}/research): hand-built, dated \
-research notes on individual companies.
+research notes on individual companies{_research_note}.
 - [Blog]({base_url}/blog): value-investing notes and method explainers.
 - [About the author]({base_url}/about): who built and runs this site.
 
