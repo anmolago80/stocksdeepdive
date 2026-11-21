@@ -5762,6 +5762,51 @@ def _render_compounder_admin_panel():
                     else:
                         st.error(_bk_msg)
 
+                # TASK 71 Part A (Director-directed, owner-approved, 21
+                # Nov 2026): owner-only "Download full backup" - the same
+                # sanitised copy the email path uses, but no size limit
+                # and no critical-tables fallback, served straight from
+                # memory via st.download_button (never written to a
+                # web-served path; db_backup_engine.build_owner_
+                # download() deletes its own temp files before
+                # returning). Same owner gate as the rest of this panel -
+                # this whole function already returned at the top if
+                # ADMIN_REFRESH_KEY isn't set/unlocked.
+                st.divider()
+                st.caption(
+                    "Full database copy, no size limit - built fresh from the live "
+                    "database (VACUUM INTO, then the same auth-table stripping the "
+                    "nightly email uses). Only ever held in memory for this download, "
+                    "never written to disk here or served to anyone else."
+                )
+                if st.button("Prepare full backup for download", key="cp_admin_owner_backup_prepare"):
+                    with st.spinner("Building full backup..."):
+                        _dlbk_ok, _dlbk_msg, _dlbk_result = db_backup_engine.build_owner_download()
+                    if _dlbk_ok:
+                        st.session_state["cp_admin_owner_backup_result"] = _dlbk_result
+                    else:
+                        st.session_state.pop("cp_admin_owner_backup_result", None)
+                        st.error(_dlbk_msg)
+                _dlbk_result = st.session_state.get("cp_admin_owner_backup_result")
+                if _dlbk_result:
+                    try:
+                        _dlbk_built_at_txt = (
+                            datetime.fromisoformat(_dlbk_result["built_at"])
+                            .strftime("%Y-%m-%d %H:%M UTC")
+                        )
+                    except (KeyError, ValueError):
+                        _dlbk_built_at_txt = _dlbk_result.get("built_at", "unknown time")
+                    st.caption(
+                        f"Built {_dlbk_result['size_bytes']:,} bytes at {_dlbk_built_at_txt}."
+                    )
+                    st.download_button(
+                        "Download full backup",
+                        data=_dlbk_result["data"],
+                        file_name=_dlbk_result["filename"],
+                        mime="application/gzip",
+                        key="cp_admin_owner_backup_download",
+                    )
+
             # Mega-batch Part 16: Volume usage gauge - deliberately NOT
             # tucked inside its own expander (unlike the panels above),
             # since the instruction asks for "a one-line gauge" the

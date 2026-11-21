@@ -69,7 +69,11 @@ ADMIN PANEL: last_backup_status() and run_backup_now() are the two
 public entry points app.py's admin panel calls for the "Backup now"
 button and the "last backup sent: <date> [check/warn]" status line -
 a loud warning once the last SUCCESSFUL backup is more than
-STALE_WARNING_DAYS old.
+STALE_WARNING_DAYS old. build_owner_download() (TASK 71 Part A, 21 Nov
+2026) is a third: the same panel's owner-only "Download full backup"
+button - a full, sanitised copy with no size limit and no critical-
+tables fallback, served in-memory via st.download_button, never
+written to a web-served path.
 
 PRIVACY: the backup is emailed ONLY to ai_gate.owner_email() - this
 site's own owner inbox - via Mailgun, exactly like every other
@@ -127,6 +131,12 @@ CRITICAL_TABLES = [
     # and re-derivable-in-spirit, so it's left out here the same way
     # e.g. metrics tables are.
     "newsletter_subscribers",
+    # TASK 71 Part A (Director-directed, owner-approved, 21 Nov 2026):
+    # three more user-authored tables (stocksdeepdive.db) that were only
+    # ever protected on the weekly full-send, not the 6-of-7-nights
+    # critical-tables-only fallback - same bucket as every other table
+    # above (irreplaceable, not a cache/log a re-scan rebuilds).
+    "compare_lists", "compare_notes", "share_links",
 ]
 
 # Commit K (21 Sep 2026, owner-reported): the emailed backup used to
@@ -525,3 +535,77 @@ def last_backup_status():
         "last_failure_date": state.get("last_failure_date"),
         "last_failure_message": state.get("last_failure_message"),
     }
+
+
+# -----------------------------------------------------------------
+# Owner-only manual "Download full backup" button (TASK 71 Part A,
+# Director-directed, owner-approved, 21 Nov 2026).
+# -----------------------------------------------------------------
+
+def build_owner_download(log=print):
+    """Builds the SAME sanitised copy the nightly email path uses
+    (VACUUM INTO -> _exclude_sensitive_tables() -> gzip) for the Admin
+    dashboard's "Download full backup" button - but with NO size limit
+    and NO critical-tables fallback (unlike _run_backup() above): the
+    owner always gets the complete sanitised database, however large.
+
+    Returns (ok, message, result). On success, result is {"data": bytes,
+    "filename": str, "size_bytes": int, "built_at": ISO-8601 UTC str} -
+    `data` is the gzipped file's bytes, read into memory BEFORE this
+    function's own temp directory is deleted (same tempfile.mkdtemp() +
+    `finally: shutil.rmtree(...)` pattern as _run_backup() above), so the
+    caller (app.py's Admin dashboard, via st.download_button) never has
+    to manage any file cleanup of its own and no copy is ever left on
+    disk, or written to any web-served path, once this returns. On
+    failure, result is None and message explains why - including a
+    refusal (ok=False) while the nightly backup job's own lock is held
+    (scheduler_engine.backup_job_lock_active() - a read-only, non-
+    blocking check, never acquired/released here), so a manual download
+    never runs its own VACUUM INTO against the live DB at the same
+    moment the nightly job's is already mid-flight. Never raises -
+    every failure path is caught and returned as (False, message, None),
+    same convention as _run_backup() above."""
+    try:
+        import scheduler_engine
+        if scheduler_engine.backup_job_lock_active():
+            return False, (
+                "The nightly backup job is running right now - try again "
+                "in a few minutes."
+            ), None
+    except Exception:
+        # Fail open: a broken lock check should never block a manual
+        # download the owner is actively waiting on - same reasoning as
+        # every other best-effort check in this module (e.g. _weekly_
+        # extra_files() above).
+        pass
+
+    built_at = datetime.now(timezone.utc)
+    date_str = built_at.strftime("%Y-%m-%d")
+    tmp_dir = tempfile.mkdtemp(prefix="sdd_owner_backup_")
+    try:
+        full_copy_path = os.path.join(tmp_dir, "stocksdeepdive_full.db")
+        try:
+            _vacuum_into(full_copy_path)
+        except Exception as e:
+            return False, f"VACUUM INTO failed: {type(e).__name__}: {e}", None
+        try:
+            _exclude_sensitive_tables(full_copy_path)
+        except Exception as e:
+            return False, f"sensitive-table exclusion failed: {type(e).__name__}: {e}", None
+        gz_path = _gzip_file(full_copy_path)
+        size_bytes = os.path.getsize(gz_path)
+        with open(gz_path, "rb") as f:
+            data = f.read()
+        # Log the SIZE only, never contents - same privacy posture as
+        # every other log line in this module.
+        log(f"[db_backup] owner download built: {size_bytes:,} bytes")
+        return True, "Backup built.", {
+            "data": data,
+            "filename": f"stocksdeepdive_full_{date_str}.db.gz",
+            "size_bytes": size_bytes,
+            "built_at": built_at.isoformat(),
+        }
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}", None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -2614,6 +2614,30 @@ def nightly_scan_window_active(now=None):
     return age <= _JOB_LOCK_HEARTBEAT_STALE_SECONDS
 
 
+def backup_job_lock_active():
+    """TASK 71 Part A (Director-directed, owner-approved, 21 Nov 2026):
+    True if the nightly off-site DB backup job ("backup" - see _run_
+    backup()'s own _acquire_job_lock("backup", log) call site) is
+    currently holding its lock with a fresh heartbeat. Same read-only,
+    non-blocking contract as nightly_scan_window_active() just above
+    (never acquires/refreshes/releases anything) - added for the Admin
+    Dashboard's own "Download full backup" button, which must refuse to
+    run its OWN VACUUM INTO against the live DB while the nightly job's
+    VACUUM INTO is already mid-flight, rather than the two competing for
+    the same I/O (and risking the admin's manual download reading a
+    transient intermediate state). No scan-window special case here -
+    unlike nightly_scan_window_active(), the backup job has no fixed
+    catch-up window of its own to also treat as "active"."""
+    payload = _read_lock_payload(_lock_path("backup"))
+    if payload is None:
+        return False
+    try:
+        age = time.time() - float(payload.get("heartbeat", 0))
+    except (TypeError, ValueError):
+        return False
+    return age <= _JOB_LOCK_HEARTBEAT_STALE_SECONDS
+
+
 def _universes_missing_today(cfg, ref_day):
     """Universes that were SCHEDULED for the `ref_day` ('YYYY-MM-DD' UTC
     date - see _catchup_reference_night above) scan night but have no
