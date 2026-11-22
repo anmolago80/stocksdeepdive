@@ -3241,13 +3241,88 @@ EN = {
     "portfolio.stress.newmoney_mode_a": "Split by mix %",
     "portfolio.stress.newmoney_mode_b": "Top up toward mix",
     "portfolio.stress.newmoney_mode_c": "Target original allocation",
-    "portfolio.stress.newmoney_mode_caption": (
-        "Split by mix %: the amount is divided exactly by the percentages "
-        "above. Top up toward mix: the amount goes preferentially to the "
-        "holdings furthest below their target weight, so the whole "
-        "portfolio lands as close to the mix as possible without selling "
-        "anything."
+    # TASK 73 (Director-directed, owner-approved, 22 Nov 2026): one
+    # explanation per mode (How it works / a live Example / Use it when),
+    # replacing the old shared newmoney_mode_caption and the old
+    # newmoney_method_b_caption/newmoney_method_c_caption - see
+    # _newmoney_explanation()'s own docstring in app.py for how these are
+    # assembled (the *_example/*_example_over/*_example_capped/
+    # *_example_tail fragments are joined conditionally, never shown as
+    # raw template text with unfilled brackets).
+    "portfolio.stress.newmoney_explain_a_how": (
+        "How it works: The new money is split exactly by your mix "
+        "percentages. What you already hold is ignored."
     ),
+    "portfolio.stress.newmoney_explain_a_example": (
+        "Example: {h1} is {mix1}% of the mix, so it gets {mix1}% × "
+        "{deposit} = {buy1}."
+    ),
+    "portfolio.stress.newmoney_explain_a_example_over": (
+        " {h2} gets {mix2}% = {buy2}, even though it's already above "
+        "its target weight."
+    ),
+    "portfolio.stress.newmoney_explain_a_use": (
+        "Use it when: you want to keep buying in the same proportions "
+        "every time. It doesn't fix holdings that have drifted away "
+        "from the mix."
+    ),
+    "portfolio.stress.newmoney_explain_b_how": (
+        "How it works: 1) Your portfolio's value today plus the new "
+        "money is the new total: {hold_now_total} + {deposit} = "
+        "{new_total}. 2) Each holding's target = its mix % × that "
+        "total. 3) The money goes only to holdings worth less than "
+        "their target today, in proportion to how far below they are. "
+        "Holdings already at or above target get nothing. Nothing is "
+        "sold."
+    ),
+    "portfolio.stress.newmoney_explain_b_example": (
+        "Example: {h1}'s target is {mix1}% × {new_total} = {target1}. "
+        "You hold {hold1}, so it's {gap1} short."
+    ),
+    "portfolio.stress.newmoney_explain_b_example_over": (
+        " {h2}'s target is {target2}, but you hold {hold2}, so it's "
+        "already over and gets {zero}."
+    ),
+    "portfolio.stress.newmoney_explain_b_example_capped": (
+        " The gaps add up to {gaps_total}, more than the {deposit} "
+        "available, so each gets the same share of its gap (about "
+        "{pct}%)."
+    ),
+    "portfolio.stress.newmoney_explain_b_example_tail": " {h1} gets {buy1}.",
+    "portfolio.stress.newmoney_explain_b_use": (
+        "Use it when: you want the portfolio's current value to end "
+        "up as close to the mix as possible."
+    ),
+    "portfolio.stress.newmoney_explain_c_how": (
+        "How it works: 1) What you've invested so far plus the new "
+        "money is the new total: {invested_total} + {deposit} = "
+        "{new_total}. 2) Each holding's target = its mix % × that "
+        "total. 3) The money goes only to holdings where you've put in "
+        "less than their target, in proportion to how far short they "
+        "are. Price moves are ignored: a holding that fell isn't "
+        "topped up just because it fell."
+    ),
+    "portfolio.stress.newmoney_explain_c_example": (
+        "Example: {h1}'s target is {mix1}% × {new_total} = {target1}. "
+        "You've invested {inv1}, so it's {gap1} short."
+    ),
+    "portfolio.stress.newmoney_explain_c_example_over": (
+        " {h2} is {pl2} but you've already invested {inv2}, more than "
+        "its {target2} target, so it gets {zero}."
+    ),
+    "portfolio.stress.newmoney_explain_c_example_capped": (
+        " The gaps add up to {gaps_total}, more than the {deposit} "
+        "available, so each gets about {pct}% of its gap."
+    ),
+    "portfolio.stress.newmoney_explain_c_example_tail": " {h1} gets {buy1}.",
+    "portfolio.stress.newmoney_explain_c_use": (
+        "Use it when: you want your money put in to match the mix, "
+        "whatever each holding has done since. Its \"Market weight "
+        "after\" column will differ from the mix, because prices have "
+        "moved."
+    ),
+    "portfolio.stress.newmoney_pl_up": "up {pct}%",
+    "portfolio.stress.newmoney_pl_down": "down {pct}%",
     "portfolio.stress.newmoney_col_holding": "Holding",
     "portfolio.stress.newmoney_col_mix_pct": "Mix %",
     "portfolio.stress.newmoney_col_invested": "You invested",
@@ -3264,25 +3339,6 @@ EN = {
     "portfolio.stress.newmoney_col_total": "Total",
     "portfolio.stress.newmoney_gap_over": "over",
     "portfolio.stress.newmoney_unallocated_caption": "Unallocated cash: {amount}",
-    "portfolio.stress.newmoney_method_b_caption": (
-        "Method: target value per holding = mix % × (current total + "
-        "deposit); the deposit is allocated to the largest shortfalls "
-        "first, never selling and never exceeding the deposit. When the "
-        "cash can't close every gap, the allocation is proportional to "
-        "the remaining shortfalls. Holdings already at/above target "
-        "receive nothing."
-    ),
-    "portfolio.stress.newmoney_method_c_caption": (
-        "Method: target invested per holding = mix % × (total already "
-        "invested + deposit). The deposit fills the gap between that "
-        "target and what you've actually put in, so your committed money "
-        "lands on the mix regardless of how each holding has performed. "
-        "Market-value weights will drift from the mix — the last two "
-        "columns show both. This mode leans harder on your recorded cost "
-        "basis than the other two: if \"You invested\" doesn't reflect "
-        "every purchase for a holding (see the note above), that "
-        "holding's target and gap will be off by exactly the same amount."
-    ),
     "portfolio.stress.newmoney_missing_cost_basis_warning": (
         "No recorded cost basis for: {tickers}. Target original "
         "allocation needs a real \"You invested\" figure for every "
@@ -7310,13 +7366,84 @@ ES = {
     "portfolio.stress.newmoney_mode_a": "Dividir por % de la combinación",
     "portfolio.stress.newmoney_mode_b": "Completar hacia la combinación",
     "portfolio.stress.newmoney_mode_c": "Apuntar a la asignación original",
-    "portfolio.stress.newmoney_mode_caption": (
-        "Dividir por % de la combinación: el monto se divide exactamente "
-        "según los porcentajes de arriba. Completar hacia la combinación: "
-        "el monto va preferentemente a las posiciones más por debajo de su "
-        "ponderación objetivo, para que toda la cartera se acerque lo más "
-        "posible a la combinación sin vender nada."
+    # TASK 73 (22 Nov 2026) - ES equivalents of the EN block above (same
+    # key names, same fragment-joining logic in app.py).
+    "portfolio.stress.newmoney_explain_a_how": (
+        "Cómo funciona: El dinero nuevo se divide exactamente según tus "
+        "porcentajes de combinación. Lo que ya tienes se ignora."
     ),
+    "portfolio.stress.newmoney_explain_a_example": (
+        "Ejemplo: {h1} es el {mix1}% de la combinación, así que recibe "
+        "{mix1}% × {deposit} = {buy1}."
+    ),
+    "portfolio.stress.newmoney_explain_a_example_over": (
+        " {h2} recibe {mix2}% = {buy2}, aunque ya está por encima de su "
+        "ponderación objetivo."
+    ),
+    "portfolio.stress.newmoney_explain_a_use": (
+        "Úsalo cuando: quieras seguir comprando en las mismas "
+        "proporciones cada vez. No corrige posiciones que se hayan "
+        "desviado de la combinación."
+    ),
+    "portfolio.stress.newmoney_explain_b_how": (
+        "Cómo funciona: 1) El valor de tu cartera hoy más el dinero "
+        "nuevo es el nuevo total: {hold_now_total} + {deposit} = "
+        "{new_total}. 2) El objetivo de cada posición = su % de "
+        "combinación × ese total. 3) El dinero va solo a las posiciones "
+        "que hoy valen menos que su objetivo, en proporción a cuánto les "
+        "falta. Las posiciones que ya están en su objetivo o por encima "
+        "no reciben nada. No se vende nada."
+    ),
+    "portfolio.stress.newmoney_explain_b_example": (
+        "Ejemplo: el objetivo de {h1} es {mix1}% × {new_total} = "
+        "{target1}. Tienes {hold1}, así que le faltan {gap1}."
+    ),
+    "portfolio.stress.newmoney_explain_b_example_over": (
+        " El objetivo de {h2} es {target2}, pero tienes {hold2}, así "
+        "que ya está por encima y recibe {zero}."
+    ),
+    "portfolio.stress.newmoney_explain_b_example_capped": (
+        " Las brechas suman {gaps_total}, más que los {deposit} "
+        "disponibles, así que cada una recibe la misma proporción de su "
+        "brecha (alrededor del {pct}%)."
+    ),
+    "portfolio.stress.newmoney_explain_b_example_tail": " {h1} recibe {buy1}.",
+    "portfolio.stress.newmoney_explain_b_use": (
+        "Úsalo cuando: quieras que el valor actual de la cartera "
+        "termine lo más cerca posible de la combinación."
+    ),
+    "portfolio.stress.newmoney_explain_c_how": (
+        "Cómo funciona: 1) Lo que has invertido hasta ahora más el "
+        "dinero nuevo es el nuevo total: {invested_total} + {deposit} = "
+        "{new_total}. 2) El objetivo de cada posición = su % de "
+        "combinación × ese total. 3) El dinero va solo a las posiciones "
+        "donde has invertido menos que su objetivo, en proporción a "
+        "cuánto les falta. Los movimientos de precio se ignoran: una "
+        "posición que cayó no recibe más solo porque cayó."
+    ),
+    "portfolio.stress.newmoney_explain_c_example": (
+        "Ejemplo: el objetivo de {h1} es {mix1}% × {new_total} = "
+        "{target1}. Has invertido {inv1}, así que le faltan {gap1}."
+    ),
+    "portfolio.stress.newmoney_explain_c_example_over": (
+        " {h2} está {pl2}, pero ya has invertido {inv2}, más que su "
+        "objetivo de {target2}, así que recibe {zero}."
+    ),
+    "portfolio.stress.newmoney_explain_c_example_capped": (
+        " Las brechas suman {gaps_total}, más que los {deposit} "
+        "disponibles, así que cada una recibe alrededor del {pct}% de "
+        "su brecha."
+    ),
+    "portfolio.stress.newmoney_explain_c_example_tail": " {h1} recibe {buy1}.",
+    "portfolio.stress.newmoney_explain_c_use": (
+        "Úsalo cuando: quieras que tu dinero invertido coincida con la "
+        "combinación, sin importar cómo le haya ido a cada posición "
+        "desde entonces. Su columna \"Ponderación de mercado después\" "
+        "será distinta de la combinación, porque los precios se han "
+        "movido."
+    ),
+    "portfolio.stress.newmoney_pl_up": "subió un {pct}%",
+    "portfolio.stress.newmoney_pl_down": "bajó un {pct}%",
     "portfolio.stress.newmoney_col_holding": "Posición",
     "portfolio.stress.newmoney_col_mix_pct": "% combinación",
     "portfolio.stress.newmoney_col_invested": "Invertiste",
@@ -7333,28 +7460,6 @@ ES = {
     "portfolio.stress.newmoney_col_total": "Total",
     "portfolio.stress.newmoney_gap_over": "por encima",
     "portfolio.stress.newmoney_unallocated_caption": "Efectivo sin asignar: {amount}",
-    "portfolio.stress.newmoney_method_b_caption": (
-        "Método: valor objetivo por posición = % combinación × (total "
-        "actual + depósito); el depósito se asigna primero a las brechas "
-        "más grandes, sin vender nunca y sin superar el depósito. Cuando "
-        "el efectivo no alcanza para cerrar todas las brechas, la "
-        "asignación es proporcional a las brechas restantes. Las "
-        "posiciones que ya están en su objetivo o por encima no reciben "
-        "nada."
-    ),
-    "portfolio.stress.newmoney_method_c_caption": (
-        "Método: el objetivo invertido por posición = % de la combinación "
-        "× (total ya invertido + depósito). El depósito llena la brecha "
-        "entre ese objetivo y lo que realmente has invertido, de modo que "
-        "tu dinero comprometido llega a la combinación sin importar cómo "
-        "se haya comportado cada posición. Las ponderaciones de mercado "
-        "se alejarán de la combinación — las últimas dos columnas "
-        "muestran ambas. Este modo depende más de tu costo base "
-        "registrado que los otros dos: si \"Invertiste\" no refleja cada "
-        "compra de una posición (ver la nota de arriba), el objetivo y la "
-        "brecha de esa posición estarán desviados exactamente en esa "
-        "misma medida."
-    ),
     "portfolio.stress.newmoney_missing_cost_basis_warning": (
         "Sin costo base registrado para: {tickers}. Apuntar a la "
         "asignación original necesita una cifra real de \"Invertiste\" "

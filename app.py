@@ -21122,6 +21122,134 @@ def _render_stress_per_holding_table(result, _st_, lang="en"):
     _mobile_column_help_expander(list(_col_help.items()), lang=lang)
 
 
+def _newmoney_explanation(mode, tickers, edited_pcts, weights, costs,
+                           nm_current_total, nm_invested_total, nm_deposit,
+                           nm_target, nm_buy, nm_total_gap=None, lang="en"):
+    """TASK 73 (Director-directed, owner-approved, 22 Nov 2026): the
+    "Deploy new money" per-mode explanation - "How it works" / a live
+    "Example" built from the SAME numbers the table below the mode
+    selector shows / "Use it when" - for whichever of the three
+    allocation modes ("a"/"b"/"c") is currently selected. Pure (no
+    Streamlit calls, no network) so it's directly unit-testable against a
+    fixture - reused UNCHANGED by _render_stress_rebalance_sandbox() for
+    the real page, fed the exact same nm_target/nm_buy/nm_total_gap the
+    table itself renders from (computed once, by that caller, never
+    re-derived here), so the Example and the table can never disagree.
+
+    mode "a" has no target/gap concept at all (nm_target/nm_total_gap are
+    always None for it - see _render_stress_rebalance_sandbox()'s own
+    Mode A comment). nm_deposit <= 0, or nm_buy itself falsy/None (the
+    Mode C missing-cost-basis guard sets it to None rather than computing
+    a meaningless allocation), returns (how_text, None, use_text) - no
+    Example, per the Director's own instruction; How it works/Use it when
+    always render regardless.
+
+    H1 (the worked example's main holding) is whichever ticker nm_buy
+    hands the LARGEST amount to. H2 (the "already over" counter-example,
+    omitted entirely when no such holding exists) is the ticker furthest
+    above its own current/target weight, excluding H1 - for mode "c"
+    specifically, preferring one sitting on a LOSS among the "over"
+    candidates if any has one (the Director's own instruction: "that's
+    the case people find surprising" - an over-invested holding that's
+    ALSO lost money is the counterintuitive case worth illustrating, not
+    just any over-invested one)."""
+    _t = lambda key, **fmt: i18n.t(f"portfolio.stress.{key}", lang, **fmt)
+    if mode == "a":
+        how_text = _t("newmoney_explain_a_how")
+    elif mode == "b":
+        how_text = _t(
+            "newmoney_explain_b_how",
+            hold_now_total=_fmt_aud_md(nm_current_total), deposit=_fmt_aud_md(nm_deposit),
+            new_total=_fmt_aud_md(nm_current_total + nm_deposit),
+        )
+    else:
+        how_text = _t(
+            "newmoney_explain_c_how",
+            invested_total=_fmt_aud_md(nm_invested_total), deposit=_fmt_aud_md(nm_deposit),
+            new_total=_fmt_aud_md(nm_invested_total + nm_deposit),
+        )
+    use_text = _t(f"newmoney_explain_{mode}_use")
+
+    if nm_deposit <= 0 or not nm_buy:
+        return how_text, None, use_text
+
+    h1 = max(nm_buy, key=nm_buy.get)
+    parts = []
+
+    if mode == "a":
+        parts.append(_t(
+            "newmoney_explain_a_example", h1=h1, mix1=f"{edited_pcts[h1]:.1f}",
+            deposit=_fmt_aud_md(nm_deposit), buy1=_fmt_aud_md(nm_buy[h1]),
+        ))
+        over = [
+            t for t in tickers if t != h1 and nm_current_total > 0
+            and (weights.get(t, 0.0) / nm_current_total * 100.0) > edited_pcts.get(t, 0.0)
+        ]
+        if over:
+            h2 = max(over, key=lambda t: (weights.get(t, 0.0) / nm_current_total * 100.0) - edited_pcts[t])
+            parts.append(_t(
+                "newmoney_explain_a_example_over", h2=h2,
+                mix2=f"{edited_pcts[h2]:.1f}", buy2=_fmt_aud_md(nm_buy[h2]),
+            ))
+        return how_text, "".join(parts), use_text
+
+    _base = weights if mode == "b" else costs
+    _new_total = (nm_current_total if mode == "b" else nm_invested_total) + nm_deposit
+    _gap1 = max(0.0, nm_target[h1] - _base.get(h1, 0.0))
+    if mode == "b":
+        parts.append(_t(
+            "newmoney_explain_b_example", h1=h1, mix1=f"{edited_pcts[h1]:.1f}",
+            new_total=_fmt_aud_md(_new_total), target1=_fmt_aud_md(nm_target[h1]),
+            hold1=_fmt_aud_md(_base.get(h1, 0.0)), gap1=_fmt_aud_md(_gap1),
+        ))
+    else:
+        parts.append(_t(
+            "newmoney_explain_c_example", h1=h1, mix1=f"{edited_pcts[h1]:.1f}",
+            new_total=_fmt_aud_md(_new_total), target1=_fmt_aud_md(nm_target[h1]),
+            inv1=_fmt_aud_md(_base.get(h1, 0.0)), gap1=_fmt_aud_md(_gap1),
+        ))
+
+    over = [t for t in tickers if t != h1 and _base.get(t, 0.0) >= nm_target[t]]
+    h2 = None
+    if mode == "c" and over:
+        losers = [
+            t for t in over
+            if costs.get(t, 0.0) > 0 and weights.get(t, 0.0) < costs.get(t, 0.0)
+        ]
+        h2 = max(losers or over, key=lambda t: _base.get(t, 0.0) - nm_target[t])
+    elif over:
+        h2 = max(over, key=lambda t: _base.get(t, 0.0) - nm_target[t])
+    if h2 is not None:
+        if mode == "b":
+            parts.append(_t(
+                "newmoney_explain_b_example_over", h2=h2,
+                target2=_fmt_aud_md(nm_target[h2]), hold2=_fmt_aud_md(weights.get(h2, 0.0)),
+                zero=_fmt_aud_md(0.0),
+            ))
+        else:
+            _cost2 = costs.get(h2, 0.0)
+            _gain2_pct = ((weights.get(h2, 0.0) - _cost2) / _cost2 * 100.0) if _cost2 else 0.0
+            pl2 = (
+                _t("newmoney_pl_down", pct=f"{abs(_gain2_pct):.1f}") if _gain2_pct < 0
+                else _t("newmoney_pl_up", pct=f"{_gain2_pct:.1f}")
+            )
+            parts.append(_t(
+                "newmoney_explain_c_example_over", h2=h2, pl2=pl2,
+                inv2=_fmt_aud_md(_cost2), target2=_fmt_aud_md(nm_target[h2]),
+                zero=_fmt_aud_md(0.0),
+            ))
+
+    if nm_total_gap is not None and nm_total_gap >= nm_deposit and nm_total_gap > 0:
+        _pct = nm_deposit / nm_total_gap * 100.0
+        parts.append(_t(
+            f"newmoney_explain_{mode}_example_capped",
+            gaps_total=_fmt_aud_md(nm_total_gap), deposit=_fmt_aud_md(nm_deposit), pct=f"{_pct:.0f}",
+        ))
+
+    parts.append(_t(f"newmoney_explain_{mode}_example_tail", h1=h1, buy1=_fmt_aud_md(nm_buy[h1])))
+    return how_text, "".join(parts), use_text
+
+
 def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, index_histories,
                                        total_value_aud, current_result, _st_, lang="en",
                                        costs=None):
@@ -21813,7 +21941,142 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                 default=_nm_mode_a_label, key=f"{_skey}_newmoney_mode",
                 label_visibility="collapsed",
             ) or _nm_mode_a_label
-        st.caption(_st_("newmoney_mode_caption"))
+
+        # TASK 73 (Director-directed, owner-approved, 22 Nov 2026):
+        # replaces the old shared newmoney_mode_caption (described only
+        # modes A/B, shown for all three) with one explanation per mode,
+        # shown only for the mode actually selected - "How it works", a
+        # live "Example" built from THIS portfolio's own numbers, and
+        # "Use it when". Mode/missing-cost-basis detection and the
+        # target/buy allocation itself are hoisted up from the `else`
+        # branch further down (unchanged formulas, just computed once
+        # here so the Example above the table and the table itself can
+        # never disagree) - see _newmoney_explanation()'s own docstring.
+        _nm_is_mode_b = _nm_mode == _nm_mode_b_label
+        _nm_is_mode_c = _nm_mode == _nm_mode_c_label
+        _nm_mode_letter = "b" if _nm_is_mode_b else ("c" if _nm_is_mode_c else "a")
+        _nm_missing_cost_basis = (
+            [t for t in tickers if costs.get(t, 0.0) <= 0] if _nm_is_mode_c else []
+        )
+        _nm_target, _nm_buy, _nm_total_gap = None, None, None
+        if _nm_deposit > 0 and not (_nm_is_mode_c and _nm_missing_cost_basis):
+            if _nm_is_mode_b:
+                # Mode B - "Top up toward mix": target_i = pct_i/100 *
+                # (current_total + deposit); shortfall_i = max(0,
+                # target_i - current_i). If the total shortfall can't be
+                # fully closed by this deposit, the cash is split
+                # PROPORTIONALLY to the shortfalls (the biggest gaps get
+                # the most, nothing is ever pushed past its own gap by
+                # this branch). Once every gap IS closed (including the
+                # trivial case where nothing was underweight to begin
+                # with), whatever cash is left over splits by mix % -
+                # exactly Mode A's own rule, reused via the same
+                # _largest_remainder_round(target=...) call so both
+                # modes allocate cents identically once there's no gap
+                # left to fill. A holding already at/above its target has
+                # shortfall 0 and therefore receives $0 here - this
+                # section only ever ADDS cash to a holding, it never
+                # removes any, so nothing is ever negative or a sell.
+                _nm_target = {
+                    t: (edited_pcts[t] / 100.0) * (_nm_current_total + _nm_deposit) for t in tickers
+                }
+                _nm_shortfall = {t: max(0.0, _nm_target[t] - weights.get(t, 0.0)) for t in tickers}
+                _nm_total_gap = sum(_nm_shortfall.values())
+                if _nm_total_gap >= _nm_deposit and _nm_total_gap > 0:
+                    _nm_buy = {t: _nm_deposit * (_nm_shortfall[t] / _nm_total_gap) for t in tickers}
+                else:
+                    _nm_remainder = _nm_deposit - _nm_total_gap
+                    _nm_remainder_split = _largest_remainder_round(
+                        {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
+                        decimals=2, target=_nm_remainder,
+                    )
+                    _nm_buy = {t: _nm_shortfall[t] + _nm_remainder_split[t] for t in tickers}
+            elif _nm_is_mode_c:
+                # Mode C - "Target original allocation": mirrors Mode
+                # B's structure exactly, base swapped from market value
+                # (weights/_nm_current_total) to cost basis (costs/
+                # _nm_invested_total) - target_i = pct_i/100 *
+                # (invested_total + deposit); gap_i = max(0, target_i -
+                # invested_i). Same gap-fills-first-then-mix-splits-the-
+                # remainder rule, same _largest_remainder_round(target=)
+                # call Mode B uses, so both behave predictably next to
+                # each other. A holding at/above its cost-basis target
+                # gets $0 here too - never negative, never a sell.
+                #
+                # Commit G correction: a clamped-to-$0 holding (one
+                # already at/above its cost-basis target) does NOT make
+                # the else (remainder-split) branch below reachable -
+                # verified both algebraically and by a 500,000-trial
+                # randomized stress test (including holdings clamped by
+                # large amounts) before writing this comment. Clamping a
+                # negative raw gap to 0 REMOVES a negative term from the
+                # sum rather than subtracting from it, which can only
+                # push total_gap UP relative to deposit, never down -
+                # every trial with edited_pcts summing to exactly 100%
+                # had total_gap >= deposit, so the `if` branch above
+                # always fired regardless of how far over target a
+                # holding was. The else branch's real, verified trigger
+                # is upstream of this Mode entirely: this whole section
+                # only renders once edited_pcts sums within +/-0.5 of
+                # 100% (the `abs(total_edit - 100.0) > 0.5: return` gate
+                # well above), not exactly 100% - target_i's sum is
+                # (edited total %)/100 * (invested_total + deposit), so
+                # a total sitting under 100% (allowed by that tolerance)
+                # makes target_i's sum, and therefore total_gap, come in
+                # under deposit for real. Confirmed in the same stress
+                # test: reachable in ~4% of trials when total_edit was
+                # allowed to vary within that +/-0.5 band, and in every
+                # one of those cases total_edit was under 100% - never
+                # once with total_edit >= 100%, however far over target
+                # a holding was. Do not delete this branch as
+                # unreachable - it is real, just not for the reason a
+                # "holding over target" framing suggests.
+                #
+                # Note (flagged for Andrew, not fixed here without a
+                # decision): as written, the remainder in this branch
+                # still splits by mix % across ALL tickers, including
+                # one already over its cost-basis target - pushing it
+                # further over and against Mode C's own "lands on the
+                # mix" premise for committed money. Mode B has the
+                # identical behavior and the original spec said to
+                # mirror Mode B's structure exactly, so this is correct-
+                # to-spec, not a bug - but restricting the remainder
+                # split to only the tickers still under target would be
+                # more faithful to what Mode C promises. Left as spec'd
+                # pending Andrew's call.
+                _nm_target = {
+                    t: (edited_pcts[t] / 100.0) * (_nm_invested_total + _nm_deposit) for t in tickers
+                }
+                _nm_gap = {t: max(0.0, _nm_target[t] - costs.get(t, 0.0)) for t in tickers}
+                _nm_total_gap = sum(_nm_gap.values())
+                if _nm_total_gap >= _nm_deposit and _nm_total_gap > 0:
+                    _nm_buy = {t: _nm_deposit * (_nm_gap[t] / _nm_total_gap) for t in tickers}
+                else:
+                    _nm_remainder = _nm_deposit - _nm_total_gap
+                    _nm_remainder_split = _largest_remainder_round(
+                        {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
+                        decimals=2, target=_nm_remainder,
+                    )
+                    _nm_buy = {t: _nm_gap[t] + _nm_remainder_split[t] for t in tickers}
+            else:
+                # Mode A - "Split by mix %": exactly the current mix,
+                # largest-remainder rounded to the CENT (decimals=2, not
+                # this helper's usual 1-decimal-percent grid) so the
+                # column sums to the deposit exactly, never a few cents
+                # short/over from plain per-row rounding.
+                _nm_buy = _largest_remainder_round(
+                    {t: (edited_pcts[t] / 100.0) * _nm_deposit for t in tickers},
+                    decimals=2, target=_nm_deposit,
+                )
+        _nm_how_text, _nm_example_text, _nm_use_text = _newmoney_explanation(
+            _nm_mode_letter, tickers, edited_pcts, weights, costs,
+            _nm_current_total, _nm_invested_total, _nm_deposit,
+            _nm_target, _nm_buy, nm_total_gap=_nm_total_gap, lang=lang,
+        )
+        st.caption(_nm_how_text)
+        if _nm_example_text:
+            st.caption(_nm_example_text)
+        st.caption(_nm_use_text)
 
         # CSS-injection safety, same precedent as Part 49's saved-mix
         # chips: `_skey` carries arbitrary user text (the active
@@ -21858,10 +22121,7 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
 
         if _nm_deposit <= 0:
             st.caption(_st_("newmoney_zero_caption"))
-        else:
-            _nm_is_mode_b = _nm_mode == _nm_mode_b_label
-            _nm_is_mode_c = _nm_mode == _nm_mode_c_label
-
+        elif _nm_is_mode_c and _nm_missing_cost_basis:
             # Commit C (20 Sep 2026), Mode C guard: a holding with no
             # recorded cost basis would compute gap_i = target_i - 0 -
             # i.e. get handed almost the entire deposit as though it
@@ -21874,128 +22134,15 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             # normalisation story nobody asked for. Modes A/B never
             # read `costs` for their own arithmetic, so this only ever
             # applies to Mode C.
-            _nm_missing_cost_basis = (
-                [t for t in tickers if costs.get(t, 0.0) <= 0] if _nm_is_mode_c else []
-            )
-            if _nm_is_mode_c and _nm_missing_cost_basis:
-                st.warning(_st_(
-                    "newmoney_missing_cost_basis_warning",
-                    tickers=", ".join(_nm_missing_cost_basis),
-                ))
-            else:
-                if _nm_is_mode_b:
-                    # Mode B - "Top up toward mix": target_i = pct_i/100 *
-                    # (current_total + deposit); shortfall_i = max(0,
-                    # target_i - current_i). If the total shortfall can't be
-                    # fully closed by this deposit, the cash is split
-                    # PROPORTIONALLY to the shortfalls (the biggest gaps get
-                    # the most, nothing is ever pushed past its own gap by
-                    # this branch). Once every gap IS closed (including the
-                    # trivial case where nothing was underweight to begin
-                    # with), whatever cash is left over splits by mix % -
-                    # exactly Mode A's own rule, reused via the same
-                    # _largest_remainder_round(target=...) call so both
-                    # modes allocate cents identically once there's no gap
-                    # left to fill. A holding already at/above its target has
-                    # shortfall 0 and therefore receives $0 here - this
-                    # section only ever ADDS cash to a holding, it never
-                    # removes any, so nothing is ever negative or a sell.
-                    _nm_target = {
-                        t: (edited_pcts[t] / 100.0) * (_nm_current_total + _nm_deposit) for t in tickers
-                    }
-                    _nm_shortfall = {t: max(0.0, _nm_target[t] - weights.get(t, 0.0)) for t in tickers}
-                    _nm_total_shortfall = sum(_nm_shortfall.values())
-                    if _nm_total_shortfall >= _nm_deposit and _nm_total_shortfall > 0:
-                        _nm_buy = {
-                            t: _nm_deposit * (_nm_shortfall[t] / _nm_total_shortfall) for t in tickers
-                        }
-                    else:
-                        _nm_remainder = _nm_deposit - _nm_total_shortfall
-                        _nm_remainder_split = _largest_remainder_round(
-                            {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
-                            decimals=2, target=_nm_remainder,
-                        )
-                        _nm_buy = {t: _nm_shortfall[t] + _nm_remainder_split[t] for t in tickers}
-                elif _nm_is_mode_c:
-                    # Mode C - "Target original allocation": mirrors Mode
-                    # B's structure exactly, base swapped from market value
-                    # (weights/_nm_current_total) to cost basis (costs/
-                    # _nm_invested_total) - target_i = pct_i/100 *
-                    # (invested_total + deposit); gap_i = max(0, target_i -
-                    # invested_i). Same gap-fills-first-then-mix-splits-the-
-                    # remainder rule, same _largest_remainder_round(target=)
-                    # call Mode B uses, so both behave predictably next to
-                    # each other. A holding at/above its cost-basis target
-                    # gets $0 here too - never negative, never a sell.
-                    #
-                    # Commit G correction: a clamped-to-$0 holding (one
-                    # already at/above its cost-basis target) does NOT make
-                    # the else (remainder-split) branch below reachable -
-                    # verified both algebraically and by a 500,000-trial
-                    # randomized stress test (including holdings clamped by
-                    # large amounts) before writing this comment. Clamping a
-                    # negative raw gap to 0 REMOVES a negative term from the
-                    # sum rather than subtracting from it, which can only
-                    # push total_gap UP relative to deposit, never down -
-                    # every trial with edited_pcts summing to exactly 100%
-                    # had total_gap >= deposit, so the `if` branch above
-                    # always fired regardless of how far over target a
-                    # holding was. The else branch's real, verified trigger
-                    # is upstream of this Mode entirely: this whole section
-                    # only renders once edited_pcts sums within +/-0.5 of
-                    # 100% (the `abs(total_edit - 100.0) > 0.5: return` gate
-                    # well above), not exactly 100% - target_i's sum is
-                    # (edited total %)/100 * (invested_total + deposit), so
-                    # a total sitting under 100% (allowed by that tolerance)
-                    # makes target_i's sum, and therefore total_gap, come in
-                    # under deposit for real. Confirmed in the same stress
-                    # test: reachable in ~4% of trials when total_edit was
-                    # allowed to vary within that +/-0.5 band, and in every
-                    # one of those cases total_edit was under 100% - never
-                    # once with total_edit >= 100%, however far over target
-                    # a holding was. Do not delete this branch as
-                    # unreachable - it is real, just not for the reason a
-                    # "holding over target" framing suggests.
-                    #
-                    # Note (flagged for Andrew, not fixed here without a
-                    # decision): as written, the remainder in this branch
-                    # still splits by mix % across ALL tickers, including
-                    # one already over its cost-basis target - pushing it
-                    # further over and against Mode C's own "lands on the
-                    # mix" premise for committed money. Mode B has the
-                    # identical behavior and the original spec said to
-                    # mirror Mode B's structure exactly, so this is correct-
-                    # to-spec, not a bug - but restricting the remainder
-                    # split to only the tickers still under target would be
-                    # more faithful to what Mode C promises. Left as spec'd
-                    # pending Andrew's call.
-                    _nm_target = {
-                        t: (edited_pcts[t] / 100.0) * (_nm_invested_total + _nm_deposit) for t in tickers
-                    }
-                    _nm_gap = {t: max(0.0, _nm_target[t] - costs.get(t, 0.0)) for t in tickers}
-                    _nm_total_gap = sum(_nm_gap.values())
-                    if _nm_total_gap >= _nm_deposit and _nm_total_gap > 0:
-                        _nm_buy = {
-                            t: _nm_deposit * (_nm_gap[t] / _nm_total_gap) for t in tickers
-                        }
-                    else:
-                        _nm_remainder = _nm_deposit - _nm_total_gap
-                        _nm_remainder_split = _largest_remainder_round(
-                            {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
-                            decimals=2, target=_nm_remainder,
-                        )
-                        _nm_buy = {t: _nm_gap[t] + _nm_remainder_split[t] for t in tickers}
-                else:
-                    # Mode A - "Split by mix %": exactly the current mix,
-                    # largest-remainder rounded to the CENT (decimals=2, not
-                    # this helper's usual 1-decimal-percent grid) so the
-                    # column sums to the deposit exactly, never a few cents
-                    # short/over from plain per-row rounding.
-                    _nm_target = None
-                    _nm_buy = _largest_remainder_round(
-                        {t: (edited_pcts[t] / 100.0) * _nm_deposit for t in tickers},
-                        decimals=2, target=_nm_deposit,
-                    )
+            st.warning(_st_(
+                "newmoney_missing_cost_basis_warning",
+                tickers=", ".join(_nm_missing_cost_basis),
+            ))
+        else:
+                # TASK 73: _nm_target/_nm_buy were already computed above
+                # (right after mode selection, so the Example text and
+                # this table are always built from the identical values) -
+                # see that block's own comments for the per-mode formulas.
 
                 # Units are floored at the latest close - a fraction of a
                 # share can't actually be bought. A priceless ticker buys 0
@@ -22135,10 +22282,9 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                 )
                 st.caption(_st_("newmoney_unallocated_caption", amount=_fmt_aud(_nm_unallocated)))
                 st.caption(_st_("newmoney_invested_caption"))
-                if _nm_is_mode_b:
-                    st.caption(_st_("newmoney_method_b_caption"))
-                elif _nm_is_mode_c:
-                    st.caption(_st_("newmoney_method_c_caption"))
+                # TASK 73: the old method_b_caption/method_c_caption are
+                # removed - their content is now covered by the per-mode
+                # "How it works" explanation shown above the table.
                 st.caption(_st_(
                     "newmoney_disclosure_caption",
                     toll_tab=f"**{i18n.t('portfolio.tab_switch', lang)}**",
