@@ -253,7 +253,20 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # fcf_valuation_engine.py's own change is covered by VALUATION_SOURCE_
 # HASH below; belt-and-suspenders bump, same reasoning as every prior
 # ENGINE_VERSION bump above.
-ENGINE_VERSION = 53
+# 53->54 (Director-directed, owner-approved, 22 Nov 2026, TASK 74/75):
+# _avg_pe_3pt -> _avg_pe_4pt (PE Ratio Average now TTM + last 3 FY P/Es,
+# matching the workbook's own AU = AVERAGE(AQ:AT), not the previous
+# TTM + last 2 FY) directly changes "PE Ratio Average" and PE Trailing's
+# Fair Value method for every ticker - NOT covered by VALUATION_SOURCE_
+# HASH (that hash only covers fcf_valuation_engine.py/capm_engine.py/
+# resolver_engine.py/share_class_engine.py, never this file itself).
+# Also: _iv_bv_series() now returns a new "prices" key (per-year price
+# for the new "IV/BV vs Share Price, indexed" chart) - a cached section
+# written before this bump never has that key, so the chart would
+# silently show no price line for an already-cached ticker without this
+# bump. No mass refresh - every page simply recomputes, and re-caches
+# under the new version, the next time it's viewed.
+ENGINE_VERSION = 54
 
 
 def _valuation_source_hash():
@@ -2008,13 +2021,21 @@ def _cov_corr(a_series, b_series):
     return cov, corr, var_a
 
 
-def _avg_pe_3pt(bundle):
-    """"PE Ratio Average": the workbook's real AU = AVERAGE(PE_TTM,
-    PE_lastFY, PE_prevFY) - the 3 most recent P/E points only, NOT an
-    all-years average. The previous all-years average badly inflated
-    high-multiple stocks (the primary cause of Fair Value being reported
-    as unreasonably large before this fix). Skips non-positive-EPS years/
-    TTM; falls back to info["trailingPE"] only if nothing is computable."""
+def _avg_pe_4pt(bundle):
+    """"PE Ratio Average": the workbook's real AU = AVERAGE(AQ:AT), i.e.
+    AVERAGE(PE_TTM, PE_lastFY, PE_prevFY, PE_prevFY2) - the 4 most recent
+    P/E points only (TTM + the last 3 fiscal years), NOT an all-years
+    average. The previous all-years average badly inflated high-multiple
+    stocks (the primary cause of Fair Value being reported as
+    unreasonably large before that original fix).
+
+    TASK 74 (Director-directed, owner-approved, 22 Nov 2026): widened
+    from 3 points (TTM + last 2 FY) to 4 (TTM + last 3 FY) to match the
+    workbook's own AU formula exactly - AU = AVERAGE(AQ:AT) is 4 cells,
+    not 3; the prior version here was one fiscal year short. Renamed
+    from _avg_pe_3pt to _avg_pe_4pt to match. Still skips non-positive-
+    EPS years/TTM; still falls back to info["trailingPE"] only if
+    nothing is computable."""
     info = bundle.get("info") or {}
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
     trailing_eps, _ = _eps_ttm(bundle)
@@ -2022,7 +2043,7 @@ def _avg_pe_3pt(bundle):
     pes = []
     if price_now and trailing_eps and trailing_eps > 0:
         pes.append(price_now / trailing_eps)
-    for y, eps in _eps_series(bundle)[:2]:
+    for y, eps in _eps_series(bundle)[:3]:
         if eps is not None and eps > 0:
             p = year_end_prices.get(y)
             if p is not None:
@@ -2035,8 +2056,10 @@ def _avg_pe_3pt(bundle):
 def _pe_avg_3y_by_eps(bundle):
     """"PE Ratio Average 3 Years": current price divided by the AVERAGE OF
     THE 3 MOST RECENT EPS VALUES (EPS_TTM, EPS_lastFY, EPS_prevFY) - a
-    different figure from _avg_pe_3pt ("PE Ratio Average", an average of 3
-    separate P/E ratios). Both are real, distinct workbook metrics."""
+    different figure from _avg_pe_4pt ("PE Ratio Average", an average of 4
+    separate P/E ratios: TTM + the last 3 fiscal years). Both are real,
+    distinct workbook metrics - this one is NOT affected by TASK 74's
+    3pt->4pt widening of _avg_pe_4pt."""
     info = bundle.get("info") or {}
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
     trailing_eps, _ = _eps_ttm(bundle)
@@ -2988,7 +3011,17 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
     growth/discount/perpetual-rate the site's own DCF used for this
     ticker, so the series stays internally consistent with the DCF the
     site actually shows. BVPS_y uses TODAY's share count for every
-    historical year (historical share counts aren't available)."""
+    historical year (historical share counts aren't available).
+
+    TASK 75 (Director-directed, owner-approved, 22 Nov 2026): also
+    returns "prices" - the year-end share price for every entry in
+    "years" (via _year_end_prices(), same fiscal-year-end matching every
+    other per-year price lookup in this module already uses; None where
+    a year's price can't be resolved), plus the TTM point's own price
+    (today's price, not a year-end close - same convention as every
+    other TTM point in this module). Feeds compounder_ui's new "IV/BV
+    vs Share Price, indexed" chart - display only, doesn't change the
+    ratios/years this function already returned."""
     g_earn = dcf_result.get("growth")
     d_dcf = dcf_result.get("discount_rate")
     p = dcf_result.get("perpetual_rate")
@@ -3059,7 +3092,22 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
 
     if not years:
         return None
-    return {"years": years, "ratios": ratios}
+
+    # TASK 75: "prices" - one entry per "years"/"ratios" slot, same
+    # order. Non-TTM years go through _year_end_prices() exactly like
+    # every other per-fiscal-year price lookup in this module (see
+    # _avg_pe_4pt() above); the TTM slot (always years[0] when present -
+    # see the TTM block above) uses TODAY's price instead of a year-end
+    # close, same convention as every other TTM figure here. None where
+    # a price can't be resolved (becomes a gap in the new chart, never a
+    # fabricated/zero value).
+    year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
+    price_now = _basics(bundle).get("price")
+    prices = [
+        price_now if y.startswith("TTM") else year_end_prices.get(y)
+        for y in years
+    ]
+    return {"years": years, "ratios": ratios, "prices": prices}
 
 
 def _fcf_growth_entry(bundle):
@@ -3595,7 +3643,7 @@ def _build_earnings_trends(bundle, ticker, ref):
             if mean_old:
                 add("10Y Growth (3Y AVG)", (mean_new - mean_old) / abs(mean_old), "pct", flagged=overlap)
 
-    avg_pe = _avg_pe_3pt(bundle)
+    avg_pe = _avg_pe_4pt(bundle)
     pe_avg_3y_by_eps = _pe_avg_3y_by_eps(bundle)
     add("PE Ratio Average", avg_pe, "x")
     add("PE Ratio Average 3 Years", pe_avg_3y_by_eps, "x")
@@ -4667,7 +4715,7 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
     info, price = b["info"], b["price"]
     trailing_eps, _ = _eps_ttm(bundle)
     g_earn = dcf_result.get("growth")
-    avg_pe = _avg_pe_3pt(bundle)
+    avg_pe = _avg_pe_4pt(bundle)
 
     # Push 3 (owner-directed, 30 Sep 2026): computed ONCE, shared by all
     # three EPS-driven methods below (PE Forward/PE Trailing/Equity 10y)

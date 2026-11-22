@@ -186,7 +186,7 @@ _bundle1_ace = {
     "income": _eps_income, "income_q": pd.DataFrame(),
     "prices_10y": _bundle1["prices_10y"], "meta": {},
 }
-_avg_pe1 = ace._avg_pe_3pt(_bundle1_ace)
+_avg_pe1 = ace._avg_pe_4pt(_bundle1_ace)
 check("FIX: PE Ratio Average computed from the repaired series is sane "
       "(tens, not the broken 3,431x/.../1,807x-scale garbage)",
       _avg_pe1 is not None and 5.0 < _avg_pe1 < 50.0)

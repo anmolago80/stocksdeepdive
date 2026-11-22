@@ -537,6 +537,93 @@ def _cp_iv_bv_series_chart(ticker, iv_bv_series, thresholds):
     return fig
 
 
+def _cp_iv_bv_vs_price_chart(ticker, iv_bv_series):
+    """TASK 75 (Director-directed, owner-approved, 22 Nov 2026): "IV/BV
+    vs Share Price, indexed" - two lines on ONE y-axis (IV/BV index,
+    solid; share-price index, dashed), same years/order as the IV/BV by
+    Year chart right above this one, both indexed to the first year
+    where IV/BV > 0 AND a price exists ("the base year") = 100. Shows
+    whether the model's intrinsic-value opinion of this company has
+    risen/fallen in the same shape as its actual share price, or
+    diverged from it - not a second IV/BV gauge.
+
+    Returns (fig_or_None, no_chart_reason_or_None) - exactly one of the
+    two is ever non-None. `iv_bv_series` entries missing "prices"
+    entirely (an old disk-cached section from before this task, or
+    hand-built Research data from before build_compounder_data.py was
+    updated) are treated as "no price data for any year", which simply
+    means no usable base year is found - same, honest "not enough
+    years" outcome as any other missing-price case, never a crash."""
+    entry = iv_bv_series.get(ticker) or {}
+    years_raw = entry.get("years") or []
+    if not years_raw:
+        return None, None
+    ratios_raw = entry.get("ratios") or []
+    prices_raw = entry.get("prices") or [None] * len(years_raw)
+
+    # Same "reversed() = oldest-first, left-to-right chronological"
+    # convention _cp_iv_bv_series_chart() above already uses.
+    years = list(reversed(years_raw))
+    ratios = list(reversed(ratios_raw))
+    prices = list(reversed(prices_raw))
+
+    base_idx = next(
+        (i for i, (r, p) in enumerate(zip(ratios, prices)) if r is not None and r > 0 and p is not None),
+        None,
+    )
+    if base_idx is None or (len(years) - base_idx) < 3:
+        return None, (
+            "Not enough years with both a positive modelled IV/BV and a "
+            "matching share price yet to build an indexed comparison - "
+            "needs at least 3, starting from the first year both are "
+            "available."
+        )
+
+    plot_years = years[base_idx:]
+    base_ratio, base_price = ratios[base_idx], prices[base_idx]
+    iv_bv_index, price_index, iv_bv_text, price_text = [], [], [], []
+    for r, p in zip(ratios[base_idx:], prices[base_idx:]):
+        if r is None:
+            iv_bv_index.append(None)
+            iv_bv_text.append(None)
+        else:
+            iv_bv_index.append(r / base_ratio * 100.0)
+            iv_bv_text.append(f"{r / base_ratio * 100.0:.0f} ({r:.1f}x)")
+        if p is None:
+            price_index.append(None)
+            price_text.append(None)
+        else:
+            price_index.append(p / base_price * 100.0)
+            # _currency_symbol_for_ticker()/_fmt_money() (not _cp_format's
+            # "cur" branch, which never disambiguates AUD/USD - see its own
+            # docstring) so an ASX ticker's price tooltip reads "A$112.00",
+            # never a bare, ambiguous "$112.00".
+            price_text.append(
+                f"{p / base_price * 100.0:.0f} "
+                f"({_fmt_money(p, _currency_symbol_for_ticker(ticker))})"
+            )
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=plot_years, y=iv_bv_index, mode="lines+markers", name="IV/BV index",
+        line=dict(color="#2dd4bf", dash="solid"), text=iv_bv_text,
+        hovertemplate="%{text}<extra>IV/BV index</extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_years, y=price_index, mode="lines+markers", name="Share price index",
+        line=dict(color="#60a5fa", dash="dash"), text=price_text,
+        hovertemplate="%{text}<extra>Share price index</extra>",
+    ))
+    base_year = plot_years[0]
+    fig.update_layout(
+        title=f"IV/BV vs Share Price, indexed ({base_year} = 100)",
+        height=300, margin=dict(l=10, r=10, t=40, b=10),
+        yaxis_title="Index", xaxis_type="category",
+        legend=dict(orientation="h", y=-0.2),
+    )
+    return fig, None
+
+
 def _cp_year_bar_chart(ticker, series, key, title, yaxis_title, fmt="num", color="#2dd4bf"):
     """Generic X=year bar chart for a year-series (EPS, PE Ratio, ...) - one
     consistent shape reused per metric. The only caller today is "EPS by
@@ -645,9 +732,12 @@ def _cp_book_value_growth_chart(ticker, book_value_growth):
 
 
 def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
-    """PE Ratio by Year, plus two reference lines (3y-EPS-average P/E and
-    the overall average P/E) drawn full-width with a manual add_annotation
-    label (not add_hline's own annotation_*, which silently clips)."""
+    """PE Ratio by Year, plus two reference lines ("PE Ratio Average 3
+    Years" and "PE Ratio Average" - TASK 74, Director-directed, owner-
+    approved, 22 Nov 2026: renamed from "3y EPS avg"/"Overall avg" to
+    match the workbook's own names for these two metrics exactly) drawn
+    full-width with a manual add_annotation label (not add_hline's own
+    annotation_*, which silently clips)."""
     entry = series.get(ticker, {}).get("pe_ratio")
     if not entry or not entry.get("years"):
         return None
@@ -680,8 +770,8 @@ def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
             font=dict(color=color, size=11), align="left",
         )
 
-    _cp_pe_ref_line(avg_3y, "#fb923c", "dash", "3y EPS avg", avg_3y_yanchor)
-    _cp_pe_ref_line(overall_avg, "#60a5fa", "dot", "Overall avg", overall_avg_yanchor)
+    _cp_pe_ref_line(avg_3y, "#fb923c", "dash", "PE Ratio Average 3 Years", avg_3y_yanchor)
+    _cp_pe_ref_line(overall_avg, "#60a5fa", "dot", "PE Ratio Average", overall_avg_yanchor)
     fig.update_layout(
         title="PE Ratio by Year", height=340, showlegend=False,
         margin=dict(l=10, r=100, t=40, b=10), yaxis_title="PE Ratio",
@@ -1055,7 +1145,7 @@ def band_gauge(label, value, fmt, thresholds, flagged=False, comment=None, ticke
 # render_section - the shared per-section renderer both callers use.
 # -----------------------------------
 
-def render_section(sections, ticker, section_label, gate=None, lang="en"):
+def render_section(sections, ticker, section_label, gate=None, lang="en", is_auto=True):
     """
     Renders one COMPUTED section's full content (section-specific charts,
     then the colour-coded band-gauge grid, then the plain "other metrics"
@@ -1079,6 +1169,19 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
         matters" caption's language (falls back to the EN caption when
         this section_label has no ES entry yet) and is passed straight
         through to render_gate() for its own fixed chrome.
+    is_auto: True for the Deep Dive "Compounder View (auto)" caller
+        (auto_compounder_engine.build_sections() data, reached via
+        render_tabs() below), False for the Research page caller
+        (hand-built compounder_data.json data, the only caller that
+        reaches render_section() directly) - TASK 74 (Director-directed,
+        owner-approved, 22 Nov 2026). The two callers' `sections` shapes
+        are identical either way; this flag only picks which wording a
+        couple of "Text description of this chart" captions use (e.g.
+        the PE Ratio by Year chart's reference-line methodology, which
+        is a known formula for the live/auto data but just "from your
+        workbook" for hand-built data this module never recomputes).
+        Both real call sites pass it explicitly; the default here only
+        matters to a future caller that forgets to.
     """
     section = (sections or {}).get(section_label)
     if not section:
@@ -1136,6 +1239,26 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
                     "10-year series unlocks as deeper statement history "
                     "becomes available."
                 )
+        # TASK 75 (Director-directed, owner-approved, 22 Nov 2026): a new
+        # chart directly below the IV/BV by Year chart (and its depth
+        # caption above) - indexes IV/BV and share price to the same base
+        # year so their SHAPES compare directly, on one y-axis.
+        _ivbv_price_fig, _ivbv_price_no_chart_reason = _cp_iv_bv_vs_price_chart(
+            ticker, section.get("iv_bv_series", {}),
+        )
+        if _ivbv_price_fig:
+            sdd_plotly_chart(_ivbv_price_fig, config={"displayModeBar": False})
+            with st.expander("Text description of this chart", expanded=False):
+                st.caption(
+                    "Two lines, indexed to 100 in the first year both a modelled "
+                    "IV/BV and a share price are available: the model's IV/BV "
+                    "opinion of this company (solid) and its actual share price "
+                    "(dashed). Hover a point to see both the index and the real "
+                    "value. Yearly IV/BV uses today's growth, discount rate and "
+                    "share count - read the shape, not exact history."
+                )
+        elif _ivbv_price_no_chart_reason:
+            st.caption(_ivbv_price_no_chart_reason)
         fig3 = _cp_fcf_growth_chart(ticker, section.get("fcf_growth", {}))
         if fig3:
             sdd_plotly_chart(fig3, config={"displayModeBar": False})
@@ -1207,6 +1330,26 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
             with col:
                 if fig:
                     sdd_plotly_chart(fig, config={"displayModeBar": False})
+                    # TASK 74 (Director-directed, owner-approved, 22 Nov
+                    # 2026): the PE Ratio by Year chart's two reference
+                    # lines are only self-explanatory once you know what
+                    # each actually averages - a known, describable
+                    # formula for Auto (live) data, but just "whatever
+                    # your workbook's AU/AV cells compute" for hand-built
+                    # Research data this module never recomputes.
+                    if fig is fig3:
+                        with st.expander("Text description of this chart", expanded=False):
+                            if is_auto:
+                                st.caption(
+                                    "PE Ratio Average = average of TTM + last 3 FY "
+                                    "P/Es. PE Ratio Average 3 Years = price / average "
+                                    "of TTM + last 2 FY EPS."
+                                )
+                            else:
+                                st.caption(
+                                    "PE Ratio Average and PE Ratio Average 3 Years "
+                                    "are from your workbook."
+                                )
     elif section_label == "Cost of Capital":
         fig = _cp_wacc_roic_chart(ticker, section.get("wacc_roic_series", {}))
         if fig:
@@ -1716,7 +1859,7 @@ def with_trading_cost_tab(section_order, lang="en"):
 
 
 def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="en",
-                 price_history=None):
+                 price_history=None, is_auto=True):
     """Renders `st.tabs(section_order)` and calls render_section() in each
     tab - the same navigation mechanism the Research page already uses
     (see page_research()), reused as-is for the Deep Dive auto view so
@@ -1740,6 +1883,10 @@ def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="e
         for why this module never fetches it itself). None is fine when
         the tab is off or the caller has nothing to pass - render_
         trading_cost_tab() treats it exactly like an empty list.
+    is_auto: passed straight through to each tab's render_section() call -
+        True here (render_tabs()'s only caller today is the Deep Dive
+        auto view) - see render_section()'s own docstring (TASK 74,
+        Director-directed, owner-approved, 22 Nov 2026).
     """
     gates = gates or {}
     tab_labels = with_trading_cost_tab(with_news_tab(section_order, lang=lang), lang=lang)
@@ -1753,7 +1900,8 @@ def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="e
             elif label == tc_label:
                 render_trading_cost_tab(ticker, price_history, lang=lang)
             else:
-                render_section(sections, ticker, label, gate=gates.get(label), lang=lang)
+                render_section(sections, ticker, label, gate=gates.get(label), lang=lang,
+                                is_auto=is_auto)
 
 
 # -----------------------------------

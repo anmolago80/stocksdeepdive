@@ -53,7 +53,7 @@ def _bundle(income_df, trailing_eps=None, forward_eps=None, price=100.0, currenc
         info["forwardEps"] = forward_eps
     if trailing_pe is not None:
         # No price history in this fixture (prices_10y is empty and
-        # trailing EPS itself may be negative, so _avg_pe_3pt()'s own
+        # trailing EPS itself may be negative, so _avg_pe_4pt()'s own
         # 3 legs all skip) - trailingPE lets it fall back to a fixed
         # multiple, same as a real bundle with no usable price history
         # would.
@@ -95,7 +95,7 @@ _reasons = _fv["valuation_method_reasons"].get("CSLTEST", {})
 
 # BEFORE (what the raw, un-normalised trailing EPS would have done -
 # the exact CSL live symptom): -7.51 x avg_pe would have been negative.
-_avg_pe_csl = ace._avg_pe_3pt(_csl_bundle)
+_avg_pe_csl = ace._avg_pe_4pt(_csl_bundle)
 _pe_trailing_before = -7.51 * _avg_pe_csl if _avg_pe_csl else None
 assert _pe_trailing_before is not None and _pe_trailing_before < 0, _pe_trailing_before
 

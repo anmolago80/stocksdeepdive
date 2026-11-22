@@ -826,6 +826,33 @@ def _clean_num(v):
     return None
 
 
+def _iv_bv_year_prices(years, price_history_entry):
+    """TASK 75 (Director-directed, owner-approved, 22 Nov 2026): one
+    price per `years` label, for the new "IV/BV vs Share Price, indexed"
+    chart - built from `price_history_entry` ({"dates": [...monthly ISO
+    strings, chronological ascending...], "prices": [...]}, the same
+    shape the Fundamentals price_history dict already stores per
+    ticker), with no new workbook column. TTM/current label = the
+    LATEST monthly price on file; any other label = the last monthly
+    price dated within that calendar year (dates are chronological
+    ascending, so the last match in a year is that year's most recent
+    close). None (never a fabricated/zero value) where a year's price
+    can't be resolved - becomes a gap in the chart, same convention as
+    a missing auto-side (auto_compounder_engine._iv_bv_series())
+    price. Pure and side-effect-free so it's directly unit-testable
+    without the openpyxl workbook pipeline around it."""
+    dates = (price_history_entry or {}).get("dates") or []
+    prices = (price_history_entry or {}).get("prices") or []
+    out = []
+    for y in years:
+        if y.upper().startswith("TTM"):
+            out.append(prices[-1] if prices else None)
+            continue
+        year_matches = [p for d, p in zip(dates, prices) if d[:4] == y]
+        out.append(year_matches[-1] if year_matches else None)
+    return out
+
+
 def _clean_text(v):
     """Same "blank or Excel error string -> None, never invented" rule
     as _clean_num above, for the one new WACC build-up field (AK,
@@ -1080,7 +1107,13 @@ def build(path, anthropic_api_key=None):
                 years.append(str(period))
                 ratios.append(ratio)
         if years:
-            iv_bv_series[tkr] = {"years": years, "ratios": ratios}
+            # TASK 75 (Director-directed, owner-approved, 22 Nov 2026):
+            # a "prices" entry per year label, for the new "IV/BV vs
+            # Share Price, indexed" chart - see _iv_bv_year_prices()'s
+            # own docstring. Built from the Fundamentals price_history
+            # already loaded above - no new workbook column.
+            prices = _iv_bv_year_prices(years, price_history.get(tkr))
+            iv_bv_series[tkr] = {"years": years, "ratios": ratios, "prices": prices}
     out["sections"]["Value vs Book"]["iv_bv_series"] = iv_bv_series
 
     # ---- Earnings Trends follow-up: EPS, EPS Growth, and PE Ratio across

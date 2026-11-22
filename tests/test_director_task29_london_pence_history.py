@@ -336,7 +336,7 @@ check("FIX: year-end prices resolved from the repaired series are all "
       "near the real £2.30 price, not the broken ~£230 pence-scale "
       "figure the bug would have produced",
       all(1.8 <= p <= 2.8 for p in _year_end8.values()))
-_avg_pe8 = ace._avg_pe_3pt(_bundle8)
+_avg_pe8 = ace._avg_pe_4pt(_bundle8)
 check("FIX: PE Ratio Average computed from the repaired series is sane "
       "(tens, matching BCG.L's real ~25.56x TTM P/E) - not the broken "
       "1,807x/3,431x-scale garbage the mixed-unit series produced",

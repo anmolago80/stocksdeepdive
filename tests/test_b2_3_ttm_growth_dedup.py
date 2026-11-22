@@ -52,7 +52,7 @@ def _run(ttm_value, ttm_overlaps):
          mock.patch.object(ace, "_year_end_prices", side_effect=_fake_year_end_prices), \
          mock.patch.object(ace, "_ttm_overlaps_latest_fy", return_value=ttm_overlaps), \
          mock.patch.object(ace, "_bvps", return_value=None), \
-         mock.patch.object(ace, "_avg_pe_3pt", return_value=None), \
+         mock.patch.object(ace, "_avg_pe_4pt", return_value=None), \
          mock.patch.object(ace, "_pe_avg_3y_by_eps", return_value=None):
         result = ace._build_earnings_trends(BUNDLE, "TEST", ref={})
         return result["metrics"], result["series"]["TEST"]

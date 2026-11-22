@@ -7918,7 +7918,7 @@ def _render_cp_section(ticker, section_label, data):
         )
     compounder_ui.render_section(
         data["sections"], ticker, section_label, gate=gate,
-        lang=st.session_state.get("lang", "en"),
+        lang=st.session_state.get("lang", "en"), is_auto=False,
     )
 
 
@@ -12553,6 +12553,7 @@ def page_deep_dive():
                         _price_history_rows_for_trading_cost(_dd["ticker"])
                         if compounder_ui.TRADING_COST_ENABLED else None
                     ),
+                    is_auto=True,
                 )
                 _acv_meta = _acv_sections.get("_meta", {}) or {}
                 _acv_years = _acv_meta.get("statement_years")
