@@ -545,6 +545,18 @@ _CP_IVBV_PRICE_NOT_ENOUGH_CAPTION = (
 )
 
 
+def _parse_iso_date(value):
+    """TASK 76a (Director-directed, owner-approved, 23 Nov 2026):
+    auto_compounder_engine._iv_bv_vs_price_periods() stores every date
+    as a plain ISO "YYYY-MM-DD" string (json.dump()-safe for the
+    section cache). Tolerant of an already-a-date value too (e.g. a
+    caller/fixture that hasn't gone through the cache round trip at
+    all), so this never assumes one specific upstream shape."""
+    if isinstance(value, _dt.date):
+        return value
+    return _dt.date.fromisoformat(value)
+
+
 def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     """TASK 75 (Director-directed, owner-approved, 22 Nov 2026), rebuilt
     by TASK 76 (Director-directed, owner-approved, 23 Nov 2026): "IV/BV
@@ -562,6 +574,13 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     has no equivalent - the workbook carries no sub-annual price/report
     cadence data to build one from), so render_section() only calls
     this function when is_auto is True.
+
+    TASK 76a (Director-directed, owner-approved, 23 Nov 2026, urgent
+    hotfix): the engine's own "date"/"start"/"end" fields are plain
+    ISO "YYYY-MM-DD" strings (json.dump()-safe for the section cache -
+    see _iv_bv_vs_price_periods()'s own docstring for the live crash
+    this fixes), parsed back into real dates here, right after reading
+    `entry`, for the chart's date x-axis.
 
     IV/BV is a STEP line (line_shape="hv"): each fiscal year's own
     ratio holds flat from that year's end date until the next one;
@@ -582,11 +601,21 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     than 3 usable fiscal-year IV/BV points (including TTM, if present)
     once the base year is found, returns a one-line caption instead."""
     entry = (iv_bv_vs_price or {}).get(ticker) or {}
-    fy_points = entry.get("fy_points") or []
-    periods = entry.get("periods") or []
-    if not fy_points or not periods:
+    fy_points_raw = entry.get("fy_points") or []
+    periods_raw = entry.get("periods") or []
+    if not fy_points_raw or not periods_raw:
         return None, None
     ttm_ratio = entry.get("ttm_ratio")
+
+    # TASK 76a: parse the engine's ISO date strings back into real
+    # dates - see this function's own docstring note.
+    fy_points = [
+        {**pt, "date": _parse_iso_date(pt["date"])} for pt in fy_points_raw
+    ]
+    periods = [
+        {**pr, "start": _parse_iso_date(pr["start"]), "end": _parse_iso_date(pr["end"])}
+        for pr in periods_raw
+    ]
 
     # Periods are calendar-aligned to each fiscal year's own end date
     # by construction (see _iv_bv_vs_price_periods()'s own docstring),

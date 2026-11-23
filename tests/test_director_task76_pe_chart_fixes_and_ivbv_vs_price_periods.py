@@ -231,17 +231,17 @@ if _wms_result:
     check("WMS fixture: fy_points labelled FY2024/FY2025/FY2026",
           [p["label"] for p in _wms_result["fy_points"]] == ["FY2024", "FY2025", "FY2026"])
     check("WMS fixture: fy_points' dates are each FY's own real end date (31 March)",
-          all(p["date"].month == 3 and p["date"].day == 31 for p in _wms_result["fy_points"]))
+          all(p["date"].endswith("-03-31") for p in _wms_result["fy_points"]))
     check("WMS fixture: ttm_ratio is present (a TTM point existed)",
           _wms_result["ttm_ratio"] is not None)
     _period_labels = [p["label"] for p in _wms_result["periods"]]
     check("WMS fixture: periods end on Sep/Mar only (half-years aligned to the March FY end)",
-          all(p["end"].month in (3, 9) for p in _wms_result["periods"]))
+          all(p["end"][5:7] in ("03", "09") for p in _wms_result["periods"]))
     check('WMS fixture: a period is labelled "H2 FY24" (ends March 2024)',
-          any(p["label"] == "H2 FY24" and p["end"] == datetime.date(2024, 3, 31)
+          any(p["label"] == "H2 FY24" and p["end"] == "2024-03-31"
               for p in _wms_result["periods"]))
     check('WMS fixture: a period is labelled "H1 FY27" (Apr-Sep 2026, fully reported)',
-          any(p["label"] == "H1 FY27" and p["end"] == datetime.date(2026, 9, 30)
+          any(p["label"] == "H1 FY27" and p["end"] == "2026-09-30"
               for p in _wms_result["periods"]))
     _partial = [p for p in _wms_result["periods"] if p["is_partial"]]
     check("WMS fixture: exactly one partial (current, still-open) period",
@@ -280,9 +280,9 @@ check("OCL fixture: _iv_bv_vs_price_periods() returns a result", _ocl_result is 
 if _ocl_result:
     check("OCL fixture: cadence is half-yearly", _ocl_result["cadence"] == "half-yearly")
     check("OCL fixture: periods end on Dec/Jun only (half-years aligned to the June FY end)",
-          all(p["end"].month in (6, 12) for p in _ocl_result["periods"]))
+          all(p["end"][5:7] in ("06", "12") for p in _ocl_result["periods"]))
     check("OCL fixture: fy_points' dates are each FY's own real end date (30 June)",
-          all(p["date"].month == 6 and p["date"].day == 30 for p in _ocl_result["fy_points"]))
+          all(p["date"].endswith("-06-30") for p in _ocl_result["fy_points"]))
 
 # US quarterly reporter (e.g. CPRT, FY ends June) - quarters aligned to June/Sep/Dec/Mar.
 _cprt_bundle = dict(_ocl_bundle)
@@ -294,9 +294,9 @@ check("CPRT fixture: _iv_bv_vs_price_periods() returns a result", _cprt_result i
 if _cprt_result:
     check("CPRT fixture: cadence is quarterly", _cprt_result["cadence"] == "quarterly")
     check("CPRT fixture: periods end on Mar/Jun/Sep/Dec (quarterly, aligned to the June FY end)",
-          all(p["end"].month in (3, 6, 9, 12) for p in _cprt_result["periods"]))
+          all(p["end"][5:7] in ("03", "06", "09", "12") for p in _cprt_result["periods"]))
     check('CPRT fixture: a period is labelled "Q4 FY24" (ends June 2024, the FY end itself)',
-          any(p["label"] == "Q4 FY24" and p["end"] == datetime.date(2024, 6, 30)
+          any(p["label"] == "Q4 FY24" and p["end"] == "2024-06-30"
               for p in _cprt_result["periods"]))
 
 # No quarterly statements at all -> still works via the suffix fallback
@@ -531,8 +531,9 @@ check("is_auto=True: _cp_iv_bv_vs_price_chart IS called exactly once",
 # ======================================================================
 # PART C.6 / D: ENGINE_VERSION bumped for this task.
 # ======================================================================
-check("ENGINE_VERSION is 55 (bumped from 54 for TASK 76's iv_bv_vs_price field)",
-      ace.ENGINE_VERSION == 55)
+check("ENGINE_VERSION is >= 55 (bumped from 54 for TASK 76's iv_bv_vs_price field; "
+      "a later task, e.g. TASK 76a's own hotfix bump, may have bumped it further)",
+      ace.ENGINE_VERSION >= 55)
 
 
 print()

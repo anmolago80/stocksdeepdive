@@ -66,12 +66,14 @@ and is flagged accordingly.
 """
 
 import datetime
+import glob
 import hashlib
 import json
 import math
 import os
 import re
 import tempfile
+import time
 
 from dateutil.relativedelta import relativedelta
 
@@ -280,7 +282,17 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # _cp_iv_bv_vs_price_chart() reads the new key only - no crash either
 # way, just quietly stale for up to 24h). No mass refresh - every page
 # simply recomputes, and re-caches under the new version, next viewed.
-ENGINE_VERSION = 55
+# 55->56 (Director-directed, owner-approved, 23 Nov 2026, TASK 76a
+# URGENT HOTFIX, live crash since deploy 36e7d19c/commit 089b2a7): TASK
+# 76's own "iv_bv_vs_price" key held raw datetime.date objects in fy_
+# points[].date/periods[].start/.end, which _write_cache() below can't
+# json.dump() - every uncached Auto Deep Dive view crashed with
+# "TypeError: Object of type date is not JSON serializable" until this
+# fix. _iv_bv_vs_price_periods() now returns ISO "YYYY-MM-DD" strings
+# there instead (see its own docstring) - this bump forces any half-
+# built/crashed-before-write cache state to be recomputed rather than
+# ever served, same reasoning as every prior ENGINE_VERSION bump above.
+ENGINE_VERSION = 56
 
 
 def _valuation_source_hash():
@@ -414,15 +426,64 @@ def _read_cache(ticker, overrides=()):
         return None
 
 
-def _write_cache(ticker, sections, overrides=()):
-    path = _cache_path(ticker, overrides)
+_STALE_TMP_CACHE_AGE_SECONDS = 3600
+
+
+def _clean_stale_tmp_cache_files(cache_dir):
+    """One-off sweep (called from _write_cache() below, so it runs on
+    the next write rather than needing its own startup hook) for leaked
+    `.tmp_*.json` files - normally _write_cache()'s own os.replace()
+    removes the temp file as it renames it into place, but a crash
+    between mkstemp() and os.replace() (e.g. the exact "Object of type
+    date is not JSON serializable" TypeError this hotfix fixes - raised
+    mid json.dump(), before os.replace() ever runs) left one behind
+    forever. Only removes files older than _STALE_TMP_CACHE_AGE_SECONDS
+    so it never races a write that's genuinely in flight right now.
+    Best-effort - a file that disappears between the glob and the
+    os.remove() (e.g. another process's write finishing normally) is not
+    an error."""
     try:
-        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp_", suffix=".json")
+        cutoff = time.time() - _STALE_TMP_CACHE_AGE_SECONDS
+        for stale_path in glob.glob(os.path.join(cache_dir, ".tmp_*.json")):
+            try:
+                if os.path.getmtime(stale_path) < cutoff:
+                    os.remove(stale_path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _write_cache(ticker, sections, overrides=()):
+    """Disk-persists `sections` (build_sections()'s own return value) as
+    this ticker's cache entry. TASK 76a (Director-directed, owner-
+    approved, 23 Nov 2026, urgent hotfix): must never crash the caller
+    (build_sections() is called synchronously from every Auto Deep Dive
+    page render) and must never leave a `.tmp_*.json` temp file behind -
+    the ORIGINAL bug here was a bare `except OSError` that didn't catch
+    the TypeError json.dump() raises for a non-serializable value (see
+    ENGINE_VERSION's 55->56 comment above), so the exception propagated
+    uncaught (crashing the page) AND skipped the os.replace() that would
+    have cleaned up the temp file - this broader except plus the
+    explicit tmp_path cleanup in the except block closes both halves."""
+    path = _cache_path(ticker, overrides)
+    cache_dir = os.path.dirname(path)
+    _clean_stale_tmp_cache_files(cache_dir)
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=".tmp_", suffix=".json")
         with os.fdopen(fd, "w") as f:
             json.dump(sections, f)
         os.replace(tmp_path, path)
-    except OSError:
-        pass
+        tmp_path = None
+    except Exception as e:
+        print(f"[compounder_cache] write failed {ticker}: {e}")
+    finally:
+        if tmp_path is not None:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 # -----------------------------------
@@ -3150,22 +3211,34 @@ def _iv_bv_vs_price_periods(bundle, dcf_result, bvps_ttm, ticker):
     end date to it and builds a SEPARATE, reporting-period-averaged
     price series alongside it. Returns:
 
-      "fy_points": [{"date": date, "label": "FY2024", "ratio": 1.9}, ...]
+      "fy_points": [{"date": "2024-03-31", "label": "FY2024", "ratio": 1.9}, ...]
           ascending by date, fiscal years only (TTM excluded here -
           see "ttm_ratio").
       "ttm_ratio": float | None - today's IV/BV, if _iv_bv_series() has
           one.
-      "periods": [{"start": date, "end": date, "label": "H1 FY26",
-          "avg_price": 58.0, "is_partial": False}, ...] ascending by
-          end date - one entry per reporting period from the earliest
-          fiscal year on file through today. The LAST entry may be the
-          current, still-open period (is_partial=True, its own label
-          carrying a "(to date)" suffix, its average taken only up to
-          today rather than its nominal end date). A period with no
-          monthly close on file at all is skipped entirely (never a
-          fabricated average - same "skip, don't invent" rule TASK 75
-          already established for this chart).
+      "periods": [{"start": "2025-09-30", "end": "2026-03-31",
+          "label": "H1 FY26", "avg_price": 58.0, "is_partial": False},
+          ...] ascending by end date - one entry per reporting period
+          from the earliest fiscal year on file through today. The
+          LAST entry may be the current, still-open period
+          (is_partial=True, its own label carrying a "(to date)"
+          suffix, its average taken only up to today rather than its
+          nominal end date). A period with no monthly close on file at
+          all is skipped entirely (never a fabricated average - same
+          "skip, don't invent" rule TASK 75 already established for
+          this chart).
       "cadence": "quarterly" | "half-yearly".
+
+    TASK 76a (Director-directed, owner-approved, 23 Nov 2026, urgent
+    hotfix - live crash since deploy 36e7d19c/commit 089b2a7):
+    "date"/"start"/"end" are plain ISO "YYYY-MM-DD" STRINGS, not
+    datetime.date objects - this dict goes straight into build_
+    sections()'s own return value, which _write_cache() below
+    json.dump()s verbatim; a raw date object there raised an uncaught
+    TypeError ("Object of type date is not JSON serializable") on
+    every uncached ticker. compounder_ui._cp_iv_bv_vs_price_chart()
+    parses these back into real dates for the chart's date x-axis -
+    see its own docstring.
 
     Periods are aligned to the company's OWN fiscal year end (from
     bundle["income"]'s own newest column date - the same per-FY-end
@@ -3257,7 +3330,22 @@ def _iv_bv_vs_price_periods(bundle, dcf_result, bvps_ttm, ticker):
         return None
     periods.sort(key=lambda pr: pr["end"])
 
-    return {"fy_points": fy_points, "ttm_ratio": ttm_ratio, "periods": periods, "cadence": cadence}
+    # TASK 76a: serialise to ISO strings only now, after every date
+    # comparison/sort above is done - see this function's own
+    # docstring note for why (json.dump() can't serialise a raw
+    # datetime.date; compounder_ui parses these back).
+    json_fy_points = [
+        {"date": pt["date"].isoformat(), "label": pt["label"], "ratio": pt["ratio"]}
+        for pt in fy_points
+    ]
+    json_periods = [
+        {
+            "start": pr["start"].isoformat(), "end": pr["end"].isoformat(),
+            "label": pr["label"], "avg_price": pr["avg_price"], "is_partial": pr["is_partial"],
+        }
+        for pr in periods
+    ]
+    return {"fy_points": json_fy_points, "ttm_ratio": ttm_ratio, "periods": json_periods, "cadence": cadence}
 
 
 def _fcf_growth_entry(bundle):
