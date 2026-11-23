@@ -7,8 +7,23 @@ CRITICAL_TABLES was missing compare_lists, compare_notes and
 share_links (user-authored, stocksdeepdive.db) - those were only backed
 up weekly.
 
+UPDATE (TASK 77, Director-directed, owner-approved, 23 Nov 2026):
+CRITICAL_TABLES/_trim_to_critical_tables() were replaced by an explicit
+BACKUP_TABLES allowlist (groups: USER/HISTORY/AI/ANALYTICS) and the
+generic _trim_to_tables(db_path, keep_tables) - the checks below that
+exercised the OLD names now exercise the new ones (BACKUP_TABLES["USER"]
+is the direct successor to CRITICAL_TABLES; _trim_to_tables(path,
+BACKUP_TABLES["USER"]) is the direct successor to
+_trim_to_critical_tables(path)). See tests/test_director_task77_
+backup_tables_drift.py for the full TASK 77 coverage (BACKUP_TABLES'
+other 3 groups, REBUILDABLE_TABLES, the drift test, the nightly/Sunday/
+monthly email construction, the size guard). Everything else in this
+file (build_owner_download(), the job-lock checks, the owner-gate
+check) is UNCHANGED by TASK 77 and still covers the real, current code.
+
 PART A (this file covers all of it):
-  1. compare_lists/compare_notes/share_links added to CRITICAL_TABLES.
+  1. compare_lists/compare_notes/share_links added to CRITICAL_TABLES
+     (now BACKUP_TABLES["USER"] - see UPDATE above).
      EXCLUDED_FROM_EMAIL_TABLES (the 4 auth tables) unchanged.
   2. db_backup_engine.build_owner_download() - the Admin dashboard's new
      owner-only "Download full backup" button (app.py, inside the same
@@ -92,10 +107,11 @@ import scheduler_engine
 
 
 # ======================================================================
-# CHECK 1-2: CRITICAL_TABLES/EXCLUDED_FROM_EMAIL_TABLES.
+# CHECK 1-2: BACKUP_TABLES["USER"] (TASK 77's successor to
+# CRITICAL_TABLES)/EXCLUDED_FROM_EMAIL_TABLES.
 # ======================================================================
-check("CRITICAL_TABLES includes compare_lists, compare_notes, share_links",
-      all(t in dbe.CRITICAL_TABLES for t in ("compare_lists", "compare_notes", "share_links")))
+check("BACKUP_TABLES['USER'] includes compare_lists, compare_notes, share_links",
+      all(t in dbe.BACKUP_TABLES["USER"] for t in ("compare_lists", "compare_notes", "share_links")))
 check("EXCLUDED_FROM_EMAIL_TABLES is unchanged - exactly the 4 auth tables, nothing new",
       set(dbe.EXCLUDED_FROM_EMAIL_TABLES) == {
           "auth_sessions", "auth_codes", "auth_ip_sends", "daily_signin_hashes",
@@ -112,7 +128,7 @@ def _make_fixture_db(path):
     conn.execute("INSERT INTO share_links VALUES (1, 'tok-a')")
     conn.execute("CREATE TABLE signups (email TEXT)")
     conn.execute("INSERT INTO signups VALUES ('a@example.com')")
-    # a REBUILDABLE table (not in CRITICAL_TABLES, not EXCLUDED either)
+    # a REBUILDABLE table (not in BACKUP_TABLES["USER"], not EXCLUDED either)
     conn.execute("CREATE TABLE scan_cache (ticker TEXT)")
     conn.execute("INSERT INTO scan_cache VALUES ('AAPL')")
     # the 4 sensitive/auth tables
@@ -136,23 +152,23 @@ def _tables_in(path):
 
 
 # ======================================================================
-# CHECK 3-5: the critical-tables trim (the nightly fallback's own
-# mechanism, unmodified logic) keeps the 3 new tables + pre-existing
-# critical tables, drops a non-critical table; combined with the
-# sensitive-table exclusion the real pipeline always runs first, the
-# auth tables are gone too.
+# CHECK 3-5: _trim_to_tables(path, BACKUP_TABLES["USER"]) - TASK 77's
+# generic successor to _trim_to_critical_tables() - keeps the 3 new
+# tables + a pre-existing USER table, drops a non-USER table; combined
+# with the sensitive-table exclusion the real pipeline always runs
+# first, the auth tables are gone too.
 # ======================================================================
 with tempfile.TemporaryDirectory() as _tmp:
     _db_path = os.path.join(_tmp, "fixture.db")
     _make_fixture_db(_db_path)
     dbe._exclude_sensitive_tables(_db_path)
-    dbe._trim_to_critical_tables(_db_path)
+    dbe._trim_to_tables(_db_path, dbe.BACKUP_TABLES["USER"])
     _remaining = _tables_in(_db_path)
-    check("critical-tables trim keeps compare_lists/compare_notes/share_links",
+    check("USER-tables trim keeps compare_lists/compare_notes/share_links",
           {"compare_lists", "compare_notes", "share_links"}.issubset(_remaining))
-    check("critical-tables trim keeps a pre-existing critical table (signups) too",
+    check("USER-tables trim keeps a pre-existing USER table (signups) too",
           "signups" in _remaining)
-    check("critical-tables trim drops the non-critical scan_cache table, and the "
+    check("USER-tables trim drops the non-USER scan_cache table, and the "
           "auth tables are gone (sensitive-exclusion ran first, same as the real pipeline)",
           "scan_cache" not in _remaining
           and not _remaining & {"auth_sessions", "auth_codes", "auth_ip_sends", "daily_signin_hashes"})

@@ -5748,11 +5748,14 @@ def _render_compounder_admin_panel():
                 st.caption(
                     "Nightly, after the scan window: a consistent, gzipped copy of "
                     "the database is emailed to the owner's own inbox via Mailgun - "
-                    "never a third-party storage service. A full copy every night "
-                    "unless it grows past the size Mailgun accepts, in which case a "
-                    "full copy goes out weekly and a critical-tables-only copy "
-                    "every other night (accounts/portfolios/watchlists/alerts/"
-                    "checklists/usage)."
+                    "never a third-party storage service. Every night carries every "
+                    "user/owner-authored table (accounts/portfolios/watchlists/"
+                    "alerts/checklists/scenarios/ledgers/screens/research) plus "
+                    "score/snapshot/pool/health-run history (score_history trimmed "
+                    "to the last 35 days) and the AI engine's scored output. Sundays "
+                    "add a second attachment with page-view/visitor/signin analytics, "
+                    "plus the research-data/corrections cache. The 1st of each month "
+                    "gets a separate email with the FULL (untrimmed) score_history."
                 )
                 if st.button("Backup now", key="cp_admin_backup_now"):
                     with st.spinner("Building and sending backup..."):

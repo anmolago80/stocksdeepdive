@@ -45,7 +45,8 @@ all be quietly broken for days before anyone notices. This module adds:
 
 PRUNE_NEVER (checked explicitly - see each function's own docstring for
 why it was excluded): the live account/portfolio/watchlist/alert/
-checklist/usage tables (db_backup_engine.CRITICAL_TABLES), score_history
+checklist/usage tables (db_backup_engine.BACKUP_TABLES["USER"] - TASK
+77, 23 Nov 2026, renamed from CRITICAL_TABLES), score_history
 (the future track record), snapshot_store's snapshots, and anything
 else user- or owner-authored. Nothing in this module ever runs a DELETE
 against any table outside the four explicitly-named cache tables above,
