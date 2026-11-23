@@ -17,6 +17,7 @@ build_sections(ticker) -> {
                       "share_price_growth": {ticker: {...}}},
     "Value vs Book": {"metrics": [...], "iv_bv_bar": {ticker: {...}},
                        "iv_bv_series": {ticker: {...}},
+                       "iv_bv_vs_price": {ticker: {...}},
                        "fcf_growth": {ticker: {...}},
                        "book_value_growth": {ticker: {...}}},
     "Retained Earnings": {"metrics": [...], "value_created": {ticker: {...}}},
@@ -71,6 +72,8 @@ import math
 import os
 import re
 import tempfile
+
+from dateutil.relativedelta import relativedelta
 
 import build_compounder_data
 import capm_engine
@@ -266,7 +269,18 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # silently show no price line for an already-cached ticker without this
 # bump. No mass refresh - every page simply recomputes, and re-caches
 # under the new version, the next time it's viewed.
-ENGINE_VERSION = 54
+# 54->55 (Director-directed, owner-approved, 23 Nov 2026, TASK 76):
+# _iv_bv_series()'s TASK 75 "prices" field is gone (superseded, see its
+# own docstring); _build_value_vs_book() now carries a new "iv_bv_vs_
+# price" key instead (_iv_bv_vs_price_periods() - reporting-period-
+# averaged prices + each fiscal year's own end date, Auto pages only).
+# A section cached before this bump has neither the old "prices" field
+# nor the new "iv_bv_vs_price" key, so the new chart would silently not
+# render for an already-cached ticker without this bump (compounder_ui.
+# _cp_iv_bv_vs_price_chart() reads the new key only - no crash either
+# way, just quietly stale for up to 24h). No mass refresh - every page
+# simply recomputes, and re-caches under the new version, next viewed.
+ENGINE_VERSION = 55
 
 
 def _valuation_source_hash():
@@ -3013,15 +3027,13 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
     site actually shows. BVPS_y uses TODAY's share count for every
     historical year (historical share counts aren't available).
 
-    TASK 75 (Director-directed, owner-approved, 22 Nov 2026): also
-    returns "prices" - the year-end share price for every entry in
-    "years" (via _year_end_prices(), same fiscal-year-end matching every
-    other per-year price lookup in this module already uses; None where
-    a year's price can't be resolved), plus the TTM point's own price
-    (today's price, not a year-end close - same convention as every
-    other TTM point in this module). Feeds compounder_ui's new "IV/BV
-    vs Share Price, indexed" chart - display only, doesn't change the
-    ratios/years this function already returned."""
+    TASK 75 added a "prices" field here for the new "IV/BV vs Share
+    Price, indexed" chart; TASK 76 (Director-directed, owner-approved,
+    23 Nov 2026) replaced that single year-end-snapshot price with a
+    richer, reporting-period-averaged price series - see
+    _iv_bv_vs_price_periods() below, which calls this function for its
+    own years/ratios but builds pricing separately. No "prices" field
+    here any more - nothing else in this codebase ever read it."""
     g_earn = dcf_result.get("growth")
     d_dcf = dcf_result.get("discount_rate")
     p = dcf_result.get("perpetual_rate")
@@ -3092,22 +3104,160 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
 
     if not years:
         return None
+    return {"years": years, "ratios": ratios}
 
-    # TASK 75: "prices" - one entry per "years"/"ratios" slot, same
-    # order. Non-TTM years go through _year_end_prices() exactly like
-    # every other per-fiscal-year price lookup in this module (see
-    # _avg_pe_4pt() above); the TTM slot (always years[0] when present -
-    # see the TTM block above) uses TODAY's price instead of a year-end
-    # close, same convention as every other TTM figure here. None where
-    # a price can't be resolved (becomes a gap in the new chart, never a
-    # fabricated/zero value).
-    year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
-    price_now = _basics(bundle).get("price")
-    prices = [
-        price_now if y.startswith("TTM") else year_end_prices.get(y)
-        for y in years
-    ]
-    return {"years": years, "ratios": ratios, "prices": prices}
+
+_IVBV_HALF_YEARLY_SUFFIXES = (".AX", ".NZ", ".L")
+
+
+def _iv_bv_vs_price_reporting_cadence(bundle, ticker):
+    """"quarterly" or "half-yearly" (TASK 76, Director-directed, owner-
+    approved, 23 Nov 2026) - from the median gap between this ticker's
+    own quarterly income_q (else cashflow_q) column dates: a gap of
+    ~4 months (<=135 days - the SAME half/quarter threshold _eps_ttm()
+    already uses for its own half-yearly-vs-quarterly split) or less is
+    a quarterly reporter; wider is half-yearly. Falls back to the
+    ticker's own suffix when no quarterly statement is on file at all:
+    .AX/.NZ/.L (ASX/NZX/LSE) report half-yearly; everything else (the
+    US norm, and this codebase's default elsewhere) reports quarterly."""
+    for key in ("income_q", "cashflow_q"):
+        cols = _statement_col_dates(bundle.get(key))
+        if len(cols) >= 2:
+            gaps = sorted((cols[i][1] - cols[i + 1][1]).days for i in range(len(cols) - 1))
+            median_gap = gaps[len(gaps) // 2]
+            return "quarterly" if median_gap <= 135 else "half-yearly"
+    return "half-yearly" if (ticker or "").upper().endswith(_IVBV_HALF_YEARLY_SUFFIXES) else "quarterly"
+
+
+def _iv_bv_vs_price_avg(monthly_dates, monthly_prices, start, end):
+    """Average of the monthly closes with start < date <= end (one
+    reporting period's own window) - None (never a fabricated value)
+    when no monthly close falls inside it."""
+    vals = [p for d, p in zip(monthly_dates, monthly_prices)
+            if start < d <= end and p is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def _iv_bv_vs_price_periods(bundle, dcf_result, bvps_ttm, ticker):
+    """Data behind compounder_ui's "IV/BV vs Share Price, indexed" chart
+    (TASK 76, Director-directed, owner-approved, 23 Nov 2026 - replacing
+    TASK 75's simpler year-end-snapshot "prices" field on _iv_bv_series()
+    above). AUTO PAGES ONLY - uploaded Research data has no equivalent;
+    see compounder_ui._cp_iv_bv_vs_price_chart()'s own docstring for why.
+
+    Reuses _iv_bv_series()'s own years/ratios UNCHANGED - this never
+    recomputes the IV/BV side, only attaches each fiscal year's real
+    end date to it and builds a SEPARATE, reporting-period-averaged
+    price series alongside it. Returns:
+
+      "fy_points": [{"date": date, "label": "FY2024", "ratio": 1.9}, ...]
+          ascending by date, fiscal years only (TTM excluded here -
+          see "ttm_ratio").
+      "ttm_ratio": float | None - today's IV/BV, if _iv_bv_series() has
+          one.
+      "periods": [{"start": date, "end": date, "label": "H1 FY26",
+          "avg_price": 58.0, "is_partial": False}, ...] ascending by
+          end date - one entry per reporting period from the earliest
+          fiscal year on file through today. The LAST entry may be the
+          current, still-open period (is_partial=True, its own label
+          carrying a "(to date)" suffix, its average taken only up to
+          today rather than its nominal end date). A period with no
+          monthly close on file at all is skipped entirely (never a
+          fabricated average - same "skip, don't invent" rule TASK 75
+          already established for this chart).
+      "cadence": "quarterly" | "half-yearly".
+
+    Periods are aligned to the company's OWN fiscal year end (from
+    bundle["income"]'s own newest column date - the same per-FY-end
+    convention _year_end_prices()/_avg_pe_4pt() already use elsewhere
+    in this module), never a calendar quarter/half - e.g. WMS (FY ends
+    31 March) gets half-years ending September and March, never
+    June/December.
+
+    Returns None when _iv_bv_series() itself has nothing to show, when
+    no fiscal year's own end date can be resolved from the income
+    statement at all, or when not one reporting period has any monthly
+    price data to average."""
+    iv_bv = _iv_bv_series(bundle, dcf_result, bvps_ttm)
+    if not iv_bv:
+        return None
+    years, ratios = iv_bv["years"], iv_bv["ratios"]
+
+    income_dates = _statement_col_dates(bundle.get("income"))
+    if not income_dates:
+        return None
+    year_to_date = {}
+    for _col, _d in income_dates:
+        year_to_date.setdefault(str(_d.year), _d)
+
+    fy_points = []
+    ttm_ratio = None
+    for y, r in zip(years, ratios):
+        if y.startswith("TTM"):
+            ttm_ratio = r
+            continue
+        d = year_to_date.get(y)
+        if d is not None:
+            fy_points.append({"date": d, "label": f"FY{y}", "ratio": r})
+    fy_points.sort(key=lambda pt: pt["date"])
+    if not fy_points:
+        return None
+
+    anchor = income_dates[0][1]  # the latest fiscal year end on file
+    cadence = _iv_bv_vs_price_reporting_cadence(bundle, ticker)
+    step = 3 if cadence == "quarterly" else 6
+    periods_per_fy = 4 if cadence == "quarterly" else 2
+    letter = "Q" if cadence == "quarterly" else "H"
+
+    earliest = fy_points[0]["date"]
+    today = datetime.date.today()
+
+    prices_10y = bundle.get("prices_10y") or {}
+    monthly_dates, monthly_prices = [], []
+    for _s, _p in zip(prices_10y.get("dates") or [], prices_10y.get("prices") or []):
+        try:
+            monthly_dates.append(datetime.date.fromisoformat(_s[:10]))
+            monthly_prices.append(_p)
+        except (ValueError, TypeError):
+            continue
+
+    # Find the smallest (most future-pointing) step_index whose nominal
+    # end date is still in the future - that one is the current,
+    # possibly-partial period. step_index counts `step`-month hops back
+    # from `anchor`; negative values point forward past it.
+    step_index = 0
+    while anchor + relativedelta(months=-step_index * step) <= today:
+        step_index -= 1
+
+    periods = []
+    while True:
+        end_date = anchor + relativedelta(months=-step_index * step)
+        if end_date < earliest:
+            break
+        start_date = anchor + relativedelta(months=-(step_index + 1) * step)
+        is_partial = end_date > today
+        avg_price = _iv_bv_vs_price_avg(
+            monthly_dates, monthly_prices, start_date, today if is_partial else end_date,
+        )
+        if avg_price is not None:
+            fy_offset = step_index // periods_per_fy
+            position_from_end = step_index % periods_per_fy
+            fy_year = anchor.year - fy_offset
+            period_index = periods_per_fy - position_from_end
+            label = f"{letter}{period_index} FY{str(fy_year)[-2:]}"
+            if is_partial:
+                label += " (to date)"
+            periods.append({
+                "start": start_date, "end": end_date, "label": label,
+                "avg_price": avg_price, "is_partial": is_partial,
+            })
+        step_index += 1
+
+    if not periods:
+        return None
+    periods.sort(key=lambda pr: pr["end"])
+
+    return {"fy_points": fy_points, "ttm_ratio": ttm_ratio, "periods": periods, "cadence": cadence}
 
 
 def _fcf_growth_entry(bundle):
@@ -3244,6 +3394,12 @@ def _build_value_vs_book(bundle, ticker, ref, dcf_result):
 
     iv_bv_bar = {"price": price, "iv": iv, "bv": bvps} if (price is not None and iv is not None and bvps is not None) else None
     iv_bv_series = _iv_bv_series(bundle, dcf_result, bvps)
+    # TASK 76 (Director-directed, owner-approved, 23 Nov 2026): Auto-only
+    # data for the "IV/BV vs Share Price, indexed" chart - see
+    # _iv_bv_vs_price_periods()'s own docstring. Uploaded Research data
+    # never sets this key, which is exactly how compounder_ui's render_
+    # section() knows not to render the chart there (is_auto gate).
+    iv_bv_vs_price = _iv_bv_vs_price_periods(bundle, dcf_result, bvps, ticker)
     fcf_growth = _fcf_growth_entry(bundle)
     book_value_growth = _book_value_growth_entry(bundle)
 
@@ -3251,6 +3407,7 @@ def _build_value_vs_book(bundle, ticker, ref, dcf_result):
         "metrics": metrics,
         "iv_bv_bar": {ticker: iv_bv_bar} if iv_bv_bar else {},
         "iv_bv_series": {ticker: iv_bv_series} if iv_bv_series else {},
+        "iv_bv_vs_price": {ticker: iv_bv_vs_price} if iv_bv_vs_price else {},
         "fcf_growth": {ticker: fcf_growth} if fcf_growth else {},
         "book_value_growth": {ticker: book_value_growth} if book_value_growth else {},
     }
