@@ -31,10 +31,19 @@ import hashlib
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import openpyxl
 from openpyxl.utils import get_column_letter, column_index_from_string
+
+# TASK 78 (Director-directed, owner-approved, 23 Nov 2026): both module-
+# level imports only - every real use is inside a function body below
+# (never at module/import time), the same pattern auto_compounder_
+# engine.py's own "import build_compounder_data" already uses, so the
+# two modules importing each other never deadlocks regardless of which
+# one a caller happens to import first.
+import auto_compounder_engine
+import fundamentals_data
 
 DEFAULT_PATH = (
     "/mnt/user-data/uploads/Blogs and Dashboard Investment/"
@@ -899,6 +908,89 @@ def _extract_comment_text(raw):
     return body or None
 
 
+def _iv_bv_vs_price_for_upload(ticker, years, ratios, price_history_entry):
+    """Uploaded-page data for the "IV/BV vs Share Price, indexed" chart
+    (TASK 78, Director-directed, owner-approved, 23 Nov 2026 - "the
+    owner changed his mind: he wants it on every uploaded company too",
+    extending TASK 76's Auto-only chart). Reuses auto_compounder_
+    engine._iv_bv_vs_price_core() - the SAME period-generation/
+    averaging/labeling/serialisation logic Auto pages use for this
+    chart, never a second copy - built from different inputs than Auto:
+
+      - IV/BV per fiscal year: `years`/`ratios`, the SAME IV2BV-sheet
+        series already read into iv_bv_series above (sheet year label
+        Y = the fiscal year ENDING in calendar year Y - matches auto_
+        compounder_engine's own year-keying convention exactly). No
+        recalculation.
+      - Share price per reporting period: `price_history_entry` (the
+        SAME Fundamentals price_history dict already loaded per ticker
+        above, {"dates": [...monthly ISO strings...], "prices": [...]})
+        - never Yahoo's prices_10y. A reporting period with no monthly
+          price in the SHEET'S OWN history is skipped entirely, exactly
+          like Auto's "skip, don't invent" rule - never filled from
+          Yahoo or any other source.
+      - FY end month/day + reporting cadence, and ONLY those two facts
+        (no other bundle data - no Yahoo prices, no Yahoo IV/BV, on
+        this page), read from this ticker's CACHED fundamentals bundle
+        (fundamentals_data.get_bundle(), 24h-cached - a plain network
+        fetch only on a true cache miss) via the exact same auto_
+        compounder_engine._statement_col_dates()/_iv_bv_vs_price_
+        reporting_cadence() calls (and the SAME .AX/.NZ/.L-vs-other
+        fallback) the Auto side itself uses. Applied to EVERY sheet
+        year label - the sheet can (and often does) cover years
+        Yahoo's own statement history doesn't reach at all; that is
+        the whole point of offering this chart on uploaded pages too.
+
+    Returns {"no_chart_reason": "FY end date not available for this
+    ticker"} when this ticker's bundle can't be fetched at all, or its
+    income statement has no resolvable fiscal year end whatsoever (item
+    2d of the Director's own instruction) - compounder_ui._cp_iv_bv_vs_
+    price_chart() shows that exact one-line caption. Returns None (no
+    chart, no caption - nothing to show) when there's no usable fiscal-
+    year point at all, or when auto_compounder_engine._iv_bv_vs_price_
+    core() itself has nothing to show (e.g. no reporting period has any
+    monthly price to average)."""
+    bundle = fundamentals_data.get_bundle(ticker)
+    income_dates = auto_compounder_engine._statement_col_dates(
+        (bundle or {}).get("income")) if bundle else []
+    if not bundle or not income_dates:
+        return {"no_chart_reason": "FY end date not available for this ticker"}
+
+    anchor = income_dates[0][1]
+    cadence = auto_compounder_engine._iv_bv_vs_price_reporting_cadence(bundle, ticker)
+
+    fy_points = []
+    ttm_ratio = None
+    for y, r in zip(years, ratios):
+        if y.upper().startswith("TTM"):
+            ttm_ratio = r
+            continue
+        try:
+            fy_date = date(int(y), anchor.month, anchor.day)
+        except (TypeError, ValueError):
+            continue  # unparseable year label, or an unresolvable FY-end
+            # calendar date for it (e.g. 29 Feb in a non-leap year) -
+            # skipped, never a fabricated/clamped date.
+        fy_points.append({"date": fy_date, "label": f"FY{y}", "ratio": r})
+    fy_points.sort(key=lambda pt: pt["date"])
+    if not fy_points:
+        return None
+
+    monthly_dates, monthly_prices = [], []
+    for _s, _p in zip(
+        (price_history_entry or {}).get("dates") or [],
+        (price_history_entry or {}).get("prices") or [],
+    ):
+        try:
+            monthly_dates.append(date.fromisoformat(_s[:10]))
+            monthly_prices.append(_p)
+        except (ValueError, TypeError):
+            continue
+
+    return auto_compounder_engine._iv_bv_vs_price_core(
+        fy_points, ttm_ratio, anchor, cadence, monthly_dates, monthly_prices)
+
+
 def build(path, anthropic_api_key=None):
     """anthropic_api_key: enables the live Company Potential grammar/wording
     check (see _cp_correct_batch_via_ai) when set, either passed explicitly
@@ -1070,6 +1162,7 @@ def build(path, anthropic_api_key=None):
     # ---- Value vs Book follow-up: IV/BV across every modelled year
     # (X=year, Y=IV/BV), not just the current ratio ----
     iv_bv_series = {}
+    iv_bv_vs_price = {}
     for tkr, r in iv2bv_rows.items():
         years, ratios = [], []
         for col in IV_BV_SERIES_COLS:
@@ -1081,7 +1174,15 @@ def build(path, anthropic_api_key=None):
                 ratios.append(ratio)
         if years:
             iv_bv_series[tkr] = {"years": years, "ratios": ratios}
+            # TASK 78 (Director-directed, owner-approved, 23 Nov 2026):
+            # "IV/BV vs Share Price, indexed" chart data for THIS
+            # uploaded ticker - see _iv_bv_vs_price_for_upload()'s own
+            # docstring for exactly what it does and doesn't read.
+            _ivbv_price = _iv_bv_vs_price_for_upload(tkr, years, ratios, price_history.get(tkr))
+            if _ivbv_price:
+                iv_bv_vs_price[tkr] = _ivbv_price
     out["sections"]["Value vs Book"]["iv_bv_series"] = iv_bv_series
+    out["sections"]["Value vs Book"]["iv_bv_vs_price"] = iv_bv_vs_price
 
     # ---- Earnings Trends follow-up: EPS, EPS Growth, and PE Ratio across
     # every modelled year ----

@@ -567,13 +567,15 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     risen/fallen in the same shape as its actual share price, or
     diverged from it - not a second IV/BV gauge.
 
-    AUTO PAGES ONLY - `iv_bv_vs_price` is auto_compounder_engine.
-    _build_value_vs_book()'s own "iv_bv_vs_price" dict (see
-    _iv_bv_vs_price_periods()'s own docstring for its shape); uploaded
-    Research data never sets this key at all (build_compounder_data.py
-    has no equivalent - the workbook carries no sub-annual price/report
-    cadence data to build one from), so render_section() only calls
-    this function when is_auto is True.
+    TASK 76 (Auto pages) + TASK 78 (Director-directed, owner-approved,
+    23 Nov 2026 - extended to uploaded Research pages too): `iv_bv_vs_
+    price` is auto_compounder_engine._build_value_vs_book()'s own
+    "iv_bv_vs_price" dict on Auto pages (see _iv_bv_vs_price_periods()'s
+    own docstring for its shape) or build_compounder_data._iv_bv_vs_
+    price_for_upload()'s own dict of the SAME shape on uploaded Research
+    pages - both share auto_compounder_engine._iv_bv_vs_price_core() for
+    every bit of the underlying period-generation/averaging/labeling
+    logic, so this function itself needs no is_auto distinction at all.
 
     TASK 76a (Director-directed, owner-approved, 23 Nov 2026, urgent
     hotfix): the engine's own "date"/"start"/"end" fields are plain
@@ -581,6 +583,14 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     see _iv_bv_vs_price_periods()'s own docstring for the live crash
     this fixes), parsed back into real dates here, right after reading
     `entry`, for the chart's date x-axis.
+
+    TASK 78: `entry` may instead be {"no_chart_reason": "<text>"} - an
+    uploaded ticker whose cached fundamentals bundle can't resolve a
+    fiscal year end at all (build_compounder_data._iv_bv_vs_price_for_
+    upload() has no other way to know this company's FY-end month/day,
+    needed to place every sheet year's own IV/BV point on the x-axis at
+    all). Checked first, before the generic fy_points/periods-missing
+    case below (which stays silent - nothing to show, not a caption).
 
     IV/BV is a STEP line (line_shape="hv"): each fiscal year's own
     ratio holds flat from that year's end date until the next one;
@@ -601,6 +611,9 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     than 3 usable fiscal-year IV/BV points (including TTM, if present)
     once the base year is found, returns a one-line caption instead."""
     entry = (iv_bv_vs_price or {}).get(ticker) or {}
+    _no_chart_reason = entry.get("no_chart_reason")
+    if _no_chart_reason:
+        return None, _no_chart_reason
     fy_points_raw = entry.get("fy_points") or []
     periods_raw = entry.get("periods") or []
     if not fy_points_raw or not periods_raw:
@@ -1241,13 +1254,14 @@ def render_section(sections, ticker, section_label, gate=None, lang="en", is_aut
         of "Text description of this chart" captions use (e.g. the PE
         Ratio by Year chart's reference-line methodology, which is a
         known formula for the live/auto data but just "from your
-        workbook" for hand-built data this module never recomputes),
-        and (TASK 76, Director-directed, owner-approved, 23 Nov 2026)
-        gates the "IV/BV vs Share Price, indexed" chart on, since
-        uploaded Research data has no reporting-period/price-cadence
-        data to build it from at all. Both real call sites pass it
-        explicitly; the default here only matters to a future caller
-        that forgets to.
+        workbook" for hand-built data this module never recomputes).
+        TASK 78 (Director-directed, owner-approved, 23 Nov 2026): the
+        "IV/BV vs Share Price, indexed" chart is NO LONGER gated on this
+        flag - build_compounder_data.py now builds the same "iv_bv_vs_
+        price" data uploaded tickers too (see _cp_iv_bv_vs_price_chart()'s
+        own docstring), so it renders on both pages the same way. Both
+        real call sites pass is_auto explicitly; the default here only
+        matters to a future caller that forgets to.
     """
     section = (sections or {}).get(section_label)
     if not section:
@@ -1309,36 +1323,40 @@ def render_section(sections, ticker, section_label, gate=None, lang="en", is_aut
         # chart directly below the IV/BV by Year chart (and its depth
         # caption above) - indexes IV/BV and share price to the same base
         # year so their SHAPES compare directly, on one y-axis.
-        # TASK 76 (Director-directed, owner-approved, 23 Nov 2026):
-        # AUTO PAGES ONLY - uploaded Research data has no reporting-
-        # period/price-cadence data to build this from (see
-        # auto_compounder_engine._iv_bv_vs_price_periods()'s own
-        # docstring), so it never even sets the "iv_bv_vs_price" key;
-        # gating on is_auto here is what actually keeps it off the
-        # Research page (an uploaded ticker's section simply wouldn't
-        # have the key regardless, but the explicit gate makes the
-        # "Auto only" rule visible here, not just implied by data
-        # absence). Its text description is passed via sdd_plotly_
-        # chart()'s own text_description= - that function already
-        # renders exactly one "Text description of this chart" expander
-        # per chart; a second, manually-added one here was a duplicate.
-        if is_auto:
-            _ivbv_price_fig, _ivbv_price_no_chart_reason = _cp_iv_bv_vs_price_chart(
-                ticker, section.get("iv_bv_vs_price", {}),
+        # TASK 76 (23 Nov 2026) built it from a reporting-period-averaged
+        # price series Auto pages' own cached fundamentals bundle
+        # supports; TASK 78 (Director-directed, owner-approved, 23 Nov
+        # 2026, "the owner changed his mind: he wants it on every
+        # uploaded company too") extended that same chart to uploaded
+        # Research pages - build_compounder_data._iv_bv_vs_price_for_
+        # upload() builds the SAME "iv_bv_vs_price" shape there, from the
+        # sheet's own IV/BV + monthly price_history plus just the FY-end
+        # month/day and reporting cadence read from that ticker's cached
+        # fundamentals bundle (no other bundle data). No more is_auto
+        # gate here - an uploaded ticker's section simply has no
+        # "iv_bv_vs_price" key (or a {"no_chart_reason": ...} one) when
+        # its bundle can't resolve a fiscal year end at all, which this
+        # same code path already handles below. Its text description is
+        # passed via sdd_plotly_chart()'s own text_description= - that
+        # function already renders exactly one "Text description of
+        # this chart" expander per chart; a second, manually-added one
+        # here was a duplicate.
+        _ivbv_price_fig, _ivbv_price_no_chart_reason = _cp_iv_bv_vs_price_chart(
+            ticker, section.get("iv_bv_vs_price", {}),
+        )
+        if _ivbv_price_fig:
+            sdd_plotly_chart(
+                _ivbv_price_fig, config={"displayModeBar": False},
+                text_description=(
+                    "Share price = average price in each reporting period "
+                    "(quarterly or half-yearly, as the company reports). "
+                    "IV/BV changes only at each annual result, so it is drawn "
+                    "as steps. Yearly IV/BV uses today's growth, discount rate "
+                    "and share count - read the shape, not exact history."
+                ),
             )
-            if _ivbv_price_fig:
-                sdd_plotly_chart(
-                    _ivbv_price_fig, config={"displayModeBar": False},
-                    text_description=(
-                        "Share price = average price in each reporting period "
-                        "(quarterly or half-yearly, as the company reports). "
-                        "IV/BV changes only at each annual result, so it is drawn "
-                        "as steps. Yearly IV/BV uses today's growth, discount rate "
-                        "and share count - read the shape, not exact history."
-                    ),
-                )
-            elif _ivbv_price_no_chart_reason:
-                st.caption(_ivbv_price_no_chart_reason)
+        elif _ivbv_price_no_chart_reason:
+            st.caption(_ivbv_price_no_chart_reason)
         fig3 = _cp_fcf_growth_chart(ticker, section.get("fcf_growth", {}))
         if fig3:
             sdd_plotly_chart(fig3, config={"displayModeBar": False})

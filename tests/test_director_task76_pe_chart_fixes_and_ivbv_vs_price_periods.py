@@ -468,14 +468,23 @@ check("auto_compounder_engine._iv_bv_series() no longer returns a 'prices' field
       "(superseded by _iv_bv_vs_price_periods())",
       '{"years": years, "ratios": ratios}' in inspect.getsource(ace._iv_bv_series))
 
+# TASK 78 (Director-directed, owner-approved, 23 Nov 2026 - "the owner
+# changed his mind: he wants it on every uploaded company too"):
+# render_section() no longer gates _cp_iv_bv_vs_price_chart() on
+# is_auto at all - the chart calls it unconditionally, regardless of
+# which page is rendering. (The old TASK 76 "is_auto=False never calls
+# it, even with the key present" test this replaces is now the
+# OPPOSITE of the Director's own current instruction - see
+# tests/test_director_task78_ivbv_vs_price_on_uploaded_pages.py for the
+# new uploaded-page behavior itself: _iv_bv_vs_price_for_upload(),
+# build()'s own wiring, and the no-FY-end caption path.)
 _src_render_section = inspect.getsource(cui.render_section)
-check("render_section() only calls _cp_iv_bv_vs_price_chart when is_auto is True",
-      "if is_auto:" in _src_render_section and "_cp_iv_bv_vs_price_chart(" in _src_render_section)
+check('render_section() calls _cp_iv_bv_vs_price_chart unconditionally '
+      '(no "if is_auto:" gate around it any more)',
+      "_cp_iv_bv_vs_price_chart(" in _src_render_section
+      and "if is_auto:\n            _ivbv_price_fig" not in _src_render_section)
 
-# Behavioral proof: rendering "Value vs Book" with is_auto=False never
-# calls _cp_iv_bv_vs_price_chart at all, even if the section somehow
-# carried the key (defence in depth - it shouldn't, but prove the gate
-# itself, not just data absence).
+
 class _FakeCtx:
     def __enter__(self):
         return self
@@ -522,9 +531,9 @@ finally:
     cui.sdd_plotly_chart = _orig_plotly
     cui._cp_iv_bv_vs_price_chart = _orig_chart_fn
 
-check("is_auto=False: _cp_iv_bv_vs_price_chart is never called, even with the key present",
-      _calls_uploaded == 0)
-check("is_auto=True: _cp_iv_bv_vs_price_chart IS called exactly once",
+check("is_auto=False: _cp_iv_bv_vs_price_chart IS called exactly once (TASK 78 - no more gate)",
+      _calls_uploaded == 1)
+check("is_auto=True: _cp_iv_bv_vs_price_chart IS called exactly once (unchanged)",
       _calls_auto == 1)
 
 

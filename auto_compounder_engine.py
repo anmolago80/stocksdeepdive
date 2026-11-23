@@ -3199,12 +3199,112 @@ def _iv_bv_vs_price_avg(monthly_dates, monthly_prices, start, end):
     return sum(vals) / len(vals) if vals else None
 
 
+def _iv_bv_vs_price_core(fy_points, ttm_ratio, anchor, cadence, monthly_dates, monthly_prices):
+    """Shared period-generation/averaging/labeling/serialisation core
+    for the "IV/BV vs Share Price, indexed" chart (TASK 78, Director-
+    directed, owner-approved, 23 Nov 2026 - factored out of this
+    function's own pre-TASK-78 body so Auto and uploaded Research pages
+    share exactly ONE implementation of this logic, never two copies
+    that could drift apart). Used by _iv_bv_vs_price_periods() below
+    (Auto - fy_points come from the bundle's own real per-FY statement
+    dates) and by build_compounder_data._iv_bv_vs_price_for_upload()
+    (uploaded - fy_points are synthesised from each sheet year label
+    plus the ticker's cached fundamentals bundle's own FY-end month/day,
+    since an uploaded ticker has no per-FY statement dates of its own
+    to read).
+
+    fy_points: ascending-by-date list of {"date": a real datetime.date,
+        "label": str, "ratio": float} - fiscal years only (never TTM).
+    ttm_ratio: float | None - passed straight through to the output.
+    anchor: any real datetime.date whose month/day match this company's
+        own fiscal year end - every period boundary below is computed
+        relative to it via month-count offsets, so it does NOT need to
+        be the most recent such date on file; any one of them anchors
+        the math identically (callers pass whichever they have on
+        hand - Auto passes the bundle's own newest statement date,
+        uploaded pages pass a synthetic one built from the cached
+        bundle's FY-end month/day alone).
+    cadence: "quarterly" | "half-yearly".
+    monthly_dates/monthly_prices: parallel ascending lists of real
+        datetime.date / float monthly closes to average per period.
+
+    Returns None when `fy_points` is empty or not one reporting period
+    has any monthly price to average; otherwise the same ISO-string
+    {"fy_points", "ttm_ratio", "periods", "cadence"} shape
+    _iv_bv_vs_price_periods()'s own docstring describes (TASK 76a: every
+    date serialised to a plain ISO "YYYY-MM-DD" string, never a raw
+    datetime.date - see that task's own docstring note for why)."""
+    if not fy_points:
+        return None
+    earliest = fy_points[0]["date"]
+    today = datetime.date.today()
+    step = 3 if cadence == "quarterly" else 6
+    periods_per_fy = 4 if cadence == "quarterly" else 2
+    letter = "Q" if cadence == "quarterly" else "H"
+
+    # Find the smallest (most future-pointing) step_index whose nominal
+    # end date is still in the future - that one is the current,
+    # possibly-partial period. step_index counts `step`-month hops back
+    # from `anchor`; negative values point forward past it.
+    step_index = 0
+    while anchor + relativedelta(months=-step_index * step) <= today:
+        step_index -= 1
+
+    periods = []
+    while True:
+        end_date = anchor + relativedelta(months=-step_index * step)
+        if end_date < earliest:
+            break
+        start_date = anchor + relativedelta(months=-(step_index + 1) * step)
+        is_partial = end_date > today
+        avg_price = _iv_bv_vs_price_avg(
+            monthly_dates, monthly_prices, start_date, today if is_partial else end_date,
+        )
+        if avg_price is not None:
+            fy_offset = step_index // periods_per_fy
+            position_from_end = step_index % periods_per_fy
+            fy_year = anchor.year - fy_offset
+            period_index = periods_per_fy - position_from_end
+            label = f"{letter}{period_index} FY{str(fy_year)[-2:]}"
+            if is_partial:
+                label += " (to date)"
+            periods.append({
+                "start": start_date, "end": end_date, "label": label,
+                "avg_price": avg_price, "is_partial": is_partial,
+            })
+        step_index += 1
+
+    if not periods:
+        return None
+    periods.sort(key=lambda pr: pr["end"])
+
+    # TASK 76a: serialise to ISO strings only now, after every date
+    # comparison/sort above is done - see this function's own
+    # docstring note for why (json.dump() can't serialise a raw
+    # datetime.date; compounder_ui parses these back).
+    json_fy_points = [
+        {"date": pt["date"].isoformat(), "label": pt["label"], "ratio": pt["ratio"]}
+        for pt in fy_points
+    ]
+    json_periods = [
+        {
+            "start": pr["start"].isoformat(), "end": pr["end"].isoformat(),
+            "label": pr["label"], "avg_price": pr["avg_price"], "is_partial": pr["is_partial"],
+        }
+        for pr in periods
+    ]
+    return {"fy_points": json_fy_points, "ttm_ratio": ttm_ratio, "periods": json_periods, "cadence": cadence}
+
+
 def _iv_bv_vs_price_periods(bundle, dcf_result, bvps_ttm, ticker):
     """Data behind compounder_ui's "IV/BV vs Share Price, indexed" chart
     (TASK 76, Director-directed, owner-approved, 23 Nov 2026 - replacing
     TASK 75's simpler year-end-snapshot "prices" field on _iv_bv_series()
-    above). AUTO PAGES ONLY - uploaded Research data has no equivalent;
-    see compounder_ui._cp_iv_bv_vs_price_chart()'s own docstring for why.
+    above). AUTO side of this chart (TASK 78, Director-directed, owner-
+    approved, 23 Nov 2026, extended the chart to uploaded Research pages
+    too - see build_compounder_data._iv_bv_vs_price_for_upload() for
+    that side; both now share _iv_bv_vs_price_core() above for every bit
+    of period-generation/averaging/labeling logic).
 
     Reuses _iv_bv_series()'s own years/ratios UNCHANGED - this never
     recomputes the IV/BV side, only attaches each fiscal year's real
@@ -3278,12 +3378,6 @@ def _iv_bv_vs_price_periods(bundle, dcf_result, bvps_ttm, ticker):
 
     anchor = income_dates[0][1]  # the latest fiscal year end on file
     cadence = _iv_bv_vs_price_reporting_cadence(bundle, ticker)
-    step = 3 if cadence == "quarterly" else 6
-    periods_per_fy = 4 if cadence == "quarterly" else 2
-    letter = "Q" if cadence == "quarterly" else "H"
-
-    earliest = fy_points[0]["date"]
-    today = datetime.date.today()
 
     prices_10y = bundle.get("prices_10y") or {}
     monthly_dates, monthly_prices = [], []
@@ -3294,58 +3388,7 @@ def _iv_bv_vs_price_periods(bundle, dcf_result, bvps_ttm, ticker):
         except (ValueError, TypeError):
             continue
 
-    # Find the smallest (most future-pointing) step_index whose nominal
-    # end date is still in the future - that one is the current,
-    # possibly-partial period. step_index counts `step`-month hops back
-    # from `anchor`; negative values point forward past it.
-    step_index = 0
-    while anchor + relativedelta(months=-step_index * step) <= today:
-        step_index -= 1
-
-    periods = []
-    while True:
-        end_date = anchor + relativedelta(months=-step_index * step)
-        if end_date < earliest:
-            break
-        start_date = anchor + relativedelta(months=-(step_index + 1) * step)
-        is_partial = end_date > today
-        avg_price = _iv_bv_vs_price_avg(
-            monthly_dates, monthly_prices, start_date, today if is_partial else end_date,
-        )
-        if avg_price is not None:
-            fy_offset = step_index // periods_per_fy
-            position_from_end = step_index % periods_per_fy
-            fy_year = anchor.year - fy_offset
-            period_index = periods_per_fy - position_from_end
-            label = f"{letter}{period_index} FY{str(fy_year)[-2:]}"
-            if is_partial:
-                label += " (to date)"
-            periods.append({
-                "start": start_date, "end": end_date, "label": label,
-                "avg_price": avg_price, "is_partial": is_partial,
-            })
-        step_index += 1
-
-    if not periods:
-        return None
-    periods.sort(key=lambda pr: pr["end"])
-
-    # TASK 76a: serialise to ISO strings only now, after every date
-    # comparison/sort above is done - see this function's own
-    # docstring note for why (json.dump() can't serialise a raw
-    # datetime.date; compounder_ui parses these back).
-    json_fy_points = [
-        {"date": pt["date"].isoformat(), "label": pt["label"], "ratio": pt["ratio"]}
-        for pt in fy_points
-    ]
-    json_periods = [
-        {
-            "start": pr["start"].isoformat(), "end": pr["end"].isoformat(),
-            "label": pr["label"], "avg_price": pr["avg_price"], "is_partial": pr["is_partial"],
-        }
-        for pr in periods
-    ]
-    return {"fy_points": json_fy_points, "ttm_ratio": ttm_ratio, "periods": json_periods, "cadence": cadence}
+    return _iv_bv_vs_price_core(fy_points, ttm_ratio, anchor, cadence, monthly_dates, monthly_prices)
 
 
 def _fcf_growth_entry(bundle):
