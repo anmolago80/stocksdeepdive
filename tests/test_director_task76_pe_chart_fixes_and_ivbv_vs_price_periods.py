@@ -351,7 +351,13 @@ if _fig_b is not None:
     check('title names FY2025 as the base year ("FY2025 = 100")',
           "FY2025 = 100" in _fig_b.layout.title.text)
     _ivbv_trace = _fig_b.data[0]
-    check("IV/BV trace is a step line (line_shape hv)", _ivbv_trace.line.shape == "hv")
+    # TASK 79 (24 Nov 2026): the owner decided a plain connected line
+    # reads better than the step shape this TASK 76 check originally
+    # asserted - see tests/test_director_task79_ivbv_vs_price_line_fixes.py
+    # for the current behavioral checks on this chart's line shape.
+    check("IV/BV trace is a plain connected line (line_shape linear, "
+          "TASK 79 - no longer a step/hv shape)",
+          _ivbv_trace.line.shape == "linear")
     check("IV/BV trace's x values are real dates, starting at the base year (FY2025) - "
           "FY2023/FY2024 (before base) are NOT plotted",
           list(_ivbv_trace.x) == [_d("2025-03-31"), _d("2026-03-31"), datetime.date.today()])

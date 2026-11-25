@@ -3171,6 +3171,35 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
 _IVBV_HALF_YEARLY_SUFFIXES = (".AX", ".NZ", ".L")
 
 
+def _log_ivbv_cadence(ticker, cadence, source, cols, df):
+    """TASK 79 (Director-directed, owner-approved, 24 Nov 2026, Part C -
+    diagnose only, no detection-rule change): one log line every time
+    _iv_bv_vs_price_reporting_cadence() below decides a cadence, so the
+    Director can see WHY a ticker like WMS.AX (a known half-yearly
+    reporter) is coming back "quarterly" - e.g. a stale/placeholder
+    quarterly column with no real revenue on it would shrink the
+    median gap between real columns without this line making that
+    visible. `cols` is the exact [(column_label, date), ...] list the
+    gap computation used (empty for the "suffix" fallback, which never
+    read a dataframe at all); `df` is whichever of income_q/cashflow_q
+    those columns came from (None for the fallback)."""
+    cols_str = ",".join(d.isoformat() for _c, d in cols)
+    if df is not None and not getattr(df, "empty", True):
+        row_name = _find_row(df, _ROW_ALIASES.get("revenue", ["revenue"]))
+        nonnull = []
+        for c, _d in cols:
+            if row_name is None:
+                nonnull.append("?")
+                continue
+            v = df.loc[row_name, c]
+            nonnull.append(str(not (v is None or (isinstance(v, float) and v != v))))
+        nonnull_str = ",".join(nonnull)
+    else:
+        nonnull_str = ""
+    print(f"[ivbv_cadence] {ticker} cadence={cadence} source={source} "
+          f"cols={cols_str} nonnull_revenue={nonnull_str}")
+
+
 def _iv_bv_vs_price_reporting_cadence(bundle, ticker):
     """"quarterly" or "half-yearly" (TASK 76, Director-directed, owner-
     approved, 23 Nov 2026) - from the median gap between this ticker's
@@ -3180,14 +3209,29 @@ def _iv_bv_vs_price_reporting_cadence(bundle, ticker):
     a quarterly reporter; wider is half-yearly. Falls back to the
     ticker's own suffix when no quarterly statement is on file at all:
     .AX/.NZ/.L (ASX/NZX/LSE) report half-yearly; everything else (the
-    US norm, and this codebase's default elsewhere) reports quarterly."""
+    US norm, and this codebase's default elsewhere) reports quarterly.
+
+    TASK 79 Part C (24 Nov 2026, diagnose only - the detection rule
+    itself is UNCHANGED in this task): logs a "[ivbv_cadence]" line via
+    _log_ivbv_cadence() every time this function runs, naming which
+    statement (income_q/cashflow_q/the suffix fallback) decided the
+    cadence and the exact column dates + per-column non-null-revenue
+    flags behind that decision - WMS.AX plotting ~3-monthly points
+    despite being a known half-yearly reporter is the reason this
+    exists; the Director reviews these lines before deciding whether
+    the rule itself needs to change."""
     for key in ("income_q", "cashflow_q"):
-        cols = _statement_col_dates(bundle.get(key))
+        df = bundle.get(key)
+        cols = _statement_col_dates(df)
         if len(cols) >= 2:
             gaps = sorted((cols[i][1] - cols[i + 1][1]).days for i in range(len(cols) - 1))
             median_gap = gaps[len(gaps) // 2]
-            return "quarterly" if median_gap <= 135 else "half-yearly"
-    return "half-yearly" if (ticker or "").upper().endswith(_IVBV_HALF_YEARLY_SUFFIXES) else "quarterly"
+            cadence = "quarterly" if median_gap <= 135 else "half-yearly"
+            _log_ivbv_cadence(ticker, cadence, key, cols, df)
+            return cadence
+    cadence = "half-yearly" if (ticker or "").upper().endswith(_IVBV_HALF_YEARLY_SUFFIXES) else "quarterly"
+    _log_ivbv_cadence(ticker, cadence, "suffix", [], None)
+    return cadence
 
 
 def _iv_bv_vs_price_avg(monthly_dates, monthly_prices, start, end):

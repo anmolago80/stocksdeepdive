@@ -592,15 +592,25 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     all). Checked first, before the generic fy_points/periods-missing
     case below (which stays silent - nothing to show, not a caption).
 
-    IV/BV is a STEP line (line_shape="hv"): each fiscal year's own
-    ratio holds flat from that year's end date until the next one;
-    today's TTM ratio (if any) extends the latest FY's step through to
-    today - no interpolation, no invented quarterly/half-yearly IV/BV.
-    Share price is one point per reporting period (quarterly or half-
-    yearly, whichever this company actually reports - see
-    _iv_bv_vs_price_periods()), each the AVERAGE monthly close across
-    that period; the current, still-open period (if any) is plotted at
-    today's date and labelled "(to date)".
+    TASK 79 (Director-directed, owner-approved, 24 Nov 2026, from the
+    owner's own WMS screenshot): IV/BV is now a plain CONNECTED line
+    (line_shape="linear", markers at each point) - one point per fiscal
+    year's own end date plus (if present) a TTM point at today, straight
+    segments between them. The previous step ("hv") shape - holding each
+    FY's ratio flat until the next one - was the owner's own earlier
+    request (TASK 76); he's since decided a straight line reads better,
+    since IV/BV is only ever KNOWN at each annual result and TTM, not
+    continuously. Share price is still one point per reporting period
+    (quarterly or half-yearly, whichever this company actually reports -
+    see _iv_bv_vs_price_periods()), each the AVERAGE monthly close
+    across that period; the current, still-open period (if any) is
+    plotted at today's date (never its own nominal, possibly-future end
+    date) and labelled "(to date)" - and the x-axis itself is explicitly
+    capped at today (see the `xaxis.range` set below) so neither trace
+    can ever visually extend past today, even via Plotly's own default
+    autorange padding on a sparse (half-yearly/quarterly) date axis -
+    confirmed live on WMS.AX (TASK 79's own bug report: "last price
+    point ran to ~Jan 2027").
 
     Returns (fig_or_None, no_chart_reason_or_None) - exactly one of the
     two is ever non-None. `iv_bv_vs_price` missing the ticker entirely
@@ -673,7 +683,13 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
         if p["end"] < base_date:
             continue
         idx_val = p["avg_price"] / base_price * 100.0
-        price_x.append(today if p["is_partial"] else p["end"])
+        # TASK 79 (confirmed bug, owner's WMS screenshot): a partial
+        # ("to date") period's NOMINAL end date can be in the future
+        # (its cadence step hasn't fully elapsed yet) - min() here is
+        # an explicit, can't-miss invariant that this point is plotted
+        # at today whenever its nominal end is later than today, not
+        # just when the upstream is_partial flag happens to agree.
+        price_x.append(min(p["end"], today))
         price_y.append(idx_val)
         price_text.append(
             f"{idx_val:.0f} ({_fmt_money(p['avg_price'], currency_symbol)} avg, {p['label']})"
@@ -682,7 +698,7 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=ivbv_x, y=ivbv_y, mode="lines+markers", name="IV/BV index",
-        line=dict(color="#2dd4bf", shape="hv"), text=ivbv_text,
+        line=dict(color="#2dd4bf", shape="linear"), text=ivbv_text,
         hovertemplate="IV/BV %{text}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
@@ -690,10 +706,20 @@ def _cp_iv_bv_vs_price_chart(ticker, iv_bv_vs_price):
         line=dict(color="#60a5fa", dash="dash"), text=price_text,
         hovertemplate="Price %{text}<extra></extra>",
     ))
+    # TASK 79: an explicit upper bound of `today` on the x-axis itself -
+    # Plotly's own default autorange adds a few percent of padding past
+    # the last real data point, which on a sparse (half-yearly/
+    # quarterly) date axis can visually read as "almost a whole extra
+    # period" past today even though every plotted point is correctly
+    # at or before it (the owner's WMS screenshot: "ran to ~Jan 2027").
+    # The lower bound is left on autorange (None) - only the right edge
+    # needs capping.
+    x_min = min(ivbv_x + price_x) if (ivbv_x or price_x) else base_date
     fig.update_layout(
         title=f"IV/BV vs Share Price, indexed ({usable_fy[0]['label']} = 100)",
         height=300, margin=dict(l=10, r=10, t=40, b=10),
         yaxis_title="Index", xaxis_type="date",
+        xaxis=dict(range=[x_min, today]),
         legend=dict(orientation="h", y=-0.2),
     )
     return fig, None
@@ -1348,11 +1374,12 @@ def render_section(sections, ticker, section_label, gate=None, lang="en", is_aut
             sdd_plotly_chart(
                 _ivbv_price_fig, config={"displayModeBar": False},
                 text_description=(
-                    "Share price = average price in each reporting period "
-                    "(quarterly or half-yearly, as the company reports). "
-                    "IV/BV changes only at each annual result, so it is drawn "
-                    "as steps. Yearly IV/BV uses today's growth, discount rate "
-                    "and share count - read the shape, not exact history."
+                    "Share price = average price in each reporting period. "
+                    "IV/BV is known only at each annual result and TTM; the "
+                    "line between those points is drawn straight, not "
+                    "measured. Yearly IV/BV uses today's growth, discount "
+                    "rate and share count - read the shape, not exact "
+                    "history."
                 ),
             )
         elif _ivbv_price_no_chart_reason:
