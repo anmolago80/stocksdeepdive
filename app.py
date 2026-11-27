@@ -5719,6 +5719,36 @@ def _render_compounder_admin_panel():
                                 st.rerun()
                         st.divider()
 
+            # TASK 80 (Director-directed, owner-approved, 27 Nov 2026):
+            # a red banner, visible without opening any expander, the
+            # moment the last Anthropic auth attempt (any top100 batch
+            # submit/reconcile, or any ai_client.ask() feature) failed
+            # with a 401/403 - the incident this closes: every nightly
+            # Top 200 AI batch from 21-26 Nov 2026 failed with "401
+            # invalid x-api-key" and nothing told the owner for 6
+            # nights. Cleared automatically by the next success,
+            # including a successful "Test AI key" press below - see
+            # ai_auth_state.banner_message()'s own docstring.
+            import ai_auth_state
+            _ai_auth_banner = ai_auth_state.banner_message()
+            if _ai_auth_banner:
+                st.error(f"⚠ {_ai_auth_banner}")
+
+            with st.expander("AI key", expanded=bool(_ai_auth_banner)):
+                st.caption(
+                    "Makes the cheapest possible authenticated Anthropic call "
+                    "(models list - no tokens, no message) to confirm "
+                    "ANTHROPIC_API_KEY is currently accepted. Never shows or "
+                    "logs the key itself, only the outcome."
+                )
+                if st.button("Test AI key", key="cp_admin_test_ai_key"):
+                    with st.spinner("Testing AI key..."):
+                        _aik_ok, _aik_msg = ai_auth_state.test_ai_key()
+                    if _aik_ok:
+                        st.success(_aik_msg)
+                    else:
+                        st.error(_aik_msg)
+
             # Mega-batch Part 10: off-site DB backup status + manual
             # trigger, in the same admin-only popover as everything
             # else here. import deferred - this module (requests,

@@ -16,6 +16,7 @@ import os
 
 import streamlit as st
 
+import ai_auth_state
 import compounder_ui
 import data_export_engine
 import drop_chip_store
@@ -1676,7 +1677,7 @@ def _score_row_with_fallback(ticker, scores):
     return fallback, fallback is not None
 
 
-def _enrich_rows(rows, scores, failures):
+def _enrich_rows(rows, scores, failures, presence_map=None):
     """Shared enrichment loop for _enriched_pool()/_enriched_asx_
     extension() - "score_row"/"composite"/"is_fallback_score" exactly
     as before, plus "score_failure" (audit fixes, Commit 1, 30 Sep
@@ -1687,8 +1688,18 @@ def _enrich_rows(rows, scores, failures):
     TOP100_FAILURE_MAX_ATTEMPTS strikes under the CURRENT rubric,
     instead of the generic "scored automatically at the next nightly
     run" AWAITING caption, which would otherwise be actively
-    misleading for a ticker this rubric has given up retrying."""
+    misleading for a ticker this rubric has given up retrying.
+
+    "presence_nights" (TASK 80, Director-directed, owner-approved, 27
+    Nov 2026): the row's own top100_store.pool_presence_map() entry (0
+    if `presence_map` is None or the ticker is absent from it - same
+    "never seen yet" convention top100_engine._true_newcomer_gated()
+    already uses) - _shelf_row_html() uses it to tell apart a genuine
+    newcomer still in its 5-night probation from an older pool member
+    that's simply still waiting on tonight's scoring run (or was
+    blocked by an AI auth failure) - see that function's own docstring."""
     out = []
+    presence_map = presence_map or {}
     for row in rows:
         score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores)
         composite = top100_engine.composite_score(score_row)
@@ -1707,7 +1718,8 @@ def _enrich_rows(rows, scores, failures):
             "currency": fcf_valuation_engine.trading_currency_for(row["ticker"]),
             "score_row": score_row, "composite": composite,
             "is_fallback_score": is_fallback,
-            "score_failure": failures.get(row["ticker"])})
+            "score_failure": failures.get(row["ticker"]),
+            "presence_nights": presence_map.get(row["ticker"], 0)})
     return out
 
 
@@ -1717,10 +1729,11 @@ def _enriched_pool():
     for_model() - or a previous-rubric fallback, see _score_row_with_
     fallback()'s own docstring - or None if neither exists), "composite"
     (top100_engine.composite_score(), or None), "is_fallback_score"
-    (True only when score_row came from the fallback), and "score_
-    failure" (see _enrich_rows()'s own docstring) - the one place every
-    tab reads from, so the Top 20 tabs and the Full 100 tab can never
-    compute composite differently from each other.
+    (True only when score_row came from the fallback), "score_
+    failure" and "presence_nights" (see _enrich_rows()'s own
+    docstring) - the one place every tab reads from, so the Top 20
+    tabs and the Full 100 tab can never compute composite differently
+    from each other.
 
     Results-driven Top 100 refresh (27 Sep 2026): reads latest_scores_
     for_model() instead of scores_for_quarter_model(current_quarter(),
@@ -1734,23 +1747,25 @@ def _enriched_pool():
         top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     failures = top100_store.score_failures_for_model(
         top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
-    return _enrich_rows(pool, scores, failures)
+    presence_map = top100_store.pool_presence_map([r["ticker"] for r in pool])
+    return _enrich_rows(pool, scores, failures, presence_map)
 
 
 def _enriched_asx_extension():
     """top100_store.current_asx_extension() rows, augmented with score_
-    row/composite/is_fallback_score/score_failure exactly like
-    _enriched_pool() does for the global pool - Top 20 Australia's own
-    guaranteed-twenty supplement. NEVER read by any other tab, the
-    homepage teaser, or the changes strip - they all read _enriched_
-    pool() (i.e. top100_store.current_pool()) alone, which never
-    includes an extension row."""
+    row/composite/is_fallback_score/score_failure/presence_nights
+    exactly like _enriched_pool() does for the global pool - Top 20
+    Australia's own guaranteed-twenty supplement. NEVER read by any
+    other tab, the homepage teaser, or the changes strip - they all
+    read _enriched_pool() (i.e. top100_store.current_pool()) alone,
+    which never includes an extension row."""
     extension = top100_store.current_asx_extension()
     scores = top100_store.latest_scores_for_model(
         top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     failures = top100_store.score_failures_for_model(
         top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
-    return _enrich_rows(extension, scores, failures)
+    presence_map = top100_store.pool_presence_map([r["ticker"] for r in extension])
+    return _enrich_rows(extension, scores, failures, presence_map)
 
 
 def _foreign_us_listed_home_country_by_ticker():
@@ -2301,7 +2316,32 @@ def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
     `recent_badge_html` (TASK 30, Part A): the same "Recently added"
     pill _render_row() can carry, now also reachable from the bottom
     shelf - an unrated newcomer is exactly the kind of row this badge
-    should still mark."""
+    should still mark.
+
+    AWAITING caption, 3 real reasons (TASK 80, Director-directed,
+    owner-approved, 27 Nov 2026 - the incident: every nightly Top 200
+    AI batch from 21-26 Nov 2026 failed with "401 invalid x-api-key",
+    so Selection kept adding companies to the pool with no way to ever
+    get scored while the key stayed broken, and every one of them was
+    told the same "scored once it has held a pool slot for 5
+    consecutive nights" line regardless of how long it had actually
+    been waiting or why):
+      - held < NEWCOMER_PERSISTENCE_NIGHTS nights -> still a genuine
+        newcomer on probation: "scored after {n} nights in the pool
+        (night {this many} of {n})".
+      - {n}+ nights held, the key is currently healthy (ai_auth_state.
+        is_failing() False) -> "queued for tonight's scoring run".
+      - {n}+ nights held AND the last Anthropic auth attempt failed
+        (ai_auth_state.is_failing() True) -> "scoring delayed - last
+        run failed (<date>)", using ai_auth_state.last_failure_at()'s
+        own date - this is the exact case the 12 companies stuck
+        waiting during the incident should have shown, instead of the
+        misleading newcomer-probation wording.
+    The pre-existing exhausted-failure case (a ticker this rubric has
+    permanently given up retrying) is UNCHANGED - it stays "scoring
+    failed — will retry after the next rubric change" either way,
+    since that's a different, rubric-level reason with nothing to do
+    with the AI key."""
     score_row = row.get("score_row")
     if score_row is None:
         chip = _shelf_chip_html(_t("shelf_chip_awaiting", lang), *_SHELF_CHIP_AWAITING)
@@ -2309,8 +2349,20 @@ def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
         if failure and top100_engine._failure_exhausted(failure):
             caption = _t("shelf_caption_scoring_failed", lang)
         else:
-            caption = _t("shelf_caption_awaiting", lang,
-                         n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS)
+            nights_held = row.get("presence_nights", 0)
+            if nights_held < top100_engine.NEWCOMER_PERSISTENCE_NIGHTS:
+                caption = _t(
+                    "shelf_caption_awaiting_newcomer", lang,
+                    n=max(1, nights_held), total=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS,
+                )
+            elif ai_auth_state.is_failing():
+                _last_fail = ai_auth_state.last_failure_at()
+                caption = _t(
+                    "shelf_caption_awaiting_delayed", lang,
+                    date=(_last_fail or "")[:10],
+                )
+            else:
+                caption = _t("shelf_caption_awaiting_queued", lang)
     else:
         chip = _shelf_chip_html(_t("shelf_chip_not_rated", lang), *_SHELF_CHIP_NOT_RATED)
         if score_row.get("degenerate_accepted"):
@@ -2337,16 +2389,27 @@ def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
     quality_exception_chip = _quality_exception_chip_html(row, lang)
     support_chip = _support_chip_html(row, lang)
     return (
+        # TASK 80 (27 Nov 2026, item 7 - CONFIRMED layout bug): flex-
+        # wrap:wrap let the "Recently added" badge (a sizable inline-
+        # flex pill - see _recent_added_badge_html()) push the LAST
+        # flex child, this row's own reason caption, onto its own new
+        # line on a row that carries that badge (e.g. IESC/VIRT/AII/
+        # FOXA/ESP). nowrap + an overflow-x scroll keeps every child -
+        # chip, ticker, badges, value score, caption - on the SAME line
+        # always; a row that's genuinely too wide for the viewport
+        # scrolls horizontally instead of wrapping, never drops its
+        # reason text onto a second line.
         "<div style='display:flex;gap:10px;align-items:baseline;font-size:12.5px;"
-        "padding:4px 0;color:#8aa0b8;flex-wrap:wrap;'>"
+        "padding:4px 0;color:#8aa0b8;flex-wrap:nowrap;overflow-x:auto;'>"
         + chip + stale_chip + dcf_unreliable_chip + quality_exception_chip + support_chip +
         f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
-        "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
+        "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;"
+        "white-space:nowrap;'>"
         f"{html.escape(ticker)}</a>"
         + badge_html +
-        f"<span>{html.escape(_t('col_value_score', lang))}: "
+        f"<span style='white-space:nowrap;'>{html.escape(_t('col_value_score', lang))}: "
         f"<b style='color:#e6edf5;'>{row['value_score']:.1f}</b>{mos_html}</span>"
-        f"<span style='color:#5b7290;font-size:11px;'>{html.escape(caption)}</span>"
+        f"<span style='color:#5b7290;font-size:11px;white-space:nowrap;'>{html.escape(caption)}</span>"
         "</div>"
     )
 

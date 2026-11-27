@@ -4448,6 +4448,15 @@ EN = {
     "top100.shelf_heading": "Awaiting score / not rated",
     "top100.shelf_chip_awaiting": "⏳ AWAITING",
     "top100.shelf_caption_awaiting": "scored once it has held a pool slot for {n} consecutive nights",
+    # TASK 80 (Director-directed, owner-approved, 27 Nov 2026) - 3 real
+    # AWAITING reasons replacing the one generic shelf_caption_awaiting
+    # line above at its own call site (that key's text itself is
+    # unchanged, still covered by tests/test_director_taskC_newcomer_
+    # persistence_wording.py - see top100_render._shelf_row_html()'s
+    # own docstring for exactly which of these 3 applies when).
+    "top100.shelf_caption_awaiting_newcomer": "scored after {total} nights in the pool (night {n} of {total})",
+    "top100.shelf_caption_awaiting_queued": "queued for tonight's scoring run",
+    "top100.shelf_caption_awaiting_delayed": "scoring delayed - last run failed ({date})",
     # Audit fixes, Commit 1 (30 Sep 2026, owner-directed): a ticker that
     # has hit TOP100_FAILURE_MAX_ATTEMPTS scoring failures under the
     # current rubric stops being resubmitted - this caption replaces
@@ -8354,6 +8363,9 @@ ES = {
     "top100.shelf_heading": "Esperando puntuación / no evaluadas",
     "top100.shelf_chip_awaiting": "⏳ EN ESPERA",
     "top100.shelf_caption_awaiting": "se puntúa en cuanto lleva {n} noches consecutivas con un puesto en el pool",
+    "top100.shelf_caption_awaiting_newcomer": "se puntúa tras {total} noches en el pool (noche {n} de {total})",
+    "top100.shelf_caption_awaiting_queued": "en cola para la puntuación de esta noche",
+    "top100.shelf_caption_awaiting_delayed": "puntuación retrasada - la última ejecución falló ({date})",
     "top100.shelf_caption_scoring_failed": "la puntuación falló — se reintentará tras el próximo cambio de rúbrica",
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
     "top100.shelf_caption_not_rated": "No hay suficiente información pública para una puntuación analítica.",

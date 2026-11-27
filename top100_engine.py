@@ -79,6 +79,7 @@ from datetime import datetime, timedelta, timezone
 
 import yfinance as yf
 
+import ai_auth_state
 import deep_dive_engine
 import drop_chip_engine
 import drop_chip_store
@@ -5005,8 +5006,17 @@ def poll_and_ingest_batch(log=print):
         client = anthropic.Anthropic()
         batch = client.messages.batches.retrieve(state["batch_id"])
     except Exception as e:
+        # TASK 80 (Director-directed, owner-approved, 27 Nov 2026): a
+        # 401/403 here is a rejected key, not a transient Anthropic-side
+        # hiccup - see ai_auth_state.py's own module docstring for the
+        # incident (6 nights of silent "401 invalid x-api-key" failures
+        # with no alert) this closes.
+        status = ai_auth_state.auth_error_status(e)
+        if status is not None:
+            ai_auth_state.record_failure("top100_reconcile", status, log=log)
         log(f"[top100] batch status check failed, will retry next run: {e}")
         return None
+    ai_auth_state.record_success(log=log)
 
     if batch.processing_status != "ended":
         log(f"[top100] batch {state['batch_id']} still {batch.processing_status} - checking again next run")
@@ -5789,9 +5799,14 @@ def _reconcile_submitting_marker(marker, log=print):
         client = anthropic.Anthropic()
         recent = client.messages.batches.list(limit=20)
     except Exception as e:
+        # TASK 80 (27 Nov 2026) - see ai_auth_state.py's own docstring.
+        status = ai_auth_state.auth_error_status(e)
+        if status is not None:
+            ai_auth_state.record_failure("top100_reconcile", status, log=log)
         log(f"[top100] could not reconcile a pending batch submission ({e}) - "
             f"leaving the marker in place, will retry reconciling next time")
         return None
+    ai_auth_state.record_success(log=log)
     try:
         attempted_at = datetime.fromisoformat(marker["attempted_at"])
     except Exception:
@@ -6330,9 +6345,20 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         client = anthropic.Anthropic()
         batch = client.with_options(max_retries=0).messages.batches.create(requests=requests)
     except Exception as e:
+        # TASK 80 (27 Nov 2026) - see ai_auth_state.py's own docstring
+        # for the incident (6 nights of silent "401 invalid x-api-key"
+        # submission failures) this closes. The submitting marker above
+        # is deliberately left in place either way - a real key fix
+        # still reconciles cleanly against batches.list() next time
+        # (see _reconcile_submitting_marker()'s own docstring), auth
+        # failure or not.
+        status = ai_auth_state.auth_error_status(e)
+        if status is not None:
+            ai_auth_state.record_failure("top100_submit", status, log=log)
         log(f"[top100] batch submission failed (outcome unknown - will reconcile against "
             f"batches.list() on the next attempt before submitting again): {e}")
         return None
+    ai_auth_state.record_success(log=log)
 
     top100_store.clear_submitting_marker()
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
@@ -8955,9 +8981,14 @@ def _log_coverage(rows, log=print, model=MODEL_TOP100):
             f"{market} {b['rated']}/{b['unrated_model']}/{b['unrated_failed']}/{b['waiting']}"
             for market, b in sorted(by_market.items())
         )
+        # TASK 80 (27 Nov 2026, item 4): ai_auth_ok names whether the
+        # LAST Anthropic auth attempt (submit/reconcile) succeeded -
+        # see ai_auth_state.py's own docstring. A False here on a night
+        # that also shows waiting > 0 is the exact signature of the
+        # 6-night "401 invalid x-api-key" incident this task closes.
         log(f"[top100] coverage {today}: selected {len(rows)} | rated {total_rated} | "
             f"unrated_model {total_unrated_model} | unrated_failed {total_unrated_failed} | "
-            f"waiting {total_waiting} || {per_market_bits}")
+            f"waiting {total_waiting} | ai_auth_ok={ai_auth_state.ai_auth_ok()} || {per_market_bits}")
         for market, b in sorted(by_market.items()):
             resolved = b["rated"] + b["unrated_model"] + b["unrated_failed"]
             if resolved < UNRATED_SHARE_WARNING_MIN_RESOLVED:

@@ -444,7 +444,8 @@ def run_nightly_watchdog(log=print):
 
                 _system_prompt = _SYSTEM_PROMPT + (_SYSTEM_PROMPT_ES_SUFFIX if _lang == "es" else "")
                 result = ai_client.ask(_system_prompt,
-                                       _build_prompt(ticker, h, analysis, prev_overall))
+                                       _build_prompt(ticker, h, analysis, prev_overall),
+                                       feature="ai_watchdog", log=log)
                 if result["input_tokens"] or result["output_tokens"]:
                     try:
                         ai_gate.record(email, AI_FEATURE, result["model"],

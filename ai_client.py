@@ -20,6 +20,8 @@ ai_gate.record().
 
 import os
 
+import ai_auth_state
+
 # Haiku 4.5 - the model string already used elsewhere in this codebase
 # for the one existing AI call (build_compounder_data.py's grammar
 # check) - reused here rather than invented fresh, so there's exactly
@@ -84,7 +86,7 @@ def estimate_cost_usd(model, input_tokens, output_tokens):
     return 0.0
 
 
-def ask(system_prompt, user_message, model=MODEL_HAIKU, max_tokens=700):
+def ask(system_prompt, user_message, model=MODEL_HAIKU, max_tokens=700, feature="ask", log=print):
     """Runs one Anthropic call. Returns a dict, always with every key
     below - never raises:
 
@@ -95,7 +97,17 @@ def ask(system_prompt, user_message, model=MODEL_HAIKU, max_tokens=700):
                       (0 if the call never reached Anthropic)
         cost_usd      estimate_cost_usd() of the above - 0.0 if ok is False
         model         echoed back, for the caller's logging convenience
-    """
+
+    feature: TASK 80 (Director-directed, owner-approved, 27 Nov 2026) -
+        a short label for ai_auth_state.record_failure()'s own
+        "[ai_auth] FAILED <feature> <status>" log line when this call
+        hits a 401/403 (e.g. portfolio_watchdog_engine.py passes
+        "ai_watchdog") - every caller of this one shared function is
+        covered without touching any of them individually; a success
+        here also clears the Admin panel's "AI scoring failing"
+        banner, same as a nightly top100 call succeeding would.
+    log: where ai_auth_state's own log lines go - defaults to print,
+        same as every other caller of ai_auth_state in this codebase."""
     result = {"ok": False, "text": None, "error": None,
               "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
               "model": model}
@@ -118,6 +130,7 @@ def ask(system_prompt, user_message, model=MODEL_HAIKU, max_tokens=700):
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
         )
+        ai_auth_state.record_success(log=log)
         text = "".join(
             block.text for block in resp.content
             if getattr(block, "type", None) == "text"
@@ -134,5 +147,9 @@ def ask(system_prompt, user_message, model=MODEL_HAIKU, max_tokens=700):
             result["error"] = "The model returned an empty response - please try again."
         return result
     except Exception as exc:
+        # TASK 80 (27 Nov 2026) - see ai_auth_state.py's own docstring.
+        status = ai_auth_state.auth_error_status(exc)
+        if status is not None:
+            ai_auth_state.record_failure(feature, status, log=log)
         result["error"] = f"Couldn't get an answer right now ({exc}) - please try again."
         return result

@@ -232,18 +232,23 @@ shelf_html_es = tr._shelf_row_html(row_ffff, "es")
 assert "la puntuación falló" in shelf_html_es, shelf_html_es
 print("[c1_shelf_caption_es] ...and in Spanish OK")
 
-# A ticker with 0/1/2 attempts still shows the generic AWAITING caption.
+# A ticker with 0/1/2 attempts still shows a non-"scoring failed"
+# AWAITING caption. TASK 80 (Director-directed, owner-approved, 27 Nov
+# 2026) replaced the old single generic "held a pool slot for N
+# consecutive nights" wording with 3 real reasons (newcomer-probation/
+# queued/delayed-by-an-AI-auth-failure) - GGGG has no "presence_nights"
+# key at all here, which _shelf_row_html() reads as 0 (never-seen-yet,
+# same convention top100_engine._true_newcomer_gated() already uses),
+# so it lands in the newcomer-probation branch: "scored after N nights
+# in the pool (night 1 of N)" - see tests/test_director_task80_ai_key_
+# failure_handling.py for the other 2 reasons (queued/delayed).
 row_normal = {"ticker": "GGGG", "score_row": None, "score_failure": None,
               "mos_pct": None, "value_score": 50.0, "generated_at": None, "stale_valuation": 0}
 normal_html = tr._shelf_row_html(row_normal, "en")
-# TASK C (Director PART 2, wording fix): "scored automatically at the
-# next nightly run" was wrong - NEWCOMER_PERSISTENCE_NIGHTS holds a
-# newcomer back until it's held a pool slot for that many nights
-# running. Updated to match the new wording instead of the old one.
-assert "held a pool slot for" in normal_html, normal_html
+assert "scored after" in normal_html and "nights in the pool (night 1 of" in normal_html, normal_html
 assert "scoring failed" not in normal_html
 print("[c1_shelf_caption_normal] a ticker with no failure (or <3 attempts) still "
-      "shows the generic AWAITING caption OK")
+      "shows a real (non-'scoring failed') AWAITING caption OK")
 
 
 # ======================================================================

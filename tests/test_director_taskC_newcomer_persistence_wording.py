@@ -86,16 +86,22 @@ with mock.patch.object(top100_engine, "NEWCOMER_PERSISTENCE_NIGHTS", 7):
           in i18n.t("top100.changes_strip_caption", "en",
                      n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS))
 
-# Source-level proof that all three real call sites in top100_render.py
-# pass n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS - never a literal
-# number - so a future change to the constant changes the UI text too,
-# with no second place to update.
+# Source-level proof that both still-live call sites in top100_
+# render.py (changes_strip_awaiting_tooltip/changes_strip_caption) pass
+# n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS - never a literal number -
+# so a future change to the constant changes the UI text too, with no
+# second place to update. TASK 80 (27 Nov 2026) replaced the THIRD
+# original call site (the bottom shelf's own AWAITING caption) with 3
+# real reasons - see tests/test_director_task80_ai_key_failure_
+# handling.py's own checks on shelf_caption_awaiting_newcomer/_queued/
+# _delayed, which is where that call site's own live constant-reading
+# proof now lives.
 import top100_render as tr
 
 _src = inspect.getsource(tr)
-check("top100_render.py: all 3 call sites read n=top100_engine."
-      "NEWCOMER_PERSISTENCE_NIGHTS (never a hard-coded literal)",
-      _src.count("n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS") == 3)
+check("top100_render.py: both still-live changes-strip call sites read "
+      "n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS (never a hard-coded literal)",
+      _src.count("n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS") == 2)
 
 
 print(f"\nPASS={_total[0] - len(_fail)} FAIL={len(_fail)}")
