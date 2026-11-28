@@ -341,6 +341,10 @@ _TASK32_SHADOW_KEYS = (
     # purely-additive status: "quality_v2_missing" (set alongside
     # "quality_v2" on every row). 007d669 predates this task too.
     "quality_v2_missing",
+    # TASK 83 (Director-directed, 28 Nov 2026, CIG case) - same purely-
+    # additive, shadow-only status: the real #200/#201 cut-off,
+    # denormalized onto every row. 007d669 predates this task too.
+    "cutoff_value_score", "cutoff_ticker", "next_excluded_value_score", "next_excluded_ticker",
 )
 
 

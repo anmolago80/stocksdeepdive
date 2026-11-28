@@ -285,7 +285,8 @@ REBUILDABLE_TABLES = [
     "snapshots",
     "stress_long_history_v4", "stress_result_cache_v10",
     "top100_batch_state", "top100_ingest_log", "top100_oneoff_queue",
-    "top100_prescore_state", "top100_score_failures", "top100_submitting_marker",
+    "top100_prescore_state", "top100_score_failures", "top100_selection_diag",
+    "top100_submitting_marker",
 ]
 
 # Commit K (21 Sep 2026, owner-reported): the emailed backup used to

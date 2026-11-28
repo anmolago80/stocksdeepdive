@@ -250,6 +250,11 @@ for _fixture_i in range(9):
         # alongside "quality_v2" on every row). 007d669 predates this
         # task too.
         "quality_v2_missing",
+        # TASK 83 (Director-directed, 28 Nov 2026, CIG case) - same
+        # purely-additive, shadow-only status: the real #200/#201
+        # cut-off, denormalized onto every row. 007d669 predates this
+        # task too.
+        "cutoff_value_score", "cutoff_ticker", "next_excluded_value_score", "next_excluded_ticker",
     )
     _canon = lambda p: json.dumps(
         [{k: v for k, v in row.items() if k not in _task32_shadow_keys} for row in p],

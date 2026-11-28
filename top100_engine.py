@@ -1192,8 +1192,27 @@ def _recompute_value_score_v2_moat(row):
 
 
 def _build_best_by_ticker(log=print, quality_exception_override=None,
-                           watch_tickers=None, watch_diag=None):
-    """`quality_exception_override` (TASK 37, 6 Nov 2026, Director-
+                           watch_tickers=None, watch_diag=None, excluded_diag=None):
+    """`excluded_diag` (TASK 83, Director-directed, 28 Nov 2026 - CIG
+    case): OPTIONAL out-parameter, same zero-cost-when-None convention
+    as `watch_diag` just below - None (every existing caller except
+    select_top100_pool()'s own new use) pays nothing extra. When given
+    (an ordinary dict the caller owns), MUTATED in place with {ticker:
+    first reason this ticker was ever skipped a row for} for EVERY
+    ticker any per-row rule skips tonight (not just the fixed watch
+    set `watch_diag` is scoped to) - "stale"/"dcf_unreliable"/"fund"/
+    "fallback_financials" from the per-row checks below, "dedupe" from
+    the share-class/cross-listing loss captured the same way watch_
+    diag's own dedupe case already is. A ticker that reaches best_by_
+    ticker anyway (a different universe's clean row, or simply never
+    hit a skip at all) still ends up with an entry here if it was EVER
+    skipped once - exactly like watch_diag's "a reason this ticker got
+    skipped at least once" semantics - so the caller must check
+    membership in the final best_by_ticker return value before trusting
+    an entry here as "this ticker never became a candidate," same
+    caveat watch_diag's own docstring already states.
+
+    `quality_exception_override` (TASK 37, 6 Nov 2026, Director-
     directed): None (every existing caller, unchanged) reads the real
     env gate (top200_quality_exception_live()) - today's live
     behaviour, switch off. True/False lets a shadow-preview simulation
@@ -1324,6 +1343,10 @@ def _build_best_by_ticker(log=print, quality_exception_override=None,
             if entry.get("exclude_reason") is None:
                 entry["exclude_reason"] = reason
 
+    def _record_excluded(ticker, reason):
+        if excluded_diag is not None and ticker not in excluded_diag:
+            excluded_diag[ticker] = reason
+
     for universe, payload in eligible.items():
         gen_raw = payload.get("generated_at")
         try:
@@ -1351,6 +1374,7 @@ def _build_best_by_ticker(log=print, quality_exception_override=None,
                 _watch_seen(ticker)
                 if _is_flagged_stale(row):
                     _watch_excluded(ticker, "stale")
+                    _record_excluded(ticker, "stale")
                     continue
                 stored_unreliable = _is_dcf_unreliable(row)
                 current_unreliable = resolver_engine.dcf_looks_unreliable(
@@ -1430,18 +1454,21 @@ def _build_best_by_ticker(log=print, quality_exception_override=None,
                         if ticker not in dcf_unreliable_excluded_tickers:
                             dcf_unreliable_excluded_tickers.append(ticker)
                         _watch_excluded(ticker, "DCF-unreliable")
+                        _record_excluded(ticker, "dcf_unreliable")
                         continue
                 if row.get("Is Fund"):
                     fund_excluded_count += 1
                     if ticker not in fund_excluded_tickers:
                         fund_excluded_tickers.append(ticker)
                     _watch_excluded(ticker, "fund")
+                    _record_excluded(ticker, "fund")
                     continue
                 if _financials_store_live and _financials_pool_ineligible(row):
                     fallback_financials_excluded_count += 1
                     if ticker not in fallback_financials_excluded_tickers:
                         fallback_financials_excluded_tickers.append(ticker)
                     _watch_excluded(ticker, "fallback-financials")
+                    _record_excluded(ticker, "fallback_financials")
                     continue
                 prev = best_candidate.get(ticker)
                 key = (gen_dt, row_long_score)
@@ -1660,10 +1687,22 @@ def _build_best_by_ticker(log=print, quality_exception_override=None,
     # a straight before/after membership diff rather than threading a
     # reason through either dedupe function.
     _watch_before_dedupe = set(best_by_ticker) & _watch
+    # TASK 83 (Director-directed, 28 Nov 2026): the SAME before/after
+    # membership diff as _watch_before_dedupe just above, but
+    # unconditional (every ticker, not just the fixed watch set) -
+    # excluded_diag's own "every pre-ranking rule" promise (its own
+    # docstring above) needs the dedupe loss recorded for ANY ticker,
+    # not only the handful on nightly_scan.QUALITY_V2_DIAGNOSTIC_
+    # WATCHLIST. A no-op allocation when excluded_diag is None (the
+    # set comprehension is cheap - one pass over best_by_ticker's own
+    # current keys, already being iterated for _watch_before_dedupe).
+    _all_before_dedupe = set(best_by_ticker) if excluded_diag is not None else frozenset()
     _dedupe_share_classes(best_by_ticker, log=log)
     _dedupe_cross_listings(best_by_ticker, log=log)
     for _lost_ticker in _watch_before_dedupe - best_by_ticker.keys():
         _watch_excluded(_lost_ticker, "dedupe")
+    for _lost_ticker in _all_before_dedupe - best_by_ticker.keys():
+        _record_excluded(_lost_ticker, "dedupe")
     _report_undocumented_same_name_duplicates(best_by_ticker, log=log)
     return best_by_ticker, len(eligible)
 
@@ -2736,8 +2775,13 @@ def select_top100_pool(log=print, scan_day=None):
     # independently-maintained copy.
     _watch_tickers = nightly_scan.QUALITY_V2_DIAGNOSTIC_WATCHLIST
     _watch_diag = {}
+    # TASK 83 (Director-directed, 28 Nov 2026, CIG case) - every ticker
+    # any pre-ranking rule skips tonight, not just the fixed watchlist
+    # (see _build_best_by_ticker()'s own excluded_diag docstring).
+    _excluded_diag = {}
     best_by_ticker, eligible_count = _build_best_by_ticker(
-        log=log, watch_tickers=_watch_tickers, watch_diag=_watch_diag)
+        log=log, watch_tickers=_watch_tickers, watch_diag=_watch_diag,
+        excluded_diag=_excluded_diag)
 
     # COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
     # (5 Oct 2026, Director-directed, owner-approved for build+push-on-
@@ -2925,6 +2969,59 @@ def select_top100_pool(log=print, scan_day=None):
     # never reaches this point - no assert needed, and a hard crash is
     # never an acceptable outcome for a data-staleness condition.)
 
+    # TASK 83 (Director-directed, 28 Nov 2026, CIG case) - the #200/
+    # #201 cut-off record: `_merit_ordered` is the pre-slice, pre-
+    # backfill/sticky-buffer merit order (computed near the top of
+    # this function, untouched by anything below), so this reads the
+    # exact same "naive" rank-200 line _naive_cutoff_for()/_apply_
+    # sticky_buffer() already measure against - never a second,
+    # independently-derived cutoff. #201 is simply the next entry in
+    # that same order; both are None only when `_merit_ordered` has
+    # fewer than 200/201 entries (an empty or very thin universe).
+    # Logged + persisted on every row of tonight's save (pool,
+    # extension and set-asides alike) via 4 new, purely additive
+    # top100_pool columns - same guarded-ALTER-TABLE/denormalized-
+    # selection-fact convention pool_selection_rule already uses - so
+    # top100_render.pool_changes() can read "tonight's cut-off" straight
+    # off current_pool()'s own rows with no second table lookup.
+    _cutoff_score = _naive_cutoff_for(_merit_ordered, POOL_SIZE)
+    _cutoff_ticker = (
+        _merit_ordered[POOL_SIZE - 1]["ticker"] if len(_merit_ordered) >= POOL_SIZE else None
+    )
+    _next_entry = _merit_ordered[POOL_SIZE] if len(_merit_ordered) > POOL_SIZE else None
+    _next_score = _next_entry["value_score"] if _next_entry else None
+    _next_ticker = _next_entry["ticker"] if _next_entry else None
+    if _cutoff_score is not None:
+        _next_str = (
+            f"; #201={_next_score} (ticker {_next_ticker})" if _next_entry else "; #201=n/a (fewer than 201 candidates)"
+        )
+        log(f"[top100] cut-off {as_of}: #200 Value Score={_cutoff_score} "
+            f"(ticker {_cutoff_ticker}){_next_str}")
+    for _row in pool + extension + _set_aside_rows:
+        _row["cutoff_value_score"] = _cutoff_score
+        _row["cutoff_ticker"] = _cutoff_ticker
+        _row["next_excluded_value_score"] = _next_score
+        _row["next_excluded_ticker"] = _next_ticker
+
+    # TASK 83 item 2 - per-excluded-ticker rule, persisted for pool_
+    # changes()'s own dropped-reason text. `_excluded_diag` (mutated
+    # in place by _build_best_by_ticker() above) still carries an
+    # entry for a ticker that was skipped in ONE universe's row but
+    # then became a real candidate via a different, clean one - only
+    # entries for tickers NOT in the final best_by_ticker are real
+    # exclusions, exactly like watch_diag's own "a reason this ticker
+    # got skipped at least once" caveat (see that function's own
+    # docstring). Non-fatal: a failure here must never fail pool
+    # selection itself over a display-only diagnostic table.
+    try:
+        top100_store.save_selection_diag(
+            {t: r["value_score"] for t, r in best_by_ticker.items()},
+            {t: r for t, r in _excluded_diag.items() if t not in best_by_ticker},
+            as_of,
+        )
+    except Exception as e:
+        log(f"[top100] could not save selection diagnostics: {e}")
+
     _fill_missing_sectors(pool + extension + _set_aside_rows, log=log)
     top100_store.save_pool(pool + extension + _set_aside_rows, as_of)
 
@@ -3069,17 +3166,61 @@ def _fill_missing_sectors(rows, log=print):
     log(f"[top100] sector fill: {fetched} fetched, {learned} learned, {still_blank} still blank")
 
 
-def pool_changes(current=None, previous=None):
-    """{"new": [ticker, ...], "dropped": [{"ticker","reason"}, ...]} -
-    the page's own "changes strip". `current`/`previous` default to
-    top100_store.current_pool()/previous_pool() when omitted (tests
-    pass their own fixtures instead). "reason" for a dropped ticker is
-    the best available explanation: outside the pool's Value-Score cut
-    (still in some universe's scan, just no longer top 100) vs no
-    longer appearing in ANY saved universe scan at all (delisted,
-    renamed, or dropped from every index this site tracks)."""
+def pool_changes(current=None, previous=None, excluded=None, candidates=None):
+    """{"new": [ticker, ...], "dropped": [{"ticker", "reason_kind", ...},
+    ...]} - the page's own "changes strip". `current`/`previous`
+    default to top100_store.current_pool()/previous_pool() when
+    omitted (tests pass their own fixtures instead).
+
+    TASK 83 (Director-directed, 28 Nov 2026 - CIG case, CONFIRMED
+    BUG): every dropped ticker used to get the SAME generic text
+    ("still scanned, but its Value Score fell outside the top 200")
+    even when a pre-ranking rule (DCF-unreliable, fund, fallback-
+    financials, share-class/cross-listing dedupe) removed it before
+    ranking ever happened - CIG's own real reason (Top 200 score 47.8
+    on 27 Nov) couldn't be told apart from genuine cutoff churn. Each
+    dropped ticker's dict is now one of three shapes, picked in this
+    order:
+      1. {"ticker", "reason_kind": "delisted"} - not in ANY scanned
+         universe tonight at all (unchanged meaning).
+      2. {"ticker", "reason_kind": "excluded_rule", "rule"} - still
+         scanned, but a pre-ranking rule removed it before it ever
+         became a ranked candidate. `rule` is one of "stale"/
+         "dcf_unreliable"/"fund"/"fallback_financials"/"dedupe" -
+         top100_render._dropped_reason_text() turns this into plain
+         English/Spanish.
+      3. {"ticker", "reason_kind": "below_cutoff", "value_score",
+         "cutoff"} - a real ranked candidate tonight, just below the
+         real #200 line.
+      4. {"ticker", "reason_kind": "below_cutoff_unknown"} - still
+         scanned, not a known exclusion, but no diagnostic score/
+         cutoff data is available to say more (e.g. a fresh DB with
+         no selection_diag ever saved, or a current_pool() fixture
+         that never set cutoff_value_score) - falls back to the OLD
+         generic wording rather than fabricating a number.
+
+    `excluded` ({ticker: rule}) and `candidates` ({ticker: value_score})
+    default to top100_store.selection_diag_latest()'s own two maps for
+    the most recent night a selection ran - "at least for the latest
+    night" per the task's own item 2, so an OLDER dropped ticker (one
+    that left the pool more than one selection cycle ago) may fall
+    through to case 4 above once that night's own diagnostic has aged
+    out, rather than ever showing a stale or wrong reason. `cutoff` (the
+    real #200 Value Score) is read straight off `current`'s own rows
+    (every real pool row carries "cutoff_value_score" - TASK 83 item 1,
+    the same denormalized-selection-fact convention pool_selection_rule
+    already uses) - never a fourth parameter, so a test fixture only
+    has to set that one key on its own `current` rows to exercise case 3."""
     current = top100_store.current_pool() if current is None else current
     previous = top100_store.previous_pool() if previous is None else previous
+    if excluded is None or candidates is None:
+        _diag = top100_store.selection_diag_latest() or {}
+        if excluded is None:
+            excluded = _diag.get("excluded") or {}
+        if candidates is None:
+            candidates = _diag.get("candidates") or {}
+    cutoff = next((r.get("cutoff_value_score") for r in current if r.get("cutoff_value_score") is not None), None)
+
     current_tickers = {r["ticker"] for r in current}
     previous_tickers = {r["ticker"] for r in previous}
 
@@ -3098,11 +3239,17 @@ def pool_changes(current=None, previous=None):
 
     dropped = []
     for ticker in sorted(previous_tickers - current_tickers):
-        if ticker in current_universe_tickers:
-            reason = "still scanned, but its Value Score fell outside the top 200"
+        if ticker not in current_universe_tickers:
+            dropped.append({"ticker": ticker, "reason_kind": "delisted"})
+        elif ticker in excluded:
+            dropped.append({"ticker": ticker, "reason_kind": "excluded_rule", "rule": excluded[ticker]})
+        elif ticker in candidates and cutoff is not None:
+            dropped.append({
+                "ticker": ticker, "reason_kind": "below_cutoff",
+                "value_score": candidates[ticker], "cutoff": cutoff,
+            })
         else:
-            reason = "no longer appears in any scanned universe"
-        dropped.append({"ticker": ticker, "reason": reason})
+            dropped.append({"ticker": ticker, "reason_kind": "below_cutoff_unknown"})
 
     return {"new": new, "dropped": dropped}
 

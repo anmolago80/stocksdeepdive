@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .streamlit/secrets.toml
 stocksdeepdive.db
+stocksdeepdive.db-shm
+stocksdeepdive.db-wal
 russell2000_cache.csv
 overnight_scans/
 scheduler_state.json

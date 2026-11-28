@@ -289,6 +289,47 @@ def _conn():
         )
     except sqlite3.OperationalError:
         pass
+    # TASK 83 (Director-directed, 28 Nov 2026, CIG case): the real
+    # selection's own #200/#201 cut-off, denormalized onto every row
+    # of a night's save - same convention as pool_selection_rule
+    # above (a selection-level fact, not a per-row one, but there's
+    # nowhere else to put it that current_pool()/previous_pool()'s
+    # existing SELECT * already reads). top100_engine.pool_changes()
+    # reads cutoff_value_score straight off current_pool()'s own rows
+    # to build its "Value Score <v> - below tonight's cut-off of <c>"
+    # dropped-reason text - never a second table lookup. next_
+    # excluded_ticker/_value_score (the #201 pair) are display/log-
+    # parity only today, kept alongside for the same reason the log
+    # line reports both. All four purely additive, same guarded-
+    # ALTER-TABLE pattern as every column above.
+    for _col, _decl in (
+        ("cutoff_value_score", "REAL"),
+        ("cutoff_ticker", "TEXT"),
+        ("next_excluded_value_score", "REAL"),
+        ("next_excluded_ticker", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE top100_pool ADD COLUMN {_col} {_decl}")
+        except sqlite3.OperationalError:
+            pass
+    # TASK 83 item 2 - per-ticker "what pre-ranking rule, if any, kept
+    # this ticker out of tonight's ranked candidate set" plus the full
+    # ranked candidate set's own Value Score (for a ticker that WAS a
+    # candidate but simply ranked below the cut-off) - "at least for
+    # the latest night" per the task's own wording, so this is a
+    # rebuildable, overwrite-each-night diagnostic (REBUILDABLE_TABLES
+    # in db_backup_engine.py), never a backed-up historical record.
+    # excluded_rule is NULL for a genuine ranked candidate (value_score
+    # populated instead); exactly one of the two is ever set per row.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_selection_diag (
+            as_of TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            value_score REAL,
+            excluded_rule TEXT,
+            PRIMARY KEY (as_of, ticker)
+        )"""
+    )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_scores (
             ticker TEXT NOT NULL,
@@ -619,8 +660,9 @@ def save_pool(rows, as_of):
     "intrinsic_value", "currency", "psychology", "sector",
     "dividend_yield_pct", "most_recent_quarter", "also_trades_as",
     "asx_extension", "generated_at", "source_universe_generated_at",
-    "stale_valuation", "value_score_source_row", "pool_selection_rule"},
-    ...], `as_of`: "YYYY-MM-DD". `asx_extension`
+    "stale_valuation", "value_score_source_row", "pool_selection_rule",
+    "cutoff_value_score", "cutoff_ticker", "next_excluded_value_score",
+    "next_excluded_ticker"}, ...], `as_of`: "YYYY-MM-DD". `asx_extension`
     (Top 20 Australia guaranteed-twenty) defaults to False when a row
     doesn't carry it - every caller before this feature existed passes
     plain pool rows and keeps working unchanged; `most_recent_quarter`
@@ -642,8 +684,10 @@ def save_pool(rows, as_of):
                   dividend_yield_pct, most_recent_quarter, also_trades_as, asx_extension,
                   generated_at, source_universe_generated_at, stale_valuation,
                   value_score_source_row, pool_selection_rule, backfill_set_aside,
-                  backfill_set_aside_status, quality_exception_admitted)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  backfill_set_aside_status, quality_exception_admitted,
+                  cutoff_value_score, cutoff_ticker, next_excluded_value_score,
+                  next_excluded_ticker)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -665,7 +709,11 @@ def save_pool(rows, as_of):
                  pool_selection_rule = excluded.pool_selection_rule,
                  backfill_set_aside = excluded.backfill_set_aside,
                  backfill_set_aside_status = excluded.backfill_set_aside_status,
-                 quality_exception_admitted = excluded.quality_exception_admitted""",
+                 quality_exception_admitted = excluded.quality_exception_admitted,
+                 cutoff_value_score = excluded.cutoff_value_score,
+                 cutoff_ticker = excluded.cutoff_ticker,
+                 next_excluded_value_score = excluded.next_excluded_value_score,
+                 next_excluded_ticker = excluded.next_excluded_ticker""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
@@ -675,11 +723,84 @@ def save_pool(rows, as_of):
                  r.get("generated_at"), r.get("source_universe_generated_at"),
                  int(bool(r.get("stale_valuation"))), r.get("value_score_source_row"),
                  r.get("pool_selection_rule"), int(bool(r.get("backfill_set_aside"))),
-                 r.get("backfill_set_aside_status"), int(bool(r.get("quality_exception_admitted"))))
+                 r.get("backfill_set_aside_status"), int(bool(r.get("quality_exception_admitted"))),
+                 r.get("cutoff_value_score"), r.get("cutoff_ticker"),
+                 r.get("next_excluded_value_score"), r.get("next_excluded_ticker"))
                 for r in rows
             ],
         )
     _prune_old_pool_snapshots()
+
+
+# -----------------------------------------------------------------
+# Selection diagnostics (TASK 83, Director-directed, 28 Nov 2026, CIG
+# case) - per-ticker "why isn't this ticker in tonight's pool", for
+# the latest selection only (overwritten every night, never a
+# historical record - see the top100_selection_diag CREATE TABLE's
+# own comment above for why this is REBUILDABLE_TABLES, not backed
+# up).
+# -----------------------------------------------------------------
+
+def save_selection_diag(candidates, excluded, as_of):
+    """Overwrites the full per-ticker selection diagnostic for one
+    night. `candidates`: {ticker: value_score} for every ticker in
+    top100_engine._build_best_by_ticker()'s own deduped candidate set
+    tonight (eligible, whether it made the pool or not - the full
+    set, not just the 200 winners). `excluded`: {ticker: rule} for
+    every ticker a pre-ranking rule removed before it could ever
+    become a candidate (the caller is expected to have already
+    dropped any ticker that's ALSO in `candidates` - see top100_
+    engine.select_top100_pool()'s own call site). Only one night's
+    rows are ever kept (DELETE then INSERT, same "stale" pruning
+    window as _prune_old_pool_snapshots() above) - "at least for the
+    latest night" per the task's own wording, intentionally never a
+    multi-night history."""
+    rows = (
+        [(as_of, t, v, None) for t, v in candidates.items()]
+        + [(as_of, t, None, r) for t, r in excluded.items()]
+    )
+    with _conn() as conn:
+        conn.execute("DELETE FROM top100_selection_diag WHERE as_of = ?", (as_of,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO top100_selection_diag (as_of, ticker, value_score, excluded_rule) "
+                "VALUES (?, ?, ?, ?)",
+                rows,
+            )
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT as_of FROM top100_selection_diag ORDER BY as_of DESC"
+        ).fetchall()]
+        stale = dates[POOL_SNAPSHOT_RETENTION:]
+        if stale:
+            conn.executemany(
+                "DELETE FROM top100_selection_diag WHERE as_of = ?", [(d,) for d in stale]
+            )
+
+
+def selection_diag_latest():
+    """{"as_of": "YYYY-MM-DD", "candidates": {ticker: value_score},
+    "excluded": {ticker: rule}} for the most recent night a selection
+    diagnostic was saved, or None if none has ever been saved (a
+    fresh DB, or any night before this feature existed) -
+    top100_engine.pool_changes()'s own default read."""
+    with _conn() as conn:
+        as_of = conn.execute(
+            "SELECT MAX(as_of) FROM top100_selection_diag"
+        ).fetchone()[0]
+        if not as_of:
+            return None
+        rows = conn.execute(
+            "SELECT ticker, value_score, excluded_rule FROM top100_selection_diag "
+            "WHERE as_of = ?",
+            (as_of,),
+        ).fetchall()
+    candidates, excluded = {}, {}
+    for ticker, value_score, excluded_rule in rows:
+        if excluded_rule:
+            excluded[ticker] = excluded_rule
+        else:
+            candidates[ticker] = value_score
+    return {"as_of": as_of, "candidates": candidates, "excluded": excluded}
 
 
 def _prune_old_pool_snapshots(keep=POOL_SNAPSHOT_RETENTION):

@@ -822,6 +822,33 @@ def _near_cutoff_gap_chip_html(gap, lang):
     )
 
 
+def _near_cutoff_compact_row_html(cand, lang):
+    """TASK 83 item 4 (Director-directed, 28 Nov 2026, CIG case) - a
+    one-line row for a near-cut-off candidate with no rated score_row
+    (never scored at all, or NOT RATED) - _render_near_cutoff_tab()'s
+    own replacement for silently skipping these. `cand` is one of
+    top100_engine.near_cutoff_candidates()'s own "candidates" entries
+    (ticker/value_score/gap_to_cutoff) - no enriched score_row needed,
+    since there's nothing scored to show. Same gap chip the full
+    _render_row() card uses (_near_cutoff_gap_chip_html()), plus a
+    plain "not yet rated" label - never a dimension-chip card."""
+    ticker = cand["ticker"]
+    return (
+        "<div style='display:flex;align-items:center;gap:10px;padding:7px 0;"
+        "border-bottom:1px solid #14243d;flex-wrap:nowrap;overflow-x:auto;'>"
+        f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
+        "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;"
+        f"white-space:nowrap;'>{html.escape(ticker)}</a>"
+        f"<span style='white-space:nowrap;color:#8aa0b8;font-size:12px;'>"
+        f"{html.escape(_t('col_value_score', lang))}: "
+        f"<b style='color:#e6edf5;'>{cand['value_score']:.1f}</b></span>"
+        + _near_cutoff_gap_chip_html(cand["gap_to_cutoff"], lang)
+        + f"<span style='white-space:nowrap;color:#7f95b3;font-size:11.5px;font-style:italic;'>"
+        f"{html.escape(_t('near_cutoff_compact_not_rated', lang))}</span>"
+        "</div>"
+    )
+
+
 def _finer_industry_by_ticker():
     """{ticker: industry_string} from compounder_data.json's own hand-
     researched coverage (build_compounder_data.py) - Andrew's finer-
@@ -2188,7 +2215,17 @@ def _render_near_cutoff_tab(lang, finer_industry, sort_mode, recent_badge_map=No
     for cand in candidates:
         row = by_ticker.get(cand["ticker"])
         if not row or not row.get("score_row") or (row["score_row"] or {}).get("not_rated"):
-            print(f"[near_cutoff] {cand['ticker']}: skipped - no rated score_row to render")
+            # TASK 83 item 4 (Director-directed, 28 Nov 2026, CIG case -
+            # CONFIRMED BUG): this used to just skip + log, so an
+            # unrated candidate within NEAR_CUTOFF_POINTS of the real
+            # cut-off (never scored at all, or NOT RATED) was invisible
+            # on this tab even though it's genuinely close - exactly
+            # CIG's own shape. Rendered as a compact one-line row
+            # instead (ticker, Value Score, the same gap chip the full
+            # card uses, "not yet rated") - never the full _render_row()
+            # card, since there are no dimension scores to show. Rated
+            # cards (the branch below) are completely unchanged.
+            st.markdown(_near_cutoff_compact_row_html(cand, lang), unsafe_allow_html=True)
             continue
         rank += 1
         _qos_rank = quality_on_sale_rank_map.get(cand["ticker"])
@@ -2541,24 +2578,63 @@ def _render_not_rated_section(set_aside_rows, lang):
             )
 
 
-# Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock): a
-# dropped ticker's "reason" (top100_engine.pool_changes()'s own two
-# fixed strings - NOT changed by this commit, display-only) mapped to
-# an i18n key so the compact strip's tooltip is genuinely localized in
-# Spanish, rather than interpolating the raw English reason string
-# into an otherwise-translated sentence (the old bullet-list's own
-# behaviour). An unrecognized reason (pool_changes() wording changed
-# without this map being updated) falls back to the raw string rather
-# than crashing or showing a blank tooltip.
-_DROPPED_REASON_I18N_KEYS = {
-    "still scanned, but its Value Score fell outside the top 200": "changes_strip_reason_cutoff",
-    "no longer appears in any scanned universe": "changes_strip_reason_delisted",
+# TASK 83 (Director-directed, 28 Nov 2026, CIG case): top100_engine.
+# pool_changes()'s "excluded_rule" dropped reason names which PRE-
+# RANKING rule removed a ticker (one of the 4 real values _record_
+# excluded() in top100_engine._build_best_by_ticker() ever writes) -
+# mapped to a plain-English/Spanish phrase here, same i18n-key-map
+# convention as _DROPPED_REASON_I18N_KEYS below. An unrecognized rule
+# (a future rule added there without this map being updated) falls
+# back to the raw rule string rather than crashing or showing blank.
+_EXCLUDE_RULE_I18N_KEYS = {
+    "stale": "exclude_rule_stale",
+    "dcf_unreliable": "exclude_rule_dcf_unreliable",
+    "fund": "exclude_rule_fund",
+    "fallback_financials": "exclude_rule_fallback_financials",
+    "dedupe": "exclude_rule_dedupe",
 }
 
 
-def _dropped_reason_text(reason, lang):
-    key = _DROPPED_REASON_I18N_KEYS.get(reason)
-    return _t(key, lang) if key else reason
+def _exclude_rule_label(rule, lang):
+    key = _EXCLUDE_RULE_I18N_KEYS.get(rule)
+    return _t(key, lang) if key else (rule or "")
+
+
+# Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock) - a
+# dropped ticker's reason, genuinely localized in Spanish rather than
+# interpolating a raw English sentence (the old bullet-list's own
+# behaviour).
+#
+# TASK 83 (Director-directed, 28 Nov 2026, CIG case - CONFIRMED BUG):
+# pool_changes() used to return ONE fixed English sentence per dropped
+# ticker ("still scanned, but its Value Score fell outside the top
+# 200" for every still-scanned ticker, regardless of WHY it actually
+# left) - so a ticker a pre-ranking rule (DCF-unreliable/fund/
+# fallback-financials/dedupe) removed before ranking ever happened
+# showed the exact same cutoff-churn wording as genuine Value-Score
+# churn, with no way to tell them apart (CIG's own real reason, 27 Nov
+# 2026, couldn't be found from this text at all). pool_changes() now
+# returns a structured dict per dropped ticker ("reason_kind" plus
+# whatever data that kind needs - see that function's own docstring)
+# instead of a pre-formatted sentence, and this function builds the
+# final localized text from it.
+_DROPPED_REASON_I18N_KEYS = {
+    "delisted": "changes_strip_reason_delisted",
+    "below_cutoff_unknown": "changes_strip_reason_cutoff_unknown",
+}
+
+
+def _dropped_reason_text(d, lang):
+    kind = d.get("reason_kind")
+    if kind == "below_cutoff":
+        return _t(
+            "changes_strip_reason_cutoff", lang,
+            score=f"{d['value_score']:.1f}", cutoff=f"{d['cutoff']:.1f}",
+        )
+    if kind == "excluded_rule":
+        return _t("changes_strip_reason_excluded", lang, rule=_exclude_rule_label(d.get("rule"), lang))
+    key = _DROPPED_REASON_I18N_KEYS.get(kind, "changes_strip_reason_delisted")
+    return _t(key, lang)
 
 
 def _changes_chip_html(text, variant, tooltip=None):
@@ -2650,7 +2726,7 @@ def _changes_strip(enriched, lang):
         rows.append((_t("changes_strip_new_label", lang, n=len(new)), "new", chips))
     if dropped:
         chips = "".join(
-            _changes_chip_html(d["ticker"], "drop", tooltip=_dropped_reason_text(d["reason"], lang))
+            _changes_chip_html(d["ticker"], "drop", tooltip=_dropped_reason_text(d, lang))
             for d in dropped
         )
         rows.append((_t("changes_strip_dropped_label", lang, n=len(dropped)), "drop", chips))

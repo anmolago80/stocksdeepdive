@@ -4205,10 +4205,31 @@ EN = {
     "top100.changes_strip_new_label": "▲ New ({n})",
     "top100.changes_strip_dropped_label": "▼ Dropped ({n})",
     "top100.changes_strip_awaiting_label": "⏳ Awaiting first score ({n})",
+    # TASK 83 (Director-directed, 28 Nov 2026, CIG case): now carries
+    # {score}/{cutoff} placeholders (top100_engine.pool_changes()'s own
+    # "below_cutoff" reason_kind) - the literal "200" is kept in the
+    # static text itself (not a placeholder) so a plain
+    # i18n.t(..., lang) call with no format args (e.g. test_pool_
+    # expansion_v200.py's own "Top 200" wording check) still reads it.
     "top100.changes_strip_reason_cutoff": (
+        "Value Score {score} — below tonight's top 200 cut-off of {cutoff}"
+    ),
+    # Fallback for a dropped ticker pool_changes() knows is still
+    # scanned and not excluded by a known rule, but has no diagnostic
+    # score/cutoff data to name a number for (e.g. no selection_diag
+    # has ever been saved) - the OLD generic wording, kept as its own
+    # key rather than reused so the two can read differently if a
+    # future task wants that.
+    "top100.changes_strip_reason_cutoff_unknown": (
         "still scanned, but its Value Score fell outside the top 200"
     ),
+    "top100.changes_strip_reason_excluded": "excluded by: {rule}",
     "top100.changes_strip_reason_delisted": "no longer appears in any scanned universe",
+    "top100.exclude_rule_stale": "not currently trading",
+    "top100.exclude_rule_dcf_unreliable": "unreliable DCF valuation",
+    "top100.exclude_rule_fund": "fund or investment trust",
+    "top100.exclude_rule_fallback_financials": "fallback financials data",
+    "top100.exclude_rule_dedupe": "duplicate listing of another ticker already in the pool",
     "top100.changes_strip_awaiting_tooltip": (
         "would rank in the top 20 by Value Score — scored once it has "
         "held a pool slot for {n} consecutive nights"
@@ -4231,6 +4252,11 @@ EN = {
     "top100.tab_near_cutoff": "Near the cut-off",
     "top100.near_cutoff_empty": "No companies within 2 points of the cut-off today.",
     "top100.near_cutoff_gap_chip": "-{gap} below cut-off",
+    # TASK 83 item 4 (Director-directed, 28 Nov 2026, CIG case): the
+    # compact-row label for a near-cut-off candidate with no rated
+    # score_row - never scored at all, or NOT RATED (_render_near_
+    # cutoff_tab()'s own replacement for silently skipping these).
+    "top100.near_cutoff_compact_not_rated": "not yet rated",
     # TASK 50 (Director-directed, 12 Nov 2026): owner-only Excel export
     # button, one per Top 200 tab.
     "top100.export_button": "Download (Excel)",
@@ -8219,10 +8245,21 @@ ES = {
     "top100.changes_strip_new_label": "▲ Nuevas ({n})",
     "top100.changes_strip_dropped_label": "▼ Salieron ({n})",
     "top100.changes_strip_awaiting_label": "⏳ Esperando primera puntuación ({n})",
+    # TASK 83 (Director-directed, 28 Nov 2026, CIG case): see the EN
+    # key's own comment - the literal "200" stays in the static text.
     "top100.changes_strip_reason_cutoff": (
+        "Value Score {score} — por debajo del corte del top 200 de esta noche ({cutoff})"
+    ),
+    "top100.changes_strip_reason_cutoff_unknown": (
         "sigue escaneada, pero su Value Score quedó fuera del top 200"
     ),
+    "top100.changes_strip_reason_excluded": "excluida por: {rule}",
     "top100.changes_strip_reason_delisted": "ya no aparece en ningún universo escaneado",
+    "top100.exclude_rule_stale": "no cotiza actualmente",
+    "top100.exclude_rule_dcf_unreliable": "valoración DCF poco confiable",
+    "top100.exclude_rule_fund": "fondo o trust de inversión",
+    "top100.exclude_rule_fallback_financials": "datos financieros de respaldo",
+    "top100.exclude_rule_dedupe": "cotización duplicada de otro ticker ya en el pool",
     "top100.changes_strip_awaiting_tooltip": (
         "estaría en el top 20 por Value Score — se puntúa en cuanto lleva "
         "{n} noches consecutivas con un puesto en el pool"
@@ -8241,6 +8278,7 @@ ES = {
     "top100.tab_near_cutoff": "Cerca del corte",
     "top100.near_cutoff_empty": "Hoy no hay empresas a menos de 2 puntos del corte.",
     "top100.near_cutoff_gap_chip": "-{gap} por debajo del corte",
+    "top100.near_cutoff_compact_not_rated": "aún sin calificar",
     "top100.export_button": "Descargar (Excel)",
     "top100.tab_quality_on_sale": "Calidad en oferta",
     "top100.quality_on_sale_show_all_button": "Mostrar todo ({count})",
