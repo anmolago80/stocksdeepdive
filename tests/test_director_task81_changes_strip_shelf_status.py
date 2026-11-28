@@ -78,8 +78,8 @@ _FIXTURE_ROWS = [
     _mk_row("FOXA", presence_nights=1),                                  # newcomer, night 1 of 5
     _mk_row("NXT", presence_nights=11),                                  # past 5 nights, queued
     _mk_row("XP", presence_nights=9),                                    # past 5 nights, delayed
-    _mk_row("RATED_NORMAL", score_row={"degenerate_accepted": False}),   # not_rated, plain
-    _mk_row("RATED_DEGEN", score_row={"degenerate_accepted": True}),     # not_rated, degenerate x2
+    _mk_row("RATED_NORMAL", score_row={"not_rated": True, "degenerate_accepted": False}),   # not_rated, plain
+    _mk_row("RATED_DEGEN", score_row={"not_rated": True, "degenerate_accepted": True}),     # not_rated, degenerate x2
     _mk_row("EXH", score_failure={"reason": "degenerate_response", "attempts": 99,
                                    "failed_at": "2026-11-20T00:00:00+00:00"}, presence_nights=11),
 ]
@@ -142,6 +142,20 @@ for _row, _expected_status in [
           "same ai_auth_state at the time)",
           _html_mod.escape(caption) in html_row)
 
+# TASK 81a (Director-directed, 28 Nov 2026 - CONFIRMED BUG): _shelf_
+# status() itself is NOT changed by this follow-up task (per the
+# Director's own instruction) - it still returns "not_rated" for ANY
+# row carrying a score_row, including a genuinely RATED one. Documented
+# here exactly as the Director verified it live, so this known quirk
+# stays visible rather than silently "fixed" by a future edit that
+# forgets why _changes_strip() needs its own guard.
+_rated_status, _ = tr._shelf_status(
+    {"ticker": "X", "score_row": {"not_rated": False, "composite": 80}}, "en")
+check("_shelf_status() is unchanged (per instruction) - still returns 'not_rated' for "
+      "a genuinely RATED row (score_row present, not_rated=False); this is why "
+      "_changes_strip() needs its own guard below, not a fix to _shelf_status() itself",
+      _rated_status == "not_rated")
+
 
 # ======================================================================
 # PART 3 (items 2/3): _changes_strip() itself - the 6 real not_rated
@@ -151,13 +165,30 @@ for _row, _expected_status in [
 # shelf's own _shelf_status() result for that SAME row - the structural
 # guarantee this task exists to establish (one shared classification,
 # never two).
+#
+# TASK 81a (Director-directed, 28 Nov 2026 - CONFIRMED BUG): the 6
+# not_rated fixture rows now carry "not_rated": True on their score_row,
+# matching real top100_store data (every real score_row has this field)
+# - without it, the new skip-already-rated guard in _changes_strip()
+# would wrongly treat them as rated and drop them from the "Not rated"
+# row entirely. 3 genuinely RATED rows (real score_row, not_rated=False,
+# high Value Scores so they land inside the top 20 by construction) are
+# added too, proving _changes_strip() no longer lists an actually-rated
+# company under "Not rated" - the bug _shelf_status() itself has (it
+# returns "not_rated" for ANY row with a score_row, rated or not; safe
+# inside the shelf, which only ever sees unrated rows, but not safe over
+# the full enriched pool this loop runs over) - fixed by skipping those
+# rows in _changes_strip() BEFORE they ever reach _shelf_status().
 # ======================================================================
 _NOT_RATED_TICKERS = ["SKS.AX", "SLDE", "PXED", "ORE.AX", "SHA.AX", "ESP"]
+_RATED_TICKERS = ["RATEDHI1", "RATEDHI2", "RATEDHI3"]
 _strip_rows = (
-    [_mk_row(t, score_row={"degenerate_accepted": False}, value_score=90.0 - i)
+    [_mk_row(t, score_row={"not_rated": True, "degenerate_accepted": False}, value_score=90.0 - i)
      for i, t in enumerate(_NOT_RATED_TICKERS)]
     + [_mk_row("VGNT", presence_nights=1, value_score=80.0)]
     + [_mk_row("QUEUEDCO", presence_nights=11, value_score=79.0)]
+    + [_mk_row(t, score_row={"not_rated": False, "composite": 70.0 + i}, value_score=100.0 + i)
+       for i, t in enumerate(_RATED_TICKERS)]
 )
 
 _captured_markdown = []
@@ -180,6 +211,16 @@ check("the strip shows a 'Not rated (6)' row for the 6 genuinely not-rated ticke
       "Not rated (6)" in _strip_html)
 check("the strip shows an 'Awaiting first score (2)' row (VGNT + QUEUEDCO only - "
       "the 6 not-rated tickers are NOT counted here any more)",
+      "Awaiting first score (2)" in _strip_html)
+
+for _ticker in _RATED_TICKERS:
+    check(f"{_ticker} (genuinely RATED, not_rated=False): does NOT appear as a chip in "
+          "the strip at all (TASK 81a fix - skipped before _shelf_status() can "
+          "mislabel it 'not_rated')",
+          f">{_ticker}<" not in _strip_html)
+check("counts stay 'Not rated (6)' even with 3 rated rows sitting in the top 20",
+      "Not rated (6)" in _strip_html)
+check("counts stay 'Awaiting first score (2)' even with 3 rated rows sitting in the top 20",
       "Awaiting first score (2)" in _strip_html)
 
 for _ticker in _NOT_RATED_TICKERS:
@@ -216,7 +257,7 @@ check('the "Awaiting first score (1)" row is still present',
       "Awaiting first score (1)" in _strip_html_no_not_rated)
 
 _strip_rows_only_not_rated = [
-    _mk_row("ONLYNR", score_row={"degenerate_accepted": False}, value_score=50.0)
+    _mk_row("ONLYNR", score_row={"not_rated": True, "degenerate_accepted": False}, value_score=50.0)
 ]
 _captured_markdown.clear()
 with mock.patch.object(tr, "st") as _fake_st3, \

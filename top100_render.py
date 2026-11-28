@@ -2695,6 +2695,18 @@ def _changes_strip(enriched, lang):
     awaiting_chips = []
     not_rated_chips = []
     for r in top20_by_value:
+        # TASK 81a (Director-directed, 28 Nov 2026 - CONFIRMED BUG):
+        # _shelf_status() returns "not_rated" for ANY row with a
+        # score_row, including a genuinely RATED one - safe inside the
+        # shelf (only unrated rows ever reach it there), but this loop
+        # runs over the top 20 of the FULL enriched pool by Value
+        # Score, so a rated company sitting in that top 20 would be
+        # wrongly listed under "Not rated" without this guard. Skip any
+        # row that already has a real score (score_row exists and
+        # not_rated is falsy) before classifying it at all.
+        score_row = r.get("score_row")
+        if score_row is not None and not score_row.get("not_rated"):
+            continue
         status, caption = _shelf_status(r, lang)
         if status == "awaiting":
             awaiting_chips.append((r["ticker"], caption))
