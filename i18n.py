@@ -4205,6 +4205,13 @@ EN = {
     "top100.changes_strip_new_label": "▲ New ({n})",
     "top100.changes_strip_dropped_label": "▼ Dropped ({n})",
     "top100.changes_strip_awaiting_label": "⏳ Awaiting first score ({n})",
+    # TASK 81 (Director-directed, owner-approved, 28 Nov 2026): a
+    # genuinely NOT RATED ticker (the model already scored it and
+    # declined - >= NOT_RATED_MIN_NULLS null dimensions) used to be
+    # wrongly lumped into the "Awaiting first score" row above (which
+    # _shelf_row_html() itself never does, showing it correctly as
+    # NOT RATED) - split into its own grey row here.
+    "top100.changes_strip_not_rated_label": "◇ Not rated ({n})",
     "top100.changes_strip_reason_cutoff": (
         "still scanned, but its Value Score fell outside the top 200"
     ),
@@ -8219,6 +8226,7 @@ ES = {
     "top100.changes_strip_new_label": "▲ Nuevas ({n})",
     "top100.changes_strip_dropped_label": "▼ Salieron ({n})",
     "top100.changes_strip_awaiting_label": "⏳ Esperando primera puntuación ({n})",
+    "top100.changes_strip_not_rated_label": "◇ No evaluadas ({n})",
     "top100.changes_strip_reason_cutoff": (
         "sigue escaneada, pero su Value Score quedó fuera del top 200"
     ),

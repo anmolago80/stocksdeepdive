@@ -86,22 +86,28 @@ with mock.patch.object(top100_engine, "NEWCOMER_PERSISTENCE_NIGHTS", 7):
           in i18n.t("top100.changes_strip_caption", "en",
                      n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS))
 
-# Source-level proof that both still-live call sites in top100_
-# render.py (changes_strip_awaiting_tooltip/changes_strip_caption) pass
+# Source-level proof that the one still-live call site in top100_
+# render.py (changes_strip_caption, the strip's own footer line) passes
 # n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS - never a literal number -
 # so a future change to the constant changes the UI text too, with no
-# second place to update. TASK 80 (27 Nov 2026) replaced the THIRD
-# original call site (the bottom shelf's own AWAITING caption) with 3
-# real reasons - see tests/test_director_task80_ai_key_failure_
-# handling.py's own checks on shelf_caption_awaiting_newcomer/_queued/
-# _delayed, which is where that call site's own live constant-reading
-# proof now lives.
+# second place to update. TASK 80 (27 Nov 2026) replaced the bottom
+# shelf's own AWAITING caption call site with 3 real reasons - see
+# tests/test_director_task80_ai_key_failure_handling.py's own checks on
+# shelf_caption_awaiting_newcomer/_queued/_delayed. TASK 81 (28 Nov
+# 2026) then removed changes_strip_awaiting_tooltip's own call site too
+# (_changes_strip()'s per-chip tooltips are now each ticker's own real
+# _shelf_status() caption, never one generic shared tooltip) - see
+# tests/test_director_task81_changes_strip_shelf_status.py for that
+# behaviour's own tests. changes_strip_awaiting_tooltip's i18n TEXT
+# itself (checked above, in _KEYS) is left defined/unused rather than
+# deleted - harmless, and this task's own scope is the call sites, not
+# a key cleanup.
 import top100_render as tr
 
 _src = inspect.getsource(tr)
-check("top100_render.py: both still-live changes-strip call sites read "
+check("top100_render.py: the one still-live call site (changes_strip_caption) reads "
       "n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS (never a hard-coded literal)",
-      _src.count("n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS") == 2)
+      _src.count("n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS") == 1)
 
 
 print(f"\nPASS={_total[0] - len(_fail)} FAIL={len(_fail)}")

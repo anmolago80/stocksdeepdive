@@ -2286,6 +2286,58 @@ _SHELF_CHIP_AWAITING = ("#1a2333", "#2a3f63", "#7f95b3")
 _SHELF_CHIP_NOT_RATED = ("#2a2413", "#7c5e10", "#fbbf24")
 
 
+def _shelf_status(row, lang):
+    """(status, caption) for one pool row - status is "awaiting" (no
+    score exists yet under the current rubric at all, score_row is
+    None) or "not_rated" (score_row exists but the model declined to
+    score it - >= NOT_RATED_MIN_NULLS null dimensions). TASK 81
+    (Director-directed, owner-approved, 28 Nov 2026): factored out of
+    _shelf_row_html() below so _changes_strip()'s own "Awaiting first
+    score"/"Not rated" split uses this EXACT classification - before
+    this task, _changes_strip() had its own second copy of this
+    decision (score_row is None OR score_row.get("not_rated")) that
+    lumped BOTH cases into one "Awaiting first score" row, showing a
+    genuinely NOT RATED ticker under the wrong label (verified live 28
+    Nov 2026: SKS.AX/SLDE/PXED/ORE.AX/SHA.AX/ESP).
+
+    caption is the same per-ticker reason text _shelf_row_html() has
+    always shown - see that function's own (now mostly historical)
+    docstring for the full reasoning behind each of the 3 "awaiting"
+    reasons (TASK 80) and the degenerate-response "not_rated" variant."""
+    score_row = row.get("score_row")
+    if score_row is None:
+        failure = row.get("score_failure")
+        if failure and top100_engine._failure_exhausted(failure):
+            caption = _t("shelf_caption_scoring_failed", lang)
+        else:
+            nights_held = row.get("presence_nights", 0)
+            if nights_held < top100_engine.NEWCOMER_PERSISTENCE_NIGHTS:
+                caption = _t(
+                    "shelf_caption_awaiting_newcomer", lang,
+                    n=max(1, nights_held), total=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS,
+                )
+            elif ai_auth_state.is_failing():
+                _last_fail = ai_auth_state.last_failure_at()
+                caption = _t(
+                    "shelf_caption_awaiting_delayed", lang,
+                    date=(_last_fail or "")[:10],
+                )
+            else:
+                caption = _t("shelf_caption_awaiting_queued", lang)
+        return "awaiting", caption
+    if score_row.get("degenerate_accepted"):
+        # Degenerate-response guard (3 Oct 2026, owner-directed): this
+        # row was accepted as NOT RATED only after a second consecutive
+        # sentinel-filled (degenerate) response - see top100_engine.py's
+        # _save_degenerate_as_not_rated(). Flag it distinctly so the
+        # owner can tell "model genuinely declined" apart from "model
+        # returned a template twice".
+        caption = _t("shelf_caption_not_rated", lang) + " " + _t("shelf_caption_degenerate_x2", lang)
+    else:
+        caption = _t("shelf_caption_not_rated", lang)
+    return "not_rated", caption
+
+
 def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
     """One bottom-shelf row (point 3) - a compact chip+ticker+stats
     line, never the full dimension-chip card _render_row() draws
@@ -2341,40 +2393,22 @@ def _shelf_row_html(row, lang, origin_badge_html=None, recent_badge_html=None):
     permanently given up retrying) is UNCHANGED - it stays "scoring
     failed — will retry after the next rubric change" either way,
     since that's a different, rubric-level reason with nothing to do
-    with the AI key."""
-    score_row = row.get("score_row")
-    if score_row is None:
+    with the AI key.
+
+    TASK 81 (Director-directed, owner-approved, 28 Nov 2026): the
+    actual chip/caption decision now lives in _shelf_status() below -
+    this function just renders it - so _changes_strip()'s own "Awaiting
+    first score"/"Not rated" split can use the EXACT SAME classification
+    instead of a second, independently-maintained copy that used to lump
+    a genuinely NOT RATED ticker into "Awaiting first score" too (the
+    bug this task fixes - verified live 28 Nov 2026: SKS.AX/SLDE/PXED/
+    ORE.AX/SHA.AX/ESP showed as "Awaiting first score" in the strip but
+    NOT RATED in the shelf directly below it)."""
+    status, caption = _shelf_status(row, lang)
+    if status == "awaiting":
         chip = _shelf_chip_html(_t("shelf_chip_awaiting", lang), *_SHELF_CHIP_AWAITING)
-        failure = row.get("score_failure")
-        if failure and top100_engine._failure_exhausted(failure):
-            caption = _t("shelf_caption_scoring_failed", lang)
-        else:
-            nights_held = row.get("presence_nights", 0)
-            if nights_held < top100_engine.NEWCOMER_PERSISTENCE_NIGHTS:
-                caption = _t(
-                    "shelf_caption_awaiting_newcomer", lang,
-                    n=max(1, nights_held), total=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS,
-                )
-            elif ai_auth_state.is_failing():
-                _last_fail = ai_auth_state.last_failure_at()
-                caption = _t(
-                    "shelf_caption_awaiting_delayed", lang,
-                    date=(_last_fail or "")[:10],
-                )
-            else:
-                caption = _t("shelf_caption_awaiting_queued", lang)
     else:
         chip = _shelf_chip_html(_t("shelf_chip_not_rated", lang), *_SHELF_CHIP_NOT_RATED)
-        if score_row.get("degenerate_accepted"):
-            # Degenerate-response guard (3 Oct 2026, owner-directed): this
-            # row was accepted as NOT RATED only after a second consecutive
-            # sentinel-filled (degenerate) response - see top100_engine.py's
-            # _save_degenerate_as_not_rated(). Flag it distinctly so the
-            # owner can tell "model genuinely declined" apart from "model
-            # returned a template twice".
-            caption = _t("shelf_caption_not_rated", lang) + " " + _t("shelf_caption_degenerate_x2", lang)
-        else:
-            caption = _t("shelf_caption_not_rated", lang)
     ticker = row["ticker"]
     badge_html = (origin_badge_html or "") + (recent_badge_html or "")
     mos_html = ""
@@ -2563,12 +2597,18 @@ def _dropped_reason_text(reason, lang):
 
 def _changes_chip_html(text, variant, tooltip=None):
     """One ticker chip for the compact changes strip - variant is
-    "new"/"drop"/"wait", exact color tokens from the owner-approved
-    mock (top100_changes_industry_mock.html)."""
+    "new"/"drop"/"wait"/"not_rated" (TASK 81, Director-directed,
+    owner-approved, 28 Nov 2026 - the new grey row for a ticker the
+    model has already declined to score, split out of "wait" which
+    used to wrongly include it), exact color tokens from the owner-
+    approved mock (top100_changes_industry_mock.html) for new/drop/
+    wait; "not_rated" reuses "drop"'s own grey (both are neutral,
+    non-actionable info, never amber "waiting on something")."""
     colors = {
         "new": ("#10312d", "#14532d", "#34d399"),
         "drop": ("#101a2e", "#1f3352", "#8aa0b8"),
         "wait": ("#2a2413", "#7c5e10", "#fbbf24"),
+        "not_rated": ("#101a2e", "#1f3352", "#8aa0b8"),
     }
     bg, border, color = colors[variant]
     title_attr = f" title='{html.escape(tooltip)}'" if tooltip else ""
@@ -2585,7 +2625,7 @@ def _changes_row_html(label_text, label_variant, chips_html, is_last):
     freely next to it. No bottom border on the strip's last row (mock's
     own .chg-row:last-child rule - inline styles can't select
     ":last-child", so the caller tells us)."""
-    label_colors = {"new": "#34d399", "drop": "#8aa0b8", "wait": "#fbbf24"}
+    label_colors = {"new": "#34d399", "drop": "#8aa0b8", "wait": "#fbbf24", "not_rated": "#8aa0b8"}
     border = "" if is_last else "border-bottom:1px solid #14243d;"
     return (
         f"<div style='display:flex;align-items:flex-start;gap:10px;padding:7px 0;{border}'>"
@@ -2603,13 +2643,13 @@ def _changes_strip(enriched, lang):
     compact 3-row chip strip - New (green) / Dropped (grey, hover for
     reason) / Awaiting first score (amber, hover explains why). Purely
     a rendering change: reuses top100_engine.pool_changes() and the
-    exact same top-20-by-Value-Score "would_rank" computation
-    unchanged (see this function's own git history for the original,
-    identical bullet-list version of this logic) - zero touch to
-    _SYSTEM_PROMPT, DIMENSIONS, weights, RUBRIC_VERSION or any cache
-    key, so no existing score is invalidated or resubmitted and this
-    costs nothing in API spend. Rows with zero entries are omitted
-    entirely (never an empty "New (0)" row).
+    exact same top-20-by-Value-Score computation unchanged (see this
+    function's own git history for the original, identical bullet-list
+    version of this logic) - zero touch to _SYSTEM_PROMPT, DIMENSIONS,
+    weights, RUBRIC_VERSION or any cache key, so no existing score is
+    invalidated or resubmitted and this costs nothing in API spend.
+    Rows with zero entries are omitted entirely (never an empty
+    "New (0)" row).
 
     Selection-rule-change suppression (30 Sep 2026, owner-directed):
     when current_pool() was chosen under a DIFFERENT selection rule
@@ -2620,7 +2660,26 @@ def _changes_strip(enriched, lang):
     meaningless changes list for one night only. Rendered as a single
     caption instead, exactly once (the very next selection run tags
     previous_pool() with the same rule too, so this never fires
-    again)."""
+    again).
+
+    TASK 81 (Director-directed, owner-approved, 28 Nov 2026 - CONFIRMED
+    BUG, verified live 28 Nov 2026): this used to lump "score_row is
+    None" (genuinely awaiting) and "score_row.get('not_rated')"
+    (the model already declined to score it) into ONE "Awaiting first
+    score" row with one generic 5-night tooltip for every chip -
+    SKS.AX/SLDE/PXED/ORE.AX/SHA.AX/ESP showed "Awaiting first score"
+    here but "NOT RATED" in the shelf directly below, and every
+    waiting ticker's tooltip said the same thing regardless of how
+    long it had actually been waiting or why. Now uses _shelf_status()
+    - the SAME classification + per-ticker caption the shelf itself
+    uses - split into two rows: "awaiting" tickers stay in "Awaiting
+    first score (n)"; "not_rated" tickers get their own new grey
+    "Not rated (n)" row. Each chip's own tooltip is now that specific
+    ticker's own caption (night N of 5 / queued / delayed-by-key-
+    failure / not rated), never one generic line shared by every
+    chip. `enriched` must carry "score_failure"/"presence_nights" per
+    row (its only real caller, page_top100()'s own _enriched_pool(),
+    already does - see that function's own docstring)."""
     previous = top100_store.previous_pool()
     if previous and enriched:
         current_rule = enriched[0].get("pool_selection_rule")
@@ -2633,12 +2692,16 @@ def _changes_strip(enriched, lang):
     new, dropped = changes["new"], changes["dropped"]
 
     top20_by_value = sorted(enriched, key=lambda r: r["value_score"], reverse=True)[:20]
-    would_rank = [
-        r["ticker"] for r in top20_by_value
-        if r["score_row"] is None or r["score_row"].get("not_rated")
-    ]
+    awaiting_chips = []
+    not_rated_chips = []
+    for r in top20_by_value:
+        status, caption = _shelf_status(r, lang)
+        if status == "awaiting":
+            awaiting_chips.append((r["ticker"], caption))
+        elif status == "not_rated":
+            not_rated_chips.append((r["ticker"], caption))
 
-    if not new and not dropped and not would_rank:
+    if not new and not dropped and not awaiting_chips and not not_rated_chips:
         st.caption(_t("changes_none", lang))
         return
 
@@ -2654,11 +2717,15 @@ def _changes_strip(enriched, lang):
             for d in dropped
         )
         rows.append((_t("changes_strip_dropped_label", lang, n=len(dropped)), "drop", chips))
-    if would_rank:
-        tooltip = _t("changes_strip_awaiting_tooltip", lang,
-                     n=top100_engine.NEWCOMER_PERSISTENCE_NIGHTS)
-        chips = "".join(_changes_chip_html(t, "wait", tooltip=tooltip) for t in would_rank)
-        rows.append((_t("changes_strip_awaiting_label", lang, n=len(would_rank)), "wait", chips))
+    if awaiting_chips:
+        chips = "".join(_changes_chip_html(t, "wait", tooltip=caption) for t, caption in awaiting_chips)
+        rows.append((_t("changes_strip_awaiting_label", lang, n=len(awaiting_chips)), "wait", chips))
+    if not_rated_chips:
+        chips = "".join(
+            _changes_chip_html(t, "not_rated", tooltip=caption) for t, caption in not_rated_chips
+        )
+        rows.append((_t("changes_strip_not_rated_label", lang, n=len(not_rated_chips)),
+                     "not_rated", chips))
 
     rows_html = "".join(
         _changes_row_html(label, variant, chips, is_last=(i == len(rows) - 1))
